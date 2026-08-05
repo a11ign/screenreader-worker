@@ -24,14 +24,15 @@ const LITERAL_LIST = /for \(const file of \[["']/;
 
 test("there is exactly ONE definition of the worker file list, and one hasher", () => {
   // A reintroduced literal is the regression: two lists that must agree, kept in step by hope.
-  for (const path of ["packages/nvda-worker/src/server.mjs", "scripts/check-worker-code.mjs", "scripts/deploy-worker.mjs"]) {
+  for (const path of ["packages/nvda-worker/src/server.mjs", "packages/worker-fleet/src/check-worker-code.mjs", "packages/worker-fleet/src/deploy-worker.mjs"]) {
     const source = readFileSync(resolve(process.cwd(), path), "utf8");
     assert.ok(!LITERAL_LIST.test(source),
       `${path} has its own literal worker-file list again. Import WORKER_FILES from worker-files.mjs — a `
       + `second copy is how a file came to deploy without the parity check noticing.`);
-    // Either the shared list or the shared hasher — both live in one place, and using either means this
-    // file cannot disagree with the other side about contents or order.
-    assert.match(source, /worker-files\.mjs|code-version\.mjs/,
+    // Either the shared list or the shared hasher, by relative path OR by package name — the fleet imports it
+    // as `@a11y-witness/nvda-worker` since M6 put those scripts in their own package. What matters is that it
+    // comes from the one definition, not how it is spelled.
+    assert.match(source, /worker-files\.mjs|code-version\.mjs|@a11y-witness\/nvda-worker/,
       `${path} should get the worker file list, or the hash itself, from the shared module`);
   }
 });
