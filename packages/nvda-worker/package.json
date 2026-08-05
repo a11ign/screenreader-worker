@@ -1,0 +1,43 @@
+{
+  "name": "@a11y-witness/nvda-worker",
+  "version": "0.1.0",
+  "description": "Drives a real NVDA screen reader through real navigation on Windows and returns what it announced. The HTTP contract is the API.",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "a11y-nvda-worker": "./src/server.mjs"
+  },
+  "files": [
+    "src",
+    "!src/**/*.test.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@guidepup/guidepup": "0.31.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DanBeckDev/a11y-witness.git",
+    "directory": "packages/nvda-worker"
+  },
+  "keywords": [
+    "accessibility",
+    "a11y",
+    "wcag",
+    "screen-reader",
+    "nvda",
+    "windows",
+    "capture"
+  ]
+}

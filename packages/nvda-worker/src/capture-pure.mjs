@@ -1,0 +1,328 @@
+/**
+ * The pure half of the capture path: no guidepup, no NVDA, no browser — just the functions that turn what a
+ * screen reader SAID into structure, and the constants they judge it against.
+ *
+ * ## Why this file exists
+ *
+ * `@guidepup/guidepup` **throws at import time** where no screen reader exists. CI is Linux, so merely
+ * importing `capture-core.mjs` fails there — and six test files did exactly that to reach these pure
+ * helpers, so they died with it. Node reports that per FILE, as "test failed", which reads like broken logic
+ * rather than an unavailable dependency: the job had been red since 1 August, growing from 2 files to 6 as
+ * more tests imported `capture-core` for pure logic.
+ *
+ * Nothing here may import guidepup, and `src/capture/nvda/pure-graph.test.ts` enforces that by walking the
+ * import graph. `capture-core.mjs` imports these and re-exports them, so every existing caller is unchanged.
+ *
+ * ## What belongs here
+ *
+ * A function belongs here when it is a pure function of a transcript, a phrase or a URL. Anything that talks
+ * to NVDA, the browser or the filesystem does not — it stays in `capture-core.mjs`, where it can only be
+ * tested against real NVDA on the Windows worker.
+ *
+ * The move was computed rather than eyeballed: the transitive closure of the seven symbols the tests need is
+ * exactly these 19 declarations, and it contains no guidepup symbol. An earlier attempt to do this by hand
+ * broke `capture-core` — a 2,370-line module with no local test — and was reverted.
+ */
+import { captureFault, FAULT } from "./capture-faults.mjs";
+
+export const MAX_REPEATED_PHRASES = 3; // identical lines in a row => bottom of page
+
+export const MAX_WRAP_REPEATS = 4; // already-seen substantial lines in a row => wrapped around
+
+export const SUBSTANTIAL_PHRASE_LEN = 20; // a phrase longer than this is worth deduping on
+
+// Consecutive silent advances that end a read-through NVDA was never going to speak into.
+// Only ever consulted when NVDA was ALSO silent at startup -- see readPageInOrder.
+export const MAX_SILENT_STEPS = 8;
+
+export const DEDUPE_KEY_LEN = 80; // prefix length used to dedupe announcements
+
+// Edge's capture profile must NOT live under %TEMP%. Windows temp cleanup deletes
+// it (it silently wiped the NVDA install the same way), and a purged profile
+// reverts Edge to its first-run state, whose welcome/sign-in surface NVDA records
+// as phantom elements on pages with no headings — the first-run gotcha in the
+// README. LOCALAPPDATA survives cleanup.
+export const EDGE_PROFILE_DIR =
+  process.env.A11Y_EDGE_PROFILE ||
+  `${process.env.LOCALAPPDATA || process.env.TEMP}\\a11y-witness\\edge-profile`;
+
+// --app opens a single chromeless window (no tab strip, address bar, toolbar or banners)
+// showing ONLY this URL, so NVDA's browse-mode quick-nav cannot wander out of our document
+// into browser UI (the Root-1 cause: captures that read Edge's image-viewer/"Close banner"
+// chrome or the MSN start page).
+/**
+ * Chromium features that must be off for a capture to describe the PAGE rather than the profile.
+ *
+ * Autofill is the one that cost real evidence. `probeForms` submits forms, Edge offers to remember
+ * what was typed, and the durable profile accumulates it -- so later pages get a suggestion icon
+ * drawn inside recognised inputs, which NVDA announces as an embedded object appended to the field:
+ *
+ *     "Recipient name, edit, \ufffc"
+ *
+ * The rate therefore RISES through a run as the profile learns. Measured across the corpus at 3%, then
+ * 8%, then 31% of affected captures, with 26 good/bad pairs disagreeing about it -- the same page
+ * announcing differently depending on what Edge had memorised from earlier pages.
+ *
+ * These are command-line flags rather than Edge policies ON PURPOSE. The equivalent registry policies
+ * were set by provisioning and had already drifted: StartupBoostEnabled read 1 on two guests and 0 on a
+ * third, and nothing noticed for weeks. A flag lives in git, is applied at every launch, and cannot
+ * differ between guests.
+ */
+/**
+ * Edge's "Magnify image" opens a full-window overlay on **Ctrl pressed twice while the pointer is over
+ * an image** — and guidepup sends Ctrl before EVERY captured action. On gov.uk the overlay took the
+ * foreground and the capture read `"Image Magnify, document"` rather than the page, so the run refused to
+ * report at all.
+ *
+ * **`pointer.mjs` is the fix. This flag is an UNVERIFIED belt beside that brace.** With the pointer parked
+ * at (0,0) no image is ever under it, so the shortcut cannot fire at all — measured: gov.uk went from
+ * three failed attempts and a refusal to a clean 108-announcement capture on the first try. The flag only
+ * matters if the park itself fails, which the capture records as `pointerParkFailed`.
+ *
+ * The name is a GUESS, from Microsoft's documented *enable* flag `--enable-features=msEdgeImageMagnifyUI`;
+ * there is no policy for this feature, only a per-profile settings toggle. An unrecognised
+ * `--disable-features` name is ignored in complete silence, so it is kept for its non-zero chance of
+ * being right at zero runtime cost — not because it is known to work.
+ *
+ * **Do not try to verify it through CDP `SystemInfo.getFeatureState`.** That was built here and removed:
+ * it answers `"Unknown feature"` for `msEdgeImageMagnifyUI`, for `msEdgeWelcomePage` AND for
+ * `AutofillServerCommunication` — the last of which demonstrably works, since suppressing it took the
+ * U+FFFC artefact from 3-31% of affected captures to 0 of 15. The method cannot see the features we set,
+ * so it cannot distinguish "wrong name" from "not queryable", and a diagnostic reporting a working flag
+ * as unknown is worse than none. The only real test is behavioural: park the pointer ON an image with
+ * `A11Y_POINTER_AT` and see whether the overlay appears.
+ */
+export const MAGNIFY_FEATURE = "msEdgeImageMagnifyUI";
+
+export const SUPPRESSED_FEATURES = [
+  "msEdgeWelcomePage",
+  "AutofillServerCommunication",       // no server-side suggestions
+  "AutofillAddressProfileSavePrompt",  // never offer to remember a submitted form
+  "AutofillEnableAccountWalletStorage",
+  MAGNIFY_FEATURE,
+];
+
+export function edgeArgs(url) {
+  return [
+    "--no-first-run", "--no-default-browser-check", "--start-maximized",
+    "--disable-session-crashed-bubble",
+    `--disable-features=${SUPPRESSED_FEATURES.join(",")}`,
+    // Belt and braces alongside the feature flags: these are long-standing switches rather than
+    // feature names, so they do not depend on a feature surviving a Chromium rename.
+    "--disable-sync", "--disable-background-networking", "--disable-save-password-bubble",
+    `--user-data-dir=${EDGE_PROFILE_DIR}`, `--app=${url}`,
+  ];
+}
+
+// --- Read-through phase ---------------------------------------------------
+
+// Read the page line by line in document order (browse mode), returning the
+// ordered transcript. Stops at the page bottom (repeated lines), on a wrap-around
+// (a run of already-seen lines), at the step cap, or at the deadline.
+/**
+ * What to do with the phrase just heard: `"keep"` it, `"skip"` it, or a stop reason to end the read.
+ *
+ * Split out of the read loop because that loop was doing two jobs — walking the page, and deciding when
+ * the walk is over — and all the subtlety is in the second. Bottom-of-page, wrap-around and silence
+ * each look like an ordinary line until you count how many times in a row they happen, so the counters
+ * and the rules that read them belong together.
+ *
+ * `tracker` is mutated: it is the running state of one read-through.
+ *
+ * **Silence.** An empty read is unremarkable on its own, so this needs TWO signals before concluding
+ * NVDA is mute: it said nothing at startup (`silentAtStart`) AND nothing substantive has been heard
+ * since. That is the same conjunction `failIfScreenReaderIsMute` uses; this only reaches the conclusion
+ * sooner, which is worth ~2 minutes because a mute NVDA otherwise answers all 150 advances with
+ * silence and then the read is retried in full.
+ *
+ * The care is because the cost of being wrong is asymmetric: stopping early on a page that WAS being
+ * read would silently shorten a transcript, and short transcripts are exactly the evidence rot this
+ * project has been bitten by. When NVDA spoke at startup, the silence branch is unreachable and a
+ * read-through behaves precisely as it did before.
+ */
+export function phraseAction(phrase, heard, tracker) {
+  if (!phrase) {
+    tracker.silentRun += 1;
+    const mute = tracker.silentAtStart && heard <= 1 && tracker.silentRun >= MAX_SILENT_STEPS;
+    return mute ? "silent" : "skip";
+  }
+  tracker.silentRun = 0;
+  if (phrase === tracker.previous) {
+    return ++tracker.repeated >= MAX_REPEATED_PHRASES ? "repeatBottom" : "skip";
+  }
+  tracker.repeated = 0;
+  tracker.previous = phrase;
+  const substantial = phrase.length > SUBSTANTIAL_PHRASE_LEN;
+  if (substantial && tracker.seen.has(phrase)) {
+    return ++tracker.wrapRun >= MAX_WRAP_REPEATS ? "wrap" : "skip";
+  }
+  tracker.wrapRun = 0;
+  if (substantial) tracker.seen.add(phrase);
+  return "keep";
+}
+
+// A mute NVDA cannot be fixed by reading harder -- stop and say so.
+//
+// The diagnostics of a degenerate capture name this exactly: `documentReady ok=true` (NVDA answered
+// with the title), `afterStart lastSpoken=""` (it has said NOTHING), a read-through of one phrase, and
+// then every sweep reporting `found: 0` after three round trips each. NVDA responded to every
+// keystroke and never spoke. The runbook already names this state: "NVDA is running but not speaking".
+//
+// Re-anchoring cannot help, so the retry above wastes a second read, and the sweeps then spend ~45 s
+// producing nothing -- 96 s in total for a capture that was never going to yield evidence.
+//
+// Failing here is also the SAFE way to recover. A failed capture is cleaned up with
+// keepScreenReader:false, which stops NVDA, so the next capture cold-starts a fresh one. That reuses
+// the existing path rather than adding another place that restarts NVDA -- which is precisely the loop
+// that put modal dialogs on the guest desktop and made workers look dead.
+// Exported so the gate itself can be tested. It is a pure function of (transcript, diagnostics), and
+// the fault code it throws is what the worker's retry keys on — a coupling worth a test rather than a
+// comment, because when it breaks nothing fails loudly: the worker just quietly stops recovering.
+export function failIfScreenReaderIsMute(transcript, diag) {
+  if (transcript.length > 1) return;
+  if (!screenReaderWasSilentAtStart(diag)) return; // absent or non-empty: something else is wrong
+  diag.mark("screenReaderMute", { transcript: transcript.length });
+  throw captureFault(FAULT.SCREEN_READER_MUTE,
+    "NVDA is running but not speaking (afterStart.lastSpoken was empty and the read-through " +
+    "produced " + transcript.length + " phrase(s)). Failing now so the worker cold-starts a fresh " +
+    "screen reader for the next capture, rather than sweeping a silent one.");
+}
+
+/** The most recent diagnostic for an event, or undefined. */
+export function lastMark(diag, event) {
+  return diag.entries.filter((entry) => entry.event === event).at(-1);
+}
+
+/**
+ * Did NVDA say nothing at all when it started?
+ *
+ * On its own this is NOT proof of a mute screen reader -- see the warning at the top of this file --
+ * which is why both callers pair it with "and the read-through heard nothing either".
+ */
+export function screenReaderWasSilentAtStart(diag) {
+  return lastMark(diag, "afterStart")?.lastSpoken === "";
+}
+
+// Walk one direction with a single quick-nav command until it runs out, the cap
+// is hit, or the deadline passes, appending each new element to `out`.
+// NVDA prefixes an announcement with the container it just entered, so the SAME element is
+// announced two different ways depending on which direction you reach it from:
+//
+//   "Children's story time, heading, level 3"
+//   "main landmark, Children's story time, heading, level 3"
+//
+// A raw prefix key treats those as two elements. It shows up as a phantom extra heading --
+// harmless to the assertions, but it is noise in the evidence, and it got worse once the
+// sweep stopped starting from a fixed position. Strip a leading container announcement before
+// keying.
+// The separator before the role may be a COMMA, not just a space. NVDA announces both shapes:
+//
+//   "main landmark, Children's story time, heading, level 3"      <- space
+//   "Main support article, region, Resetting a password, ..."     <- comma
+//
+// Only the first was matched, so the second survived deduping and the same h2 was recorded twice --
+// three headings on a page with two. Found by the CDP census (sweep 3, page 2), which is exactly the
+// kind of miscount that is invisible without an independent count to compare against.
+export const CONTAINER_PREFIX = /^(?:\w[\w\s'-]*[,\s]\s*)?(?:landmark|region|banner|navigation|main|complementary|content info|form|article),\s*/i;
+
+export const dedupeKey = (phrase) => phrase.replace(CONTAINER_PREFIX, "").slice(0, DEDUPE_KEY_LEN);
+
+/**
+ * Given the speech log and how much of it we had already read, did the last quick-nav jump MOVE, and
+ * if so what was announced?
+ *
+ * Extracted so the rule can be tested without NVDA. The bug it replaces was a reasoning error rather
+ * than a coding one -- "the spoken phrase changed" was treated as proof of movement -- and a reasoning
+ * error is only pinned down by a test that states the intended rule. `sweep-step.test.ts` asserts the
+ * case that used to produce a phantom: NVDA silent, `lastSpokenPhrase` still holding older text.
+ *
+ * @param {{log: string[], seen: number, prev: string}} state
+ * @returns {{phrase?: string, stop?: string, seen: number}} `stop` names WHY, so a diagnostic can
+ *   distinguish "ran out of elements" from "the channel was rebuilt" -- previously both were `break`.
+ */
+export function sweepStepFromSpeech({ log, seen, prev }) {
+  const entries = log ?? [];
+  // Shorter than what we already consumed means the log was cleared under us: a speech-channel
+  // rebuild. Slicing into it would silently invent a delta out of unrelated phrases.
+  if (entries.length < seen) return { stop: "channelReset", seen: entries.length };
+  const spoken = entries.slice(seen).map((phrase) => String(phrase).trim()).filter(Boolean);
+  const advanced = entries.length;
+  // The whole point: no new speech means no movement. This is the branch where the old test lied.
+  if (!spoken.length) return { stop: "silent", seen: advanced };
+  // The LAST entry, which is exactly what lastSpokenPhrase returned -- so a capture in which NVDA
+  // speaks yields byte-identical evidence to before the fix, and 2,122 cached captures stay valid.
+  const phrase = spoken[spoken.length - 1];
+  if (/\bno (next|previous|more)\b/i.test(phrase)) return { stop: "exhausted", seen: advanced };
+  if (phrase === prev) return { stop: "repeat", seen: advanced };
+  return { phrase, seen: advanced };
+}
+
+// A tree ROW as NVDA announces it while focused:
+//   "main, tree view item, focused, selected, expanded, 1 of 1, level 0"
+// An EMPTY tree announces only the container -- "tree view, focused" -- with no item name, which is the
+// signal that a type has no elements. Distinguishing those two is the whole reason this reads the
+// focused item rather than counting: a silent read means "could not tell", not "none".
+export const TREE_ROW_RE = /\btree view item\b/i;
+
+/**
+ * The item name, stripped of the tree-view chrome NVDA appends.
+ *
+ * Position and level are deliberately discarded. The obvious-looking shortcut is to parse the "1 of 1"
+ * suffix as a total, and it is WRONG: the list is HIERARCHICAL (a `<main>` containing a `<form>` reads
+ * "level 0 ... 1 of 1" with the form as a child), so that number counts siblings at one level, not
+ * elements in the document. Reading it as a total silently undercounts every nested structure.
+ */
+export function elementsListRowName(phrase) {
+  const text = String(phrase ?? "").trim();
+  if (!TREE_ROW_RE.test(text)) return null;
+  return text
+    .replace(/,?\s*tree view item\b/i, "")
+    .replace(/,?\s*\b(?:focused|selected|expanded|collapsed)\b/gi, "")
+    .replace(/,?\s*\b\d+ of \d+\b/i, "")
+    .replace(/,?\s*\blevel \d+\b/i, "")
+    .replace(/[\s,]+/g, " ")
+    .trim() || null;
+}
+
+/**
+ * Compare what the sweeps found against what NVDA's Elements List reports.
+ *
+ * Reports; decides nothing. A disagreement is evidence about the CAPTURE, not about the page, and the
+ * layers that gate on evidence must be able to see the difference.
+ *
+ * A count may legitimately be absent on either side — a type the dialog could not be read for, or one
+ * the sweep did not run — so the value type admits `undefined` deliberately. Declaring these as plain
+ * numbers would be a lie about the one input the function exists to handle carefully.
+ *
+ * @param {{sweep: Record<string, number | undefined>, elementsList: Record<string, number | undefined>}} counts
+ */
+export function crossCheckStructure({ sweep, elementsList }) {
+  const disagreements = [];
+  let compared = 0;
+  // Whatever BOTH sides name. Previously this iterated NVDA's five Elements List types, which silently
+  // ignored any type the oracle could speak about but that list cannot -- and the CDP census covers
+  // graphics and links too. Comparing the intersection keeps it honest in both directions.
+  for (const type of Object.keys(sweep ?? {})) {
+    const found = sweep?.[type];
+    const authoritative = elementsList?.[type];
+    // Absent is not a disagreement: a type the dialog could not be read for must not be reported as
+    // a mismatch against a sweep that did run. Only two KNOWN numbers that differ are evidence.
+    if (typeof found !== "number" || typeof authoritative !== "number") continue;
+    compared += 1;
+    if (found !== authoritative) {
+      disagreements.push({
+        type,
+        sweep: found,
+        elementsList: authoritative,
+        // Naming the direction matters: too many is a phantom, too few is a truncation, and they have
+        // different causes and different fixes.
+        kind: found > authoritative ? "phantom" : "truncated",
+      });
+    }
+  }
+  // `compared` is not bookkeeping, it is the difference between "checked and agreed" and "checked
+  // nothing". The first version returned agrees:true when every count was unreadable, so a probe that
+  // read the wrong control and parsed nothing reported AGREES -- a verification that cannot fail,
+  // which is the exact defect this cross-check was built to catch elsewhere.
+  return { agrees: compared > 0 && disagreements.length === 0, compared, disagreements };
+}
