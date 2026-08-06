@@ -1385,14 +1385,23 @@ async function sweepInDirection(cmd, { label, out, seenKeys, onItem, deadline, t
   trips.count += 1;
   let seen = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label).catch(() => [])) || []).length;
   for (let i = 0; i < MAX_SWEEP_STEPS; i++) {
-    if (Date.now() > deadline) break;
+    // Running out of budget and finding nothing more are DIFFERENT observations, and both used to
+    // fall through to `stop: "cap"` below -- so a sweep that never got to ask reported the same
+    // reason as one that walked the whole page. Measured on a rescaled page (40 links, 40 list
+    // items): links came back 27/34/33/26 and lists came back 0 four times out of four, with zero
+    // worker faults. A `lists: 0` that actually means "the budget was already spent by the links
+    // sweep" is the conflation this project forbids -- absence must never be reported as a finding.
+    if (Date.now() > deadline) return { stop: "deadline", steps: i, stopPhrase: prev };
     let step;
     try {
       trips.count += 2;
       await withTimeout(nvda.perform(cmd), NAV_TIMEOUT_MS, label);
       const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label)) || [];
       step = sweepStepFromSpeech({ log, seen, prev });
-    } catch { break; }
+    } catch (error) {
+      // Same asymmetry: a round trip that threw is not evidence the page ran out of elements.
+      return { stop: "error", steps: i, stopPhrase: prev, error: String(error?.message ?? error) };
+    }
     seen = step.seen;
     // `prev` is the phrase that ENDED the sweep, and naming it is what makes a leak legible. A sweep
     // reporting `found=0 stop=repeat` says only "nothing"; the same sweep reporting `stopPhrase: "k"` says
