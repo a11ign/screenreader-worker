@@ -577,26 +577,57 @@ function respondWithDiagnostics(res) {
 /**
  * Read the request, validate it, and hand a well-formed capture on.
  *
- * The `busy` check is FIRST, before the body is even read: NVDA is one machine-wide resource, so a second
- * concurrent capture cannot be queued, only refused. A 429 here that never clears is the "wedged worker" this
- * project spent two days misdiagnosing as a dead machine — see the hard capture timeout for the other half.
+ * NVDA is ONE machine-wide resource, so a second concurrent capture cannot be queued, only refused.
+ *
+ * **`busy` is claimed in the same synchronous step as the check, and that is the whole point.** It used to be
+ * checked here and set later, inside `runCapture` — with the body-read callback in between. Node does not
+ * preempt mid-statement, so a synchronous check-then-set is atomic; a check and a set separated by an `await`
+ * boundary is not. Two requests arriving close together both saw `busy === false`, both read their bodies, and
+ * both drove the same NVDA. That does not fail loudly: it produces two captures interleaved on one screen
+ * reader, which is contaminated evidence rather than an error, and the pool would never notice.
+ *
+ * Reachable in practice even though the pool sends one case per worker: CLAUDE.md records that two shells or
+ * two agents drive this worker, and a `--no-cache` rerun beside a live run is exactly the shape.
+ *
+ * Claiming earlier buys a new hazard, so it is handled: a request that dies before `end` would hold `busy`
+ * forever, which is the "wedged worker" that once cost two days of misdiagnosis. `releaseOnAbandon` covers it.
  */
 function acceptCaptureRequest(req, res) {
   if (busy) return send(res, 429, { error: "a capture is already in progress" });
+  busy = true;
   let body = "";
+  releaseOnAbandon(req);
   req.on("data", (c) => (body += c));
   req.on("end", async () => {
     let parsed;
     try { parsed = JSON.parse(body || "{}"); }
-    catch { return send(res, 400, { error: "invalid JSON body" }); }
-    if (!parsed.url) return send(res, 400, { error: "url is required" });
+    catch { busy = false; return send(res, 400, { error: "invalid JSON body" }); }
+    if (!parsed.url) { busy = false; return send(res, 400, { error: "url is required" }); }
     await runCapture(res, parsed.url, captureOptions(parsed));
   });
 }
 
-/** Drive one capture and answer with it, holding `busy` for exactly as long as NVDA is in use. */
+/**
+ * Release the slot if the request never reaches `end`.
+ *
+ * A client that disconnects mid-body would otherwise leave `busy` set with no capture running and nothing to
+ * time out — a worker that answers /health, reports ready, and 429s every capture forever. That is precisely
+ * the wedge this project misdiagnosed as a dead machine, arrived at from the other direction.
+ */
+function releaseOnAbandon(req) {
+  let finished = false;
+  req.once("end", () => { finished = true; });
+  for (const event of ["aborted", "error", "close"]) {
+    req.once(event, () => {
+      if (finished) return;
+      log(`  capture request ${event} before its body arrived; releasing the slot`);
+      busy = false;
+    });
+  }
+}
+
+/** Drive one capture and answer with it. `busy` was claimed by the caller and is released here. */
 async function runCapture(res, url, opts) {
-  busy = true;
   const startedAt = new Date().toISOString();
   log(`[${startedAt}] capture ${url} (nav=${opts.nav || "object"}, probeForms=${opts.probeForms}, probeFocus=${opts.probeFocus})`);
   try {
