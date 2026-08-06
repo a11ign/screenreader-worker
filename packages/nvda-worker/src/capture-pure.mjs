@@ -10,7 +10,7 @@
  * rather than an unavailable dependency: the job had been red since 1 August, growing from 2 files to 6 as
  * more tests imported `capture-core` for pure logic.
  *
- * Nothing here may import guidepup, and `src/capture/nvda/pure-graph.test.ts` enforces that by walking the
+ * Nothing here may import guidepup, and `./pure-graph.test.ts` enforces that by walking the
  * import graph. `capture-core.mjs` imports these and re-exports them, so every existing caller is unchanged.
  *
  * ## What belongs here
