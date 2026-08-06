@@ -526,84 +526,110 @@ async function readiness() {
   };
 }
 
+/**
+ * The worker's whole HTTP surface: three routes, dispatched here and answered one level down.
+ *
+ * A function that ONLY routes is where a chain of `if`s belongs — the request shape is the thing being
+ * branched on, it happens in exactly one place, and each route is a function so it can do one thing. This IS
+ * the API of the package (`CAPTURE_PROTOCOL_VERSION` versions it, not semver), so keeping the surface readable
+ * at a glance matters more here than anywhere else in the worker.
+ */
 const server = createServer((req, res) => {
-  if (req.method === "GET" && req.url === "/health") {
-    const environment = currentEnvironment();
-    // `ok` is kept for older callers and still means "the HTTP server is answering". `ready` is
-    // the one to dispatch on -- see readiness().
-    return readiness().then((state) => send(res, 200, {
-      ok: true,
-      ready: state.ready,
-      vitals: vitals(),
-      readiness: state,
-      screenReader: environment.screenReader,
-      busy,
-      code: CODE_VERSION,
-      environment,
-    })).catch((e) => send(res, 500, { error: String((e && e.message) || e) }));
-  }
-  // On-demand guest facts. Deliberately not part of /health, which is polled and must stay cheap:
-  // this one walks the Edge profile and shells out to tasklist. See diagnostics.mjs for why it exists
-  // at all -- the guest agent that used to answer these questions cannot be relied on.
-  if (req.method === "GET" && req.url === "/diagnostics") {
-    try {
-      return send(res, 200, {
-        ...guestDiagnostics({ edgeProfile: EDGE_PROFILE_DIR, logPath: LOG_PATH }),
-        screenReaderSettings: screenReaderSettings(),
-      });
-    } catch (e) {
-      return send(res, 500, { error: String((e && e.message) || e) });
-    }
-  }
-  if (req.method === "POST" && req.url === "/capture") {
-    if (busy) return send(res, 429, { error: "a capture is already in progress" });
-    let body = "";
-    req.on("data", (c) => (body += c));
-    req.on("end", async () => {
-      let parsed;
-      try { parsed = JSON.parse(body || "{}"); }
-      catch { return send(res, 400, { error: "invalid JSON body" }); }
-      const { url } = parsed;
-      if (!url) return send(res, 400, { error: "url is required" });
-      const opts = captureOptions(parsed);
-      busy = true;
-      const startedAt = new Date().toISOString();
-      log(`[${startedAt}] capture ${url} (nav=${opts.nav || "object"}, probeForms=${opts.probeForms}, probeFocus=${opts.probeFocus})`);
-      try {
-        const result = await captureWithLocalRecovery(url, opts);
-        const environment = currentEnvironment();
-        const after = (result.diagnostics || []).find((e) => e.event === "afterStart");
-        log(`  -> ${result.transcript.length} phrases; afterStart.lastSpoken=${JSON.stringify(after && after.lastSpoken)}`);
-        if (result.transcript.length === 0) {
-          log("  WARNING: 0 phrases. If afterStart.lastSpoken is empty, NVDA is running but not speaking — restart/reboot the worker.");
-        }
-        worked.captures += 1;
-        send(res, 200, {
-          ...result,
-          screenReader: environment.screenReader,
-          task: opts.task,
-          environment,
-        });
-      } catch (e) {
-        worked.failures += 1;
-        log("  capture failed: " + ((e && e.stack) || e));
-        // `fault` is additive on the wire: an older host ignores it and keeps matching on `error`,
-        // a newer one can classify without parsing prose. See capture-faults.mjs for why that matters.
-        send(res, 500, { error: String((e && e.message) || e), fault: faultCode(e) });
-        // A capture that died may have left NVDA unusable. Stop claiming readiness and try to get
-        // back to it, rather than accepting the next case and failing that one too.
-        // Deliberately NOT re-warmed here. The next capture's startScreenReader probes NVDA and
-        // cold-starts a fresh one if needed, which is the same work at a safer moment; warming now
-        // would restart NVDA while the guest may still have a modal dialog up from the failure.
-        await recoverFromFailure(e);
-      } finally {
-        busy = false;
-      }
-    });
-    return;
-  }
+  if (req.method === "GET" && req.url === "/health") return respondWithHealth(res);
+  if (req.method === "GET" && req.url === "/diagnostics") return respondWithDiagnostics(res);
+  if (req.method === "POST" && req.url === "/capture") return acceptCaptureRequest(req, res);
   send(res, 404, { error: "not found" });
 });
+
+/** Cheap by contract: this is polled, so nothing here may walk a disk or shell out. */
+function respondWithHealth(res) {
+  const environment = currentEnvironment();
+  // `ok` is kept for older callers and still means "the HTTP server is answering". `ready` is
+  // the one to dispatch on -- see readiness().
+  return readiness().then((state) => send(res, 200, {
+    ok: true,
+    ready: state.ready,
+    vitals: vitals(),
+    readiness: state,
+    screenReader: environment.screenReader,
+    busy,
+    code: CODE_VERSION,
+    environment,
+  })).catch((e) => send(res, 500, { error: String((e && e.message) || e) }));
+}
+
+/**
+ * On-demand guest facts. Deliberately NOT part of /health, which is polled and must stay cheap: this one
+ * walks the Edge profile and shells out to tasklist. See diagnostics.mjs for why it exists at all -- the
+ * guest agent that used to answer these questions cannot be relied on.
+ */
+function respondWithDiagnostics(res) {
+  try {
+    return send(res, 200, {
+      ...guestDiagnostics({ edgeProfile: EDGE_PROFILE_DIR, logPath: LOG_PATH }),
+      screenReaderSettings: screenReaderSettings(),
+    });
+  } catch (e) {
+    return send(res, 500, { error: String((e && e.message) || e) });
+  }
+}
+
+/**
+ * Read the request, validate it, and hand a well-formed capture on.
+ *
+ * The `busy` check is FIRST, before the body is even read: NVDA is one machine-wide resource, so a second
+ * concurrent capture cannot be queued, only refused. A 429 here that never clears is the "wedged worker" this
+ * project spent two days misdiagnosing as a dead machine — see the hard capture timeout for the other half.
+ */
+function acceptCaptureRequest(req, res) {
+  if (busy) return send(res, 429, { error: "a capture is already in progress" });
+  let body = "";
+  req.on("data", (c) => (body += c));
+  req.on("end", async () => {
+    let parsed;
+    try { parsed = JSON.parse(body || "{}"); }
+    catch { return send(res, 400, { error: "invalid JSON body" }); }
+    if (!parsed.url) return send(res, 400, { error: "url is required" });
+    await runCapture(res, parsed.url, captureOptions(parsed));
+  });
+}
+
+/** Drive one capture and answer with it, holding `busy` for exactly as long as NVDA is in use. */
+async function runCapture(res, url, opts) {
+  busy = true;
+  const startedAt = new Date().toISOString();
+  log(`[${startedAt}] capture ${url} (nav=${opts.nav || "object"}, probeForms=${opts.probeForms}, probeFocus=${opts.probeFocus})`);
+  try {
+    const result = await captureWithLocalRecovery(url, opts);
+    const environment = currentEnvironment();
+    const after = (result.diagnostics || []).find((e) => e.event === "afterStart");
+    log(`  -> ${result.transcript.length} phrases; afterStart.lastSpoken=${JSON.stringify(after && after.lastSpoken)}`);
+    if (result.transcript.length === 0) {
+      log("  WARNING: 0 phrases. If afterStart.lastSpoken is empty, NVDA is running but not speaking — restart/reboot the worker.");
+    }
+    worked.captures += 1;
+    send(res, 200, {
+      ...result,
+      screenReader: environment.screenReader,
+      task: opts.task,
+      environment,
+    });
+  } catch (e) {
+    worked.failures += 1;
+    log("  capture failed: " + ((e && e.stack) || e));
+    // `fault` is additive on the wire: an older host ignores it and keeps matching on `error`,
+    // a newer one can classify without parsing prose. See capture-faults.mjs for why that matters.
+    send(res, 500, { error: String((e && e.message) || e), fault: faultCode(e) });
+    // A capture that died may have left NVDA unusable. Stop claiming readiness and try to get
+    // back to it, rather than accepting the next case and failing that one too.
+    // Deliberately NOT re-warmed here. The next capture's startScreenReader probes NVDA and
+    // cold-starts a fresh one if needed, which is the same work at a safer moment; warming now
+    // would restart NVDA while the guest may still have a modal dialog up from the failure.
+    await recoverFromFailure(e);
+  } finally {
+    busy = false;
+  }
+}
 
 server.listen(PORT, () => {
   rotateLogIfLarge();

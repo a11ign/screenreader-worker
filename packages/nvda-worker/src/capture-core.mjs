@@ -1062,15 +1062,64 @@ async function navigateByStructureThenAudit(options) {
   return result;
 }
 
+/**
+ * Walk the page by structure and return what NVDA announced, phase by phase.
+ *
+ * Reads as the order the phases must run in, and that order is load-bearing rather than incidental — each
+ * phase below says which cursor state it leaves behind and therefore why it cannot move.
+ */
 async function navigateByStructure({ deadline, diag, probeForms, probeFocus, probeTables, probeElementsList, task }) {
-  const K = nvda.keyboardCommands;
   const interaction = { stateChanges: [], formChanges: [], sweepLog: [] };
-  const onFormField = (phrase) => operateControl(phrase, { probeForms, deadline, interaction, task });
-
   const trips = { count: 0 };
   const structure = {
     headings: [], landmarks: [], formFields: [], graphics: [], links: [], lists: [], tableCells: [],
   };
+  const onFormField = (phrase) => operateControl(phrase, { probeForms, deadline, interaction, task });
+
+  await sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips });
+  if (probeForms) diag.mark("formProbe", { activated: interaction.formChanges.length });
+  const postSubmitFields = await rescanFormFieldsAfterSubmit({ interaction, probeForms, deadline, diag, trips });
+  // ORDER IS LOAD-BEARING from here down. `probeFocusOrder` re-anchors and leaves the cursor in focus mode,
+  // and the Elements List opens a modal dialog leaving the caret somewhere arbitrary — so everything
+  // position-dependent has already run, and these two cannot swap.
+  const focusOrder = probeFocus ? await probeFocusOrder({ deadline, diag }) : [];
+  if (probeElementsList) await crossCheckAgainstElementsList({ structure, deadline, diag });
+
+  const result = {
+    controls: structure.formFields,
+    stateChanges: interaction.stateChanges,
+    formChanges: interaction.formChanges,
+    postSubmitFields,
+    focusOrder,
+    // Named explicitly, because this object is rebuilt from named fields and anything set on `interaction`
+    // but not listed here is SILENTLY DROPPED -- which is how a field a signal reads can go missing with
+    // every check still green. `postSubmitFields` itself was empty on all 2,122 captures for a related
+    // reason. Absent (rather than false) when the submit did not navigate, so "we did not check" and
+    // "it did not navigate" stay distinguishable.
+    ...(interaction.navigatedOnSubmit ? { navigatedOnSubmit: interaction.navigatedOnSubmit } : {}),
+    // Same rule, same reason: absent when no submit happened, so "no submit was probed" cannot be read as
+    // "the page showed nothing after submitting". 3.3.1 depends on telling those apart.
+    ...(interaction.postSubmitNames ? { postSubmitNames: interaction.postSubmitNames } : {}),
+  };
+  diag.mark("interaction", {
+    controls: result.controls.length,
+    stateChanges: result.stateChanges.length,
+    formChanges: result.formChanges.length,
+    postSubmit: postSubmitFields.length,
+    sweepLog: interaction.sweepLog,
+  });
+  return { structure, interaction: result };
+}
+
+/**
+ * Sweep every structural type by quick navigation, filling `structure` in place.
+ *
+ * ONE try/catch around all of them, deliberately: a failure part-way through keeps the types collected so far
+ * and records the fault beside them. An empty field is legitimate evidence here — a page may genuinely have no
+ * landmarks — so discarding the sweeps that DID work would lose real evidence to report a partial fault.
+ */
+async function sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips }) {
+  const K = nvda.keyboardCommands;
   // No anchor here, deliberately. Measured: anchorToTop costs ~3s -- two nvda.press calls at
   // roughly 1.3s each plus the settle -- making it the single largest item in a 13.4s capture,
   // where all six structural sweeps together cost 1.7s.
@@ -1123,8 +1172,17 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   } catch (e) {
     diag.mark("structural", { error: errMsg(e) });
   }
-  if (probeForms) diag.mark("formProbe", { activated: interaction.formChanges.length });
+}
 
+/**
+ * Re-read the form fields after a submit, so their now-persistent state reaches the evidence.
+ *
+ * Returns [] both when nothing was submitted and when a submit found nothing, which is correct: neither case
+ * has post-submit state to judge, and `check-signals` is what decides which cases may legitimately be empty —
+ * that decision needs the case definition, which this layer does not have.
+ */
+async function rescanFormFieldsAfterSubmit({ interaction, probeForms, deadline, diag, trips }) {
+  const K = nvda.keyboardCommands;
   // After a form was submitted in place during the sweep above, re-scan the
   // form fields to capture their now-persistent state. An accessible form marks
   // the invalid field (aria-invalid + an associated error) so it announces
@@ -1162,59 +1220,34 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
       diag.mark("postSubmitFailed", { error: errMsg(e) });
     }
   }
+  return postSubmitFields;
+}
 
-  // Interactive controls = the form-field controls found above; the state and
-  // form changes were captured inline during that sweep.
-  // Last, because it re-anchors and leaves the cursor in focus mode -- anything position
-  // dependent has to have run already.
-  const focusOrder = probeFocus ? await probeFocusOrder({ deadline, diag }) : [];
-  // Last of all, and opt-in: it opens a modal dialog and leaves the caret somewhere arbitrary, so
-  // nothing position-dependent may run after it.
-  if (probeElementsList) {
-    const authoritative = await probeElementsListCounts({ deadline, diag });
-    if (authoritative) {
-      diag.mark("structureCrossCheck", crossCheckStructure({
-        sweep: {
-          heading: structure.headings.length,
-          landmark: structure.landmarks.length,
-          formField: structure.formFields.length,
-        },
-        elementsList: {
-          heading: authoritative.heading,
-          landmark: authoritative.landmark,
-          // NVDA's "Form fields" list ALREADY includes buttons -- measured: a page with one input and
-          // one button reports formField=2 and button=1, the same button in both. Adding them
-          // double-counted it and reported a truncation that was not there.
-          formField: authoritative.formField,
-        },
-      }));
-    }
-  }
-
-  const result = {
-    controls: structure.formFields,
-    stateChanges: interaction.stateChanges,
-    formChanges: interaction.formChanges,
-    postSubmitFields,
-    focusOrder,
-    // Named explicitly, because this object is rebuilt from named fields and anything set on `interaction`
-    // but not listed here is SILENTLY DROPPED -- which is how a field a signal reads can go missing with
-    // every check still green. `postSubmitFields` itself was empty on all 2,122 captures for a related
-    // reason. Absent (rather than false) when the submit did not navigate, so "we did not check" and
-    // "it did not navigate" stay distinguishable.
-    ...(interaction.navigatedOnSubmit ? { navigatedOnSubmit: interaction.navigatedOnSubmit } : {}),
-    // Same rule, same reason: absent when no submit happened, so "no submit was probed" cannot be read as
-    // "the page showed nothing after submitting". 3.3.1 depends on telling those apart.
-    ...(interaction.postSubmitNames ? { postSubmitNames: interaction.postSubmitNames } : {}),
-  };
-  diag.mark("interaction", {
-    controls: result.controls.length,
-    stateChanges: result.stateChanges.length,
-    formChanges: result.formChanges.length,
-    postSubmit: postSubmitFields.length,
-    sweepLog: interaction.sweepLog,
-  });
-  return { structure, interaction: result };
+/**
+ * Compare what the sweeps REACHED against what NVDA's Elements List says the page EXPOSES.
+ *
+ * Records a mark and changes no field. That is the point: the sweep's numbers stay as measured and the
+ * comparison is evidence *about* them, because "quick navigation could not reach it" and "the page does not
+ * have it" are different findings and correcting one with the other would erase the distinction.
+ */
+async function crossCheckAgainstElementsList({ structure, deadline, diag }) {
+  const authoritative = await probeElementsListCounts({ deadline, diag });
+  if (!authoritative) return;
+  diag.mark("structureCrossCheck", crossCheckStructure({
+    sweep: {
+      heading: structure.headings.length,
+      landmark: structure.landmarks.length,
+      formField: structure.formFields.length,
+    },
+    elementsList: {
+      heading: authoritative.heading,
+      landmark: authoritative.landmark,
+      // NVDA's "Form fields" list ALREADY includes buttons -- measured: a page with one input and
+      // one button reports formField=2 and button=1, the same button in both. Adding them
+      // double-counted it and reported a truncation that was not there.
+      formField: authoritative.formField,
+    },
+  }));
 }
 
 // Return NVDA to a known starting point. Per the NVDA user guide: Escape
