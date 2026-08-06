@@ -67,12 +67,18 @@ import { setTimeout as sleep } from "node:timers/promises";
 // ones whose evidence was wrong. `formChanges` entries also gain `kind`, and a submit now records
 // `postSubmitNames`, both of which criteria read.
 // 3 -> 4: speech is settled before an activation's baseline is read, and after the browse-mode Escape.
+// 4 -> 5: the `list` sweep anchors to the top first, so it can find a list the caret is standing
+//   inside. It reported `lists: 0` on every page whose links sit in a `<ul>` -- both directions
+//   `exhausted` with empty phrases, indistinguishable from no list at all. A field that was
+//   systematically empty now populates, so cached captures must not be mixed with new ones: the
+//   worker's code hash is deliberately NOT in the cache key, so without this bump a revert of the
+//   page sizes would silently reuse `lists: 0` evidence alongside fresh `lists: 1` evidence.
 // Protocol 3's corpus carried ONE contaminated record out of ~125 activation captures —
 // `filter-status-silent/bad` recorded `after: "Energy results, document"` instead of the empty delta that
 // is the finding — and that single record was the false negative that made the retrained scorer fail its
 // release gate. A 1-in-125 race cannot be recaptured away, so the fix is the race and the bump is what
 // makes the corpus uniform afterwards.
-export const CAPTURE_PROTOCOL_VERSION = 4;
+export const CAPTURE_PROTOCOL_VERSION = 5;
 
 export { edgeArgs as edgeArgsForTest };
 
@@ -1453,13 +1459,24 @@ async function sweepInDirection(cmd, { label, out, seenKeys, onItem, deadline, t
 const EXTRA_SWEEPS = [
   { key: "graphics", label: "graphic", prev: "moveToPreviousGraphic", next: "moveToNextGraphic" },
   { key: "links", label: "link", prev: "moveToPreviousLink", next: "moveToNextLink" },
-  { key: "lists", label: "list", prev: "moveToPreviousList", next: "moveToNextList" },
+  // `anchorFirst` because a list CONTAINS the things swept before it, and quick-nav cannot find the
+  // container the caret is standing inside. Measured: a page with one `<ul>` of six links reported
+  // `lists: 0` with BOTH directions `exhausted` and both stop phrases empty -- the exact signature of a
+  // type that is absent, on a page where it is present. The link sweep ends on the last link, which is
+  // inside that `<ul>`, so "previous list" finds none before it and "next list" finds none after it.
+  //
+  // This is the cost of `9cabfb4`'s "removed a redundant anchor: 15.8s -> 13.4s". The anchor was not
+  // redundant -- it was load-bearing for any sweep whose elements nest around an earlier sweep's. Only
+  // this one needs it, so the ~3s is paid once rather than before all six.
+  { key: "lists", label: "list", prev: "moveToPreviousList", next: "moveToNextList", anchorFirst: true },
 ];
 
 async function sweepExtraTypes(ctx) {
   const K = nvda.keyboardCommands;
   const found = {};
-  for (const { key, label, prev, next } of EXTRA_SWEEPS) {
+  for (const { key, label, prev, next, anchorFirst } of EXTRA_SWEEPS) {
+    // See EXTRA_SWEEPS: only a sweep whose elements can CONTAIN an earlier sweep's pays for the anchor.
+    if (anchorFirst) await anchorToTop();
     found[key] = await collectByType({ prev: K[prev], next: K[next] }, { ...ctx, label, onItem: null });
   }
   return found;
