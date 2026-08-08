@@ -369,3 +369,51 @@ export async function launchReusable({ exe, args, onEvent = () => {} }) {
   }
   throw new Error(`Edge did not open its DevTools port within ${CDP_READY_TIMEOUT_MS}ms`);
 }
+
+
+/**
+ * Media elements the page declares, for 1.4.2 Audio Control.
+ *
+ * The DOM, not the accessibility tree, and that is not a shortcut: `autoplay` and `muted` are HTML
+ * attributes with no accessibility-tree equivalent, so no screen reader can report them. This is the only
+ * evidence in the pipeline that is not something NVDA said, which its ACT description states plainly.
+ *
+ * Worth the one extra CDP call because 1.4.2 is a NON-INTERFERENCE criterion under WCAG §5.2.5 — it applies
+ * to all content whether or not it is relied upon — and because audio that starts on its own competes with
+ * the synthetic speech a screen-reader user is listening to. It masks the interface rather than merely
+ * annoying.
+ *
+ * Returns null rather than throwing, and null means NOT CHECKED. The rule that reads it makes no claim on
+ * null, so a probe failure can never become a silent pass.
+ */
+export async function mediaCensus() {
+  const EXPRESSION = `Array.from(document.querySelectorAll("audio,video")).slice(0, 20).map((el) => ({
+    tag: el.tagName.toLowerCase(),
+    autoplay: el.autoplay === true,
+    muted: el.muted === true || el.hasAttribute("muted"),
+    controls: el.hasAttribute("controls"),
+    loop: el.hasAttribute("loop"),
+  }))`;
+  try {
+    const target = await pageTarget();
+    const socket = new WebSocket(target.webSocketDebuggerUrl);
+    try {
+      await once(socket, "open", CDP_READY_TIMEOUT_MS);
+      const result = waitForResult(socket, 1, AX_TREE_TIMEOUT_MS);
+      socket.send(JSON.stringify({
+        id: 1,
+        method: "Runtime.evaluate",
+        // `returnByValue` so the result arrives as JSON rather than a remote object handle that would
+        // need a second round trip to read.
+        params: { expression: EXPRESSION, returnByValue: true },
+      }));
+      const value = (await result)?.result?.value;
+      return Array.isArray(value) ? value : null;
+    } finally {
+      try { socket.close(); } catch (error) { void error; }
+    }
+  } catch (error) {
+    void error; // a diagnostic probe must never fail a capture; null reads as "not checked"
+    return null;
+  }
+}

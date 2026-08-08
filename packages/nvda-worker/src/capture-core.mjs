@@ -42,7 +42,7 @@ import {
 import { installSpeechChannelShim } from "./speech-channel.mjs";
 import { parkPointer } from "./pointer.mjs";
 import { browserAlive, currentPageUrl, launchReusable, navigateExisting, reusableArgs,
-  structuralCensus, truncatedAnnouncements } from "./browser-session.mjs";
+  mediaCensus, structuralCensus, truncatedAnnouncements } from "./browser-session.mjs";
 import { connect } from "node:net";
 import { existsSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -278,7 +278,7 @@ async function runCapturePhases(url, opts, diag) {
     silentAtStart: screenReaderWasSilentAtStart(diag),
   });
   failIfScreenReaderIsMute(transcript, diag);
-  const { structure, interaction } = await navigateByStructureThenAudit({
+  const { structure, interaction, media } = await navigateByStructureThenAudit({
     deadline, diag,
     probeForms: !!opts.probeForms, probeFocus: !!opts.probeFocus, probeTables: !!opts.probeTables,
     probeElementsList: !!opts.probeElementsList,
@@ -293,6 +293,9 @@ async function runCapturePhases(url, opts, diag) {
     transcript,
     structure,
     interaction,
+    // 1.4.2 evidence, from the DOM. `null` means the probe did not run and is NOT the same as an empty
+    // array, which means the page declares no media — the rule reading this makes no claim on null.
+    media,
     diagnostics: diag.entries,
   };
 }
@@ -1047,6 +1050,12 @@ async function navigateByStructureThenAudit(options) {
   const result = await navigateByStructure(options);
   const census = await structuralCensus();
   options.diag.mark("structureCensus", census);
+  // 1.4.2 Audio Control, from the DOM. `autoplay` and `muted` have no accessibility-tree equivalent, so
+  // this is the one field here that no screen reader could have produced. Null means the probe did not
+  // run, and the rule reading it makes no claim on null — a probe failure must never become a silent pass.
+  // Assigned onto `result` rather than a new top-level field so it travels with the rest of the evidence.
+  result.media = await mediaCensus();
+  options.diag.mark("mediaCensus", { count: result.media?.length ?? null });
   if (census && !census.error) {
     // A truncated announcement is not a count problem, so the count cross-check cannot see it: the sweep
     // finds the right NUMBER of controls and one of them is named "o". Only the page's real accessible
