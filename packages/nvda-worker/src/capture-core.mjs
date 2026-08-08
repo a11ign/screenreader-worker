@@ -31,9 +31,11 @@ import {
   elementsListRowName,
   failIfScreenReaderIsMute,
   lastMark,
+  DEFAULT_BUDGET_MS,
   MIN_CONTROL_NAME_LEN,
   phraseAction,
   probeKindFor,
+  readThroughDeadline,
   screenReaderWasSilentAtStart,
   sweepStepFromSpeech,
 } from "./capture-pure.mjs";
@@ -104,7 +106,6 @@ const speechChannel = installSpeechChannelShim();
 
 const DEFAULT_STEPS = 150; // read-through line count cap
 const DEFAULT_BROWSER_WAIT_MS = 12_000; // UPPER BOUND on waiting for Edge, not a fixed sleep
-const DEFAULT_BUDGET_MS = 120_000; // overall wall-clock budget for one capture
 // Deadlines for POLLS, not durations to sleep. Named as budgets so the distinction survives: every
 // remaining wait in this file either checks a condition or is the interval between two such checks.
 const NVDA_READY_BUDGET_MS = 3_000;   // how long a cold NVDA gets to answer at all
@@ -983,7 +984,19 @@ async function advanceAndRead(navStrategy) {
 // Only ONE retry: if re-anchoring did not put the caret in the document, something else is wrong and
 // the capture should fail honestly rather than loop.
 async function readWithRetry({ steps, navStrategy, deadline, diag, title, silentAtStart = false }) {
-  const transcript = await readPageInOrder({ steps, navStrategy, deadline, diag, silentAtStart });
+  // The read-through stops EARLY, holding back `POST_READ_RESERVE_MS` for the phases after it.
+  //
+  // Measured on the W3C survey page: the read-through took 61 s of a 120 s budget and the formField sweep
+  // another 43 s, so link, list and postSubmit each returned `deadline` having examined nothing — and
+  // postSubmit is where 3.3.1 and 4.1.3 evidence lives. Sharing one first-come-first-served deadline meant
+  // the phases carrying the criteria this tool uniquely covers were the ones that starved, purely because
+  // they run last.
+  //
+  // Applied HERE rather than at the caller so the retry read below inherits it too. A retry that ignored
+  // the reserve would spend it, which is the same starvation by a different route.
+  const readDeadline = readThroughDeadline(deadline);
+  diag.mark("readBudget", { readDeadlineInMs: readDeadline - Date.now(), reservedMs: deadline - readDeadline });
+  const transcript = await readPageInOrder({ steps, navStrategy, deadline: readDeadline, diag, silentAtStart });
   // ONE phrase means the read never advanced, whatever that phrase was.
   //
   // The first version of this required the phrase to EQUAL the document title, and so it never fired
@@ -1006,7 +1019,7 @@ async function readWithRetry({ steps, navStrategy, deadline, diag, title, silent
 
   diag.mark("readThroughRetry", { reason: "read-through produced one phrase", got: transcript[0] ?? null, title });
   await anchorToTop();
-  const second = await readPageInOrder({ steps, navStrategy, deadline, diag });
+  const second = await readPageInOrder({ steps, navStrategy, deadline: readDeadline, diag });
   diag.mark("readThroughRetry", { recovered: second.length > transcript.length, count: second.length });
   return second.length > transcript.length ? second : transcript;
 }

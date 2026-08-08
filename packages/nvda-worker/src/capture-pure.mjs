@@ -390,3 +390,70 @@ export function probeKindFor(phrase, { probeForms, task }) {
   if (taskNamesControl(announced, task)) return "task";
   return null;
 }
+
+
+/**
+ * The budget ladder, and why these four numbers have to live together.
+ *
+ * A capture nests inside three deadlines: this budget, the worker's hard timeout, and the host's
+ * per-capture timeout. They were defined in three files and nobody checked they were ordered — the budget
+ * was 120 s inside a 240 s hard timeout, so a capture was cut off less than half way to the limit its own
+ * worker tolerated. `budgetLadderIsSound` asserts the ordering, because an inverted ladder does not fail
+ * loudly: it silently truncates evidence and the capture still returns 200.
+ *
+ * MEASURED on the W3C survey page, which is what these values are set from. Startup is NOT charged to the
+ * budget (the deadline is taken after NVDA is up), and the read-through completed naturally:
+ *
+ *   read-through   61 s   89 lines, stopReason `repeatBottom`
+ *   heading+landmark 8 s
+ *   formField      43 s   16 fields, activating controls
+ *   link/list/postSubmit  starved -- all three returned `deadline` having examined nothing
+ *
+ * `postSubmit` is where 3.3.1 and 4.1.3 evidence lives, so the phases carrying the criteria this tool
+ * uniquely covers were the ones that starved. That is an ORDERING accident, not a page problem: the
+ * deadline is shared first-come-first-served and the interaction probes run last.
+ *
+ * Raising the budget is close to free, which is the part that was missed for a long time: a budget is a
+ * CEILING, not a cost. A page that finishes in 12 s still takes 12 s. Only pages that need more are
+ * affected, and those are exactly the pages currently losing evidence.
+ */
+export const DEFAULT_BUDGET_MS = 180_000;
+
+/**
+ * Time held back from the read-through for everything after it.
+ *
+ * The deliberate trade: a truncated read-through loses the TAIL of a linear read, which is the evidence
+ * most likely to repeat what the head already said, and it reports its own `stopReason`. A starved probe
+ * loses 3.3.1 and 4.1.3 entirely, and nothing else in the pipeline can reach them. So when the two compete,
+ * the read-through yields.
+ */
+export const POST_READ_RESERVE_MS = 60_000;
+
+/** What the worker abandons a capture at. The default only; `server.mjs` keeps its env override. */
+export const CAPTURE_HARD_TIMEOUT_DEFAULT_MS = 280_000;
+
+/**
+ * Worst observed time from request to NVDA being ready, which the budget does NOT include but the hard
+ * timeout DOES. Measured at 44 s on a cold start that also restarted NVDA once; 50 s is that plus margin.
+ */
+export const WORST_CASE_STARTUP_MS = 50_000;
+
+/**
+ * When the read-through must stop, leaving the reserve for the phases after it.
+ *
+ * Scales down rather than going negative: a caller passing a small `maxMs` (the tests do) would otherwise
+ * get a deadline in the past and read nothing at all. With little left, the read-through still gets half.
+ */
+export function readThroughDeadline(captureDeadline, now = Date.now()) {
+  const remaining = captureDeadline - now;
+  if (remaining <= 0) return captureDeadline;
+  const reserve = Math.min(POST_READ_RESERVE_MS, Math.floor(remaining / 2));
+  return captureDeadline - reserve;
+}
+
+/** Is the ladder ordered? Exported so a test can assert it rather than a comment claiming it. */
+export function budgetLadderIsSound({ budgetMs, hardTimeoutMs, hostTimeoutMs, startupMs }) {
+  return POST_READ_RESERVE_MS < budgetMs
+    && budgetMs + startupMs < hardTimeoutMs
+    && hardTimeoutMs < hostTimeoutMs;
+}

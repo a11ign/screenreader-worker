@@ -15,6 +15,7 @@ import {
   screenReaderSettings,
   screenReaderReady, shutdownScreenReader, warmUpScreenReader,
 } from "./capture-core.mjs";
+import { CAPTURE_HARD_TIMEOUT_DEFAULT_MS } from "./capture-pure.mjs";
 import { isLocallyRecoverable } from "./worker-recovery.mjs";
 import { codeVersion } from "./code-version.mjs";
 import { faultCode } from "./capture-faults.mjs";
@@ -394,7 +395,10 @@ async function recoverFromFailure(error) {
 // The abandoned capture cannot be killed -- it may still be waiting on NVDA -- so the screen reader
 // is treated as untrustworthy afterwards and the next capture cold-starts one.
 // startFreshScreenReader already knows how to clear a leftover instance out of the way.
-const CAPTURE_HARD_TIMEOUT_MS = Number(process.env.A11Y_CAPTURE_HARD_TIMEOUT_MS || 240_000);
+// Default from the shared budget ladder in `capture-pure.mjs`, so it cannot drift below the capture
+// budget it is supposed to contain — it was 240_000 against a budget of 120_000, and nothing checked.
+const CAPTURE_HARD_TIMEOUT_MS =
+  Number(process.env.A11Y_CAPTURE_HARD_TIMEOUT_MS || CAPTURE_HARD_TIMEOUT_DEFAULT_MS);
 
 // One capture, plus one local recovery if the fault is one this worker can clear.
 //
