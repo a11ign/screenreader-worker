@@ -314,6 +314,11 @@ function send(res, code, obj) {
 // worker whose recoveries climb is degrading even while every capture still succeeds. That is exactly
 // the failure this pool has hidden before.
 const worked = { captures: 0, failures: 0, recoveries: 0 };
+// Consecutive recoveries, reset by any capture that needed none. Total recoveries accumulate
+// legitimately over a long run; a RUN of them is the spiral worth breaking. See the circuit breaker in
+// captureWithLocalRecovery.
+const MAX_CONSECUTIVE_RECOVERIES = 3;
+let consecutiveRecoveries = 0;
 
 const MB = 1024 * 1024;
 
@@ -401,15 +406,34 @@ const CAPTURE_HARD_TIMEOUT_MS = Number(process.env.A11Y_CAPTURE_HARD_TIMEOUT_MS 
 // See worker-recovery.mjs for why this is bounded at one attempt and why the hard timeout is excluded.
 async function captureWithLocalRecovery(url, opts) {
   try {
-    return await withHardTimeout(captureWithNvda(url, opts));
+    const clean = await withHardTimeout(captureWithNvda(url, opts));
+    consecutiveRecoveries = 0;
+    return clean;
   } catch (error) {
     if (!isLocallyRecoverable(error)) throw error;
+    // CIRCUIT BREAKER. Recovering is bounded at one attempt PER CAPTURE, which worker-recovery.mjs
+    // argued was enough not to become the restart loop that once wedged a guest. It is not: per-capture
+    // is unbounded ACROSS captures, so a guest with a high fault rate restarts NVDA again and again.
+    // Observed on a real run -- one guest reached 28 recoveries while its healthy peer sat at 0, and it
+    // put `nvdaHelperRemote (injection_terminate)` on the desktop. A modal dialog BLOCKS INPUT, so the
+    // next capture mutes, which triggers another recovery: the remedy feeding the fault it treats.
+    //
+    // `recoveries` was already counted here and read by nothing. Consecutive, not total: recovering ten
+    // times across two thousand captures is a healthy guest meeting a stochastic fault, while three in a
+    // row is a spiral. Refusing lets the fault surface as a real failure, which is what the run's own
+    // `shouldRetireWorker` needs in order to retire this guest instead of watching it degrade.
+    if (consecutiveRecoveries >= MAX_CONSECUTIVE_RECOVERIES) {
+      log(`  refusing to restart NVDA again: ${consecutiveRecoveries} consecutive recoveries on this guest`);
+      log("  failing the case so the run can retire this worker rather than restarting NVDA in a loop");
+      throw error;
+    }
     log(`  recoverable fault: ${(error && error.message) || error}`);
     log("  retrying once on a fresh screen reader rather than failing the caller's case");
     await recoverFromFailure(error);
     const result = await withHardTimeout(captureWithNvda(url, opts));
     worked.recoveries += 1;
-    log(`  retry succeeded (${worked.recoveries} recovered on this guest)`);
+    consecutiveRecoveries += 1;
+    log(`  retry succeeded (${worked.recoveries} recovered on this guest, ${consecutiveRecoveries} in a row)`);
     return result;
   }
 }
