@@ -17,8 +17,27 @@ import test from "node:test";
 
 import { censusFromAXTree, truncatedAnnouncements } from "./browser-session.mjs";
 
+// A real element always has a backing DOM node, and the census now requires one: a node WITHOUT
+// `backendDOMNodeId` is CSS-generated content, which the oracle must not count. `generated()` below is the
+// other side of that rule. Any positive id will do — the census only asks whether the field is present.
+const DOM_BACKED = 42;
+
 const node = (role: string, name?: string, ignored = false) => ({
   role: { value: role }, name: name === undefined ? undefined : { value: name }, ignored,
+  backendDOMNodeId: DOM_BACKED,
+});
+
+/**
+ * A CSS-generated AX node, in the exact shape captured from the live W3C BAD "after" page.
+ *
+ * Chromium exposes a `list-style-image` bullet as role=image with a NEGATIVE synthetic nodeId, empty
+ * properties and no `backendDOMNodeId`, parented to a `<::marker>` pseudo-element. Nothing about it is
+ * reachable by quick navigation, and it has no text alternative because a bullet does not need one.
+ */
+const generated = (role: string, name = "") => ({
+  // `nodeId` is kept for fidelity to the captured shape; the census never reads it. The ABSENT
+  // `backendDOMNodeId` is what this fixture is really about.
+  nodeId: "-1000000035", role: { value: role }, name: { value: name }, ignored: false, properties: [],
 });
 
 test("counts the landmark roles a screen reader would announce", () => {
@@ -69,8 +88,8 @@ test("a malformed or empty tree yields zeros, not a throw", () => {
   // The oracle must never be the reason a capture fails.
   const empty = { landmark: 0, heading: 0, link: 0, graphicUnnamed: 0, graphic: 0, names: [] };
   assert.deepEqual(censusFromAXTree([]), empty);
-  assert.deepEqual(censusFromAXTree(undefined as never), empty);
-  assert.deepEqual(censusFromAXTree([null, {}] as never), empty);
+  assert.deepEqual(censusFromAXTree(undefined), empty);
+  assert.deepEqual(censusFromAXTree([null, {}]), empty);
 });
 
 /**
@@ -93,10 +112,9 @@ test("names cover roles the COUNTS do not, or the detector cannot see its own ca
   // roles left the real name absent and the detector blind to the only case it exists for. Verified on a
   // guest before this was fixed: names came back as ["Account search"], the h1, with no button name.
   const census = censusFromAXTree([
-    { role: { value: "heading" }, name: { value: "Account search" } },
-    { role: { value: "button" }, name: { value: "Open account search" } },
-    { role: { value: "textbox" }, name: { value: "Hire duration" } },
-  ] as never);
+    node("heading", "Account search"), node("button", "Open account search"),
+    node("textbox", "Hire duration"),
+  ]);
   assert.equal(census.heading, 1);
   assert.deepEqual(census.names, ["Account search", "Open account search", "Hire duration"]);
   assert.equal(truncatedAnnouncements(["o, button"], census.names).length, 1,
@@ -127,7 +145,7 @@ test("an unrelated announcement is not flagged", () => {
 
 test("nothing to compare against yields nothing", () => {
   assert.deepEqual(truncatedAnnouncements(["o, button"], []), []);
-  assert.deepEqual(truncatedAnnouncements(undefined as never, undefined as never), []);
+  assert.deepEqual(truncatedAnnouncements(undefined as never, undefined), []);
 });
 
 test("an image with no accessible name is counted separately, and a decorative one is not", () => {
@@ -140,11 +158,44 @@ test("an image with no accessible name is counted separately, and a decorative o
   // image as ignored, so it must never reach the count. Without that, every well-authored decorative image
   // on the web would become a false 1.1.1.
   const census = censusFromAXTree([
-    { role: { value: "image" }, name: { value: "Acme Widgets company logo" } },
-    { role: { value: "image" }, name: { value: "" } },
-    { role: { value: "img" } },
-    { role: { value: "img" }, ignored: true, name: { value: "" } },
+    node("image", "Acme Widgets company logo"), node("image", ""), node("img"),
+    node("img", "", true),
   ]);
   assert.equal(census.graphic, 3, "the decorative ignored image is not a graphic the user meets");
   assert.equal(census.graphicUnnamed, 2, "two of the three expose no name at all");
+});
+
+test("a CSS list bullet is not an image missing its text alternative", () => {
+  // The false-positive this guard exists for, in the shape measured on the live page. The W3C BAD "after"
+  // pages set `list-style-image`, Chromium exposes each bullet as an unnamed role=image node, and the
+  // census counted two of them — which `addUnnamedGraphics` turns into a 1.1.1 accusation against markup
+  // W3C publishes as fully WCAG 2.0 AA conformant. A bullet has no text alternative because it needs none.
+  //
+  // Note what this was NOT: the page's four decorative `alt=""` images were ignored by Chromium correctly
+  // the whole time. 6 real images plus 2 bullets is the 8 the census reported.
+  const census = censusFromAXTree([
+    node("image", "W3C logo"), node("image", "Web Accessibility Initiative (WAI) logo"),
+    generated("image"), generated("image"),
+  ]);
+  assert.equal(census.graphic, 2, "the bullets are not graphics the user meets");
+  assert.equal(census.graphicUnnamed, 0,
+    "a conformant page must produce NO unnamed graphics — this is an accusation, not a metric");
+});
+
+test("a real image with no name is STILL counted, so the guard cannot hide a finding", () => {
+  // The mirror image, and the one that matters more: a guard that silenced real 1.1.1 failures would be
+  // worse than the false positive it fixes. Measured on the BAD "before" page — the published inaccessible
+  // demo — all 33 unnamed images carry a `backendDOMNodeId`, so none of them is excluded.
+  const census = censusFromAXTree([
+    node("image", ""), node("img"), generated("image"),
+  ]);
+  assert.equal(census.graphicUnnamed, 2, "both DOM-backed nameless images remain findings");
+});
+
+test("generated content still contributes its NAME, because NVDA announces generated text", () => {
+  // Excluded from the COUNTS, not from the names. `::before { content: "New!" }` is spoken, so dropping it
+  // from `names` would blind the truncation detector to a phrase a capture can legitimately contain.
+  const census = censusFromAXTree([generated("image", "New!")]);
+  assert.equal(census.graphic, 0, "still not a counted graphic");
+  assert.deepEqual(census.names, ["New!"], "but the name a screen reader can speak is kept");
 });

@@ -165,6 +165,18 @@ const ROLE_BUCKET = new Map([
  * the caller accumulates. It also put the census over the complexity gate, and the honest fix for that is a
  * named function rather than a bigger limit.
  */
+/**
+ * Is this AX node CSS-generated content rather than an element on the page?
+ *
+ * `Accessibility.getFullAXTree` gives every DOM-backed node a `backendDOMNodeId`; generated content -- a
+ * `<::marker>` bullet, a `::before` with `content:` -- has none, and a negative synthetic `nodeId` instead.
+ * Named because the absent field is a CDP implementation detail and "generated content" is the thing being
+ * decided; `classifyAXNode` explains WHY it must not be counted.
+ */
+function isGeneratedContent(node) {
+  return node.backendDOMNodeId == null;
+}
+
 function classifyAXNode(node) {
   // Ignored nodes are not in the tree a screen reader walks, so counting them would make the oracle demand
   // elements NVDA could never announce -- a guard that cries wolf gets removed, not heeded.
@@ -176,6 +188,28 @@ function classifyAXNode(node) {
   // exposed as one, and NVDA agrees -- named regions are announced ("Latest news, region") while a bare
   // `<section>` is not. Counting them would invent landmarks the page does not have.
   if (bucket === "landmark" && role === "region" && !named) return { named, bucket: null };
+  // GENERATED content is not page content, and a CSS bullet is the case that proves it. Chromium exposes a
+  // `list-style-image` marker as role=image with a NEGATIVE synthetic nodeId, no properties and no
+  // `backendDOMNodeId`, parented to the `<::marker>` pseudo-element. Two of those made this oracle report
+  // two unnamed graphics on the W3C BAD "after" pages -- which W3C publishes as fully WCAG 2.0 AA
+  // conformant -- and `addUnnamedGraphics` turns that count straight into a 1.1.1 accusation.
+  //
+  // Note what this was NOT: the four decorative `alt=""` images on that page were ignored by Chromium
+  // correctly all along, exactly as the comment below says. 6 real images plus 2 bullets is the 8 the
+  // census reported, so the count was never about the `alt=""` images at all.
+  //
+  // Same reasoning as the `ignored` check above: quick navigation cannot visit a bullet, so demanding the
+  // sweep find one makes the oracle cry wolf. Measured over four real pages -- unnamed images fell 2 -> 0
+  // on `after/home`, 2 -> 0 on `after/survey`, and stayed at ALL 33 on `before/home`, the inaccessible
+  // demo, because every real `<img>` carries a `backendDOMNodeId`.
+  //
+  // If some future Chromium omitted that field for real elements the oracle would UNDER-count, losing a
+  // possible finding rather than inventing one. For an accessibility tool that is the correct direction to
+  // fail in, and it is the same tradeoff the scorer's abstention makes.
+  //
+  // Deliberately `bucket: null` rather than `null`: NVDA does announce generated TEXT, and the truncation
+  // detector needs every name a capture can produce.
+  if (isGeneratedContent(node)) return { named, bucket: null };
   return { named, bucket: bucket ?? null };
 }
 
@@ -187,9 +221,12 @@ export function censusFromAXTree(nodes) {
   // Measured on the eval fixtures — tree 2 graphics / sweep 1, tree 1 / sweep 0, tree 3 / sweep 2 — which
   // is three 1.1.1 failures the layer could see and did not.
   //
-  // Safe as a signal precisely because ignored nodes are skipped below: Chromium marks a decorative
-  // `alt=""` image as ignored, so it never reaches this counter. A non-ignored graphic with no name is an
-  // image a screen-reader user meets and cannot identify.
+  // Safe as a signal because of TWO guards in `classifyAXNode`, and removing either one turns this counter
+  // into a false accusation. Ignored nodes are skipped, so Chromium's decorative `alt=""` images never reach
+  // it; GENERATED nodes are skipped, so a CSS `list-style-image` bullet does not either -- that one was
+  // found by this counter reporting two unnamed graphics on a page W3C publishes as fully AA conformant.
+  // What is left is a non-ignored graphic on the page with no name: an image a screen-reader user meets and
+  // cannot identify.
   const census = { landmark: 0, heading: 0, link: 0, graphic: 0, graphicUnnamed: 0, names: [] };
   for (const node of nodes ?? []) {
     const classified = classifyAXNode(node);
