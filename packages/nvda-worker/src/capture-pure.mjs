@@ -25,6 +25,35 @@
  */
 import { captureFault, FAULT } from "./capture-faults.mjs";
 
+export const MIN_CONTROL_NAME_LEN = 3; // shorter is a stray key echo ("f"), not a control name
+
+// Submit-like button names. Used only when probing forms, because activating a
+// submit button has side effects and must be opt-in.
+const SUBMIT_RE = /\b(submit|sign ?up|sign ?in|log ?in|send|search|continue|save|register|join|subscribe|book|reserve|request|hire)\b/i;
+
+// Role/state words to ignore when matching a control's NAME against the task, so
+// a button is only activated when its actual label appears in the user's task.
+const CONTROL_WORDS = new Set([
+  "button", "link", "graphic", "image", "edit", "text", "checkbox", "radio", "combo",
+  "box", "list", "clickable", "menu", "item", "heading", "level", "not", "checked",
+  "pressed", "collapsed", "expanded", "selected", "of", "out",
+]);
+
+/**
+ * Does the control's own NAME appear in the user's task?
+ *
+ * The guard that stops a task-driven activation from pressing an arbitrary button: role and state words
+ * are excluded, so only a real label can match.
+ */
+function taskNamesControl(phrase, task) {
+  if (!task) return false;
+  const taskWords = new Set(task.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+  return phrase
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .some((w) => w.length >= MIN_CONTROL_NAME_LEN && !CONTROL_WORDS.has(w) && taskWords.has(w));
+}
+
 export const MAX_REPEATED_PHRASES = 3; // identical lines in a row => bottom of page
 
 export const MAX_WRAP_REPEATS = 4; // already-seen substantial lines in a row => wrapped around
@@ -325,4 +354,39 @@ export function crossCheckStructure({ sweep, elementsList }) {
   // read the wrong control and parsed nothing reported AGREES -- a verification that cannot fail,
   // which is the exact defect this cross-check was built to catch elsewhere.
   return { agrees: compared > 0 && disagreements.length === 0, compared, disagreements };
+}
+
+/**
+ * WHICH probe an announced control earns — the safety gate on what this tool presses.
+ *
+ * Here rather than in `capture-core` because this is the decision that has to be TESTABLE.
+ * `probe-forms` defaults on in the GitHub Action, so "reviewing a page" now means operating controls on
+ * it, and the question "could this press *Delete account*?" must have an answer that does not require a
+ * Windows VM. `capture-core` imports guidepup, which throws at module load without a screen reader, so
+ * nothing there can be unit-tested at all.
+ *
+ * The rules, in order, and each one is load-bearing:
+ *
+ * 1. A disclosure is activated UNCONDITIONALLY, with no `probeForms` gate, because expanding something
+ *    is side-effect-free — and whether the expanded state is announced at all is 4.1.2.
+ * 2. Everything else needs `probeForms`, and must be a button. Activating a link navigates away.
+ * 3. A submit-like NAME is activated, because an error nobody hears (3.3.1) only exists after a submit.
+ * 4. Any other button only if its name shares a meaningful word with the user's task — so "show only
+ *    bags" presses *Bags* and never *Delete account*. Role and state words are excluded from that match,
+ *    or every button would match a task containing the word "button".
+ *
+ * @param {string} phrase the control as the screen reader announced it
+ * @param {{ probeForms?: boolean, task?: string }} options
+ * @returns {"disclosure" | "submit" | "task" | null}
+ */
+export function probeKindFor(phrase, { probeForms, task }) {
+  // Coerced ONCE. This runs per announced control on every capture, and `taskNamesControl` calls
+  // `.toLowerCase()`, so a non-string reaching that far would throw inside a probe — which this pipeline
+  // records as the page announcing nothing, and that is a real finding's signature.
+  const announced = String(phrase ?? "");
+  if (/\bcollapsed\b/i.test(announced)) return "disclosure";
+  if (!probeForms || !/\bbutton\b/i.test(announced)) return null;
+  if (SUBMIT_RE.test(announced)) return "submit";
+  if (taskNamesControl(announced, task)) return "task";
+  return null;
 }

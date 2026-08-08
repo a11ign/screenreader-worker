@@ -31,7 +31,9 @@ import {
   elementsListRowName,
   failIfScreenReaderIsMute,
   lastMark,
+  MIN_CONTROL_NAME_LEN,
   phraseAction,
+  probeKindFor,
   screenReaderWasSilentAtStart,
   sweepStepFromSpeech,
 } from "./capture-pure.mjs";
@@ -149,20 +151,6 @@ const QUERY_TIMEOUT_MS = 4_000; // reading lastSpokenPhrase / spokenPhraseLog
 const ACT_TIMEOUT_MS = 5_000; // activating a control (Enter)
 
 const MAX_SWEEP_STEPS = 40; // per-direction cap on a quick-nav sweep
-
-const MIN_CONTROL_NAME_LEN = 3; // shorter is a stray key echo ("f"), not a control name
-
-// Submit-like button names. Used only when probing forms, because activating a
-// submit button has side effects and must be opt-in.
-const SUBMIT_RE = /\b(submit|sign ?up|sign ?in|log ?in|send|search|continue|save|register|join|subscribe|book|reserve|request|hire)\b/i;
-
-// Role/state words to ignore when matching a control's NAME against the task, so
-// a button is only activated when its actual label appears in the user's task.
-const CONTROL_WORDS = new Set([
-  "button", "link", "graphic", "image", "edit", "text", "checkbox", "radio", "combo",
-  "box", "list", "clickable", "menu", "item", "heading", "level", "not", "checked",
-  "pressed", "collapsed", "expanded", "selected", "of", "out",
-]);
 
 const errMsg = (e) => (e && e.message) || String(e);
 
@@ -1824,13 +1812,22 @@ async function probeElementsListCounts({ deadline, diag, types = LANDMARKS_ONLY 
 // required: a separate next/previous sweep finds nothing, because after the
 // structural sweep the cursor sits at the end and the only control is the
 // current position, not a next one.
-/** Which probe, if any, this announced control earns. Separated so `operateControl` is one thing. */
+/**
+ * Construct the probe this announced control earns. The DECISION is `probeKindFor` in `capture-pure.mjs`;
+ * this is only the dispatch.
+ *
+ * Split because that decision is the safety gate on what this tool PRESSES, and `probe-forms` now
+ * defaults on in the GitHub Action — so "would this activate somebody's *Delete account* button?" has to
+ * be answerable by a test. It could not be before: `capture-core` imports guidepup, which throws at
+ * module load where no screen reader exists, so no test can import this file (see `pure-graph.test.ts`).
+ */
 function chooseProbe(phrase, ctx) {
-  if (/\bcollapsed\b/i.test(phrase)) return () => probeDisclosure(phrase, ctx);
-  if (!ctx.probeForms || !/\bbutton\b/i.test(phrase)) return null;
-  if (SUBMIT_RE.test(phrase)) return () => probeFormSubmit(phrase, ctx);
-  if (taskNamesControl(phrase, ctx.task)) return () => probeTaskButton(phrase, ctx);
-  return null;
+  switch (probeKindFor(phrase, ctx)) {
+    case "disclosure": return () => probeDisclosure(phrase, ctx);
+    case "submit": return () => probeFormSubmit(phrase, ctx);
+    case "task": return () => probeTaskButton(phrase, ctx);
+    default: return null;
+  }
 }
 
 /**
@@ -1899,19 +1896,6 @@ async function operateControl(phrase, ctx) {
     // reads new speech as proof of movement, so a stray phrase becomes a phantom element.
     await waitForSpeechQuiet("browseModeSettle");
   }
-}
-
-// True when the control's announced NAME shares a meaningful word with the task,
-// so activating it matches the user's stated intent (e.g. task "show only bags"
-// -> button "Bags"). This guards the task-button probe so it never clicks an
-// unrelated or destructive control: only a button the task actually names.
-function taskNamesControl(phrase, task) {
-  if (!task) return false;
-  const taskWords = new Set(task.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
-  return phrase
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .some((w) => w.length >= MIN_CONTROL_NAME_LEN && !CONTROL_WORDS.has(w) && taskWords.has(w));
 }
 
 // Activate a disclosure (safe — it just toggles visibility) and record the state it
