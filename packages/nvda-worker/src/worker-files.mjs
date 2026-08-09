@@ -22,6 +22,7 @@ export const WORKER_FILES = [
   "browser-profile.mjs",
   "nvda-logging.mjs",
   "speech-channel.mjs",
+  "desktop-dialogs.mjs",
   "windows-trim.mjs",
   "browser-session.mjs",
   "pointer.mjs",

@@ -18,6 +18,7 @@ import {
 import { CAPTURE_HARD_TIMEOUT_DEFAULT_MS } from "./capture-pure.mjs";
 import { isLocallyRecoverable } from "./worker-recovery.mjs";
 import { codeVersion } from "./code-version.mjs";
+import { listBlockingDialogs, dismissBlockingDialogs } from "./desktop-dialogs.mjs";
 import { faultCode } from "./capture-faults.mjs";
 import { edgePolicy, guestDiagnostics, processCounts, screenReaderState, treeSize } from "./diagnostics.mjs";
 import { killStrayBrowsers, pruneEdgeProfile, reportBrowserPolicyDrift } from "./browser-profile.mjs";
@@ -515,8 +516,34 @@ function warmUpOnceIfNeeded() {
     .catch((e) => log("warm-up threw: " + e.message));
 }
 
+/**
+ * The last observed state of the desktop, sampled in the BACKGROUND.
+ *
+ * `/health` is polled by `worker-ctl.sh`, the pool lease and `doctor`, and it must never wait on a child
+ * process — the first version of this called PowerShell from inside the readiness path and `/health` stopped
+ * answering at all, which is the same defect `/diagnostics` has. So a timer samples, and the request only ever
+ * reads memory. `dialogs: null` means "not sampled yet", which is deliberately NOT a failure: an unreadable
+ * diagnostic must not take a worker offline, the rule `foregroundLockTimeout` already follows.
+ */
+let dialogCache = { at: 0, dialogs: null };
+const DIALOG_SAMPLE_MS = 30_000;
+
+async function sampleDesktopDialogs() {
+  const dialogs = await listBlockingDialogs((reason) => log(`could not enumerate desktop dialogs: ${reason}`));
+  dialogCache = { at: Date.now(), dialogs };
+  if (dialogs.length) {
+    log(`  desktop is blocked by ${dialogs.length} dialog(s): `
+      + dialogs.map((d) => `${d.title}: ${d.message}`).join(" | "));
+  }
+}
+
+// Sampled rather than polled-on-demand, and unref'd so it can never hold the process open.
+setInterval(() => { void sampleDesktopDialogs(); }, DIALOG_SAMPLE_MS).unref();
+void sampleDesktopDialogs();
+
 async function readiness() {
   warmUpOnceIfNeeded();
+  const dialogs = dialogCache.dialogs;
   const checks = {
     // REPORTED, not gated on. A capture cold-starts NVDA when it has gone, so an idle worker with
     // no NVDA is still able to take work -- and gating on it caused the restart loop above.
@@ -525,6 +552,11 @@ async function readiness() {
     // Applied per session by run-server.cmd. Left non-zero, Edge is refused the foreground and
     // every capture returns 0 phrases with NO error at all -- the worst failure mode we have.
     foregroundLockTimeout: foregroundLockTimeout(),
+    // A modal dialog blocks INPUT, so it blocks every capture — and unlike a slow guest it never clears
+    // itself. Gated on, and it is the only NVDA-adjacent condition that is: the remedy here is closing a
+    // window rather than restarting NVDA, so this cannot rebuild the restart loop the comment below warns
+    // about. `null` until the first sample lands, and null never fails the gate.
+    noBlockingDialog: dialogs === null ? null : dialogs.length === 0,
     warmedUp: warm.ok,
   };
   // What actually PREVENTS a capture.
@@ -542,6 +574,8 @@ async function readiness() {
       // A number: 0 is good, non-zero is bad, null is unreadable and deliberately not a failure
       // (a broken diagnostic must not take a worker offline -- see foregroundLockTimeout()).
       if (name === "foregroundLockTimeout") return typeof value === "number" && value !== 0;
+      // Not sampled yet is not a fault — same reasoning as foregroundLockTimeout's unreadable case.
+      if (name === "noBlockingDialog") return value === false;
       return !value;
     })
     .map(([name]) => name);
@@ -551,7 +585,12 @@ async function readiness() {
     // Not an error when it is merely busy: a worker mid-capture is healthy, just not free.
     // Warm-up trouble is worth surfacing even when it does not block work: a worker capturing
     // without a warm NVDA is slower on its first case, and that is useful to know.
+    // The dialog's own text, because "not ready: noBlockingDialog" would name the check and not the fault.
+    // The specimen this was built for said "Couldn't terminate existing NVDA process ... Access is denied",
+    // which tells you an orphaned NVDA is the cause; the check name tells you nothing.
+    blockingDialogs: (dialogs ?? []).map((d) => ({ title: d.title, message: d.message })),
     reason: failed.length ? `not ready: ${failed.join(", ")}`
+      + (dialogs?.length ? ` — desktop blocked by: ${dialogs.map((d) => d.message || d.title).join(" / ")}` : "")
       : busy ? "busy with a capture"
         : warm.ok ? null : `ready, but not warmed up (${warm.error})`,
   };
@@ -567,10 +606,35 @@ async function readiness() {
  */
 const server = createServer((req, res) => {
   if (req.method === "GET" && req.url === "/health") return respondWithHealth(res);
+  if (req.method === "GET" && req.url === "/progress") return respondWithProgress(res);
   if (req.method === "GET" && req.url === "/diagnostics") return respondWithDiagnostics(res);
   if (req.method === "POST" && req.url === "/capture") return acceptCaptureRequest(req, res);
   send(res, 404, { error: "not found" });
 });
+
+/**
+ * What is the running capture doing RIGHT NOW? Cheap by contract, like `/health`.
+ *
+ * Deliberately NOT part of `/diagnostics`, which walks the Edge profile and shells out to `tasklist` — that
+ * endpoint is expensive enough to be unusable on a loaded guest, which is exactly when you need this. Reading
+ * an array that is already in memory cannot hang, so this answers whenever the event loop turns at all.
+ */
+function respondWithProgress(res) {
+  if (!inFlight) return send(res, 200, { busy, capturing: null });
+  const marks = inFlight.marks;
+  const last = marks.length ? marks[marks.length - 1] : null;
+  send(res, 200, {
+    busy,
+    capturing: inFlight.url,
+    startedAt: inFlight.startedAt,
+    elapsedMs: Date.now() - Date.parse(inFlight.startedAt),
+    // The phase it is IN is the one after the last completed mark, so report the last mark and its age:
+    // a phase that has been current for four minutes is the one that is hanging.
+    lastPhase: last && last.event,
+    lastPhaseAtMs: last && last.atMs,
+    phases: marks.map((m) => ({ event: m.event, atMs: m.atMs })),
+  });
+}
 
 /** Cheap by contract: this is polled, so nothing here may walk a disk or shell out. */
 function respondWithHealth(res) {
@@ -657,12 +721,38 @@ function releaseOnAbandon(req) {
   }
 }
 
+/**
+ * The capture currently running, if any — the live view behind `/progress`.
+ *
+ * A capture is the only long operation this worker performs, and until now it was completely opaque while it
+ * ran: the phase marks existed but were unreachable until the response, so a capture that hung for five
+ * minutes and then died told you only that it had died. Watching a real website fail was what made that
+ * unacceptable — the question "which phase?" had no answer available at any price.
+ */
+let inFlight = null;
+
 /** Drive one capture and answer with it. `busy` was claimed by the caller and is released here. */
 async function runCapture(res, url, opts) {
   const startedAt = new Date().toISOString();
   log(`[${startedAt}] capture ${url} (nav=${opts.nav || "object"}, probeForms=${opts.probeForms}, probeFocus=${opts.probeFocus})`);
+  // Ours, not the capture's, so an abandoned capture cannot take its own evidence down with it, and
+  // `/progress` can read it WHILE the capture runs.
+  const marks = [];
+  inFlight = { url, startedAt, marks };
+  // Clear the desktop BEFORE driving it. A modal dialog left by an earlier failure swallows every keystroke
+  // this capture is about to send, so the capture would run its full budget and be abandoned with no
+  // explanation — which is precisely what happened repeatedly before this existed. Recorded as a mark rather
+  // than done silently, because a remedy that leaves no trace is how a recurring fault stays invisible.
+  const cleared = await dismissBlockingDialogs((reason) => log(`could not dismiss desktop dialogs: ${reason}`));
+  if (cleared.dismissed.length) {
+    log(`  dismissed ${cleared.dismissed.length} blocking dialog(s) before capturing: `
+      + cleared.dismissed.map((d) => `${d.title}: ${d.message}`).join(" | "));
+    marks.push({ event: "desktopDialogsDismissed", atMs: 0, dialogs: cleared.dismissed });
+    // The cached readiness answer is now stale, and the next poll should see a clear desktop.
+    dialogCache = { at: Date.now(), dialogs: [] };
+  }
   try {
-    const result = await captureWithLocalRecovery(url, opts);
+    const result = await captureWithLocalRecovery(url, { ...opts, diagnosticsSink: marks });
     const environment = currentEnvironment();
     const after = (result.diagnostics || []).find((e) => e.event === "afterStart");
     log(`  -> ${result.transcript.length} phrases; afterStart.lastSpoken=${JSON.stringify(after && after.lastSpoken)}`);
@@ -681,7 +771,17 @@ async function runCapture(res, url, opts) {
     log("  capture failed: " + ((e && e.stack) || e));
     // `fault` is additive on the wire: an older host ignores it and keeps matching on `error`,
     // a newer one can classify without parsing prose. See capture-faults.mjs for why that matters.
-    send(res, 500, { error: String((e && e.message) || e), fault: faultCode(e) });
+    // The phases it DID complete, so a caller can see where it stopped. Without this a hung capture
+    // reports only "exceeded the hard timeout", which names the symptom and nothing else — and the marks
+    // that would name the phase were being discarded with the abandoned capture.
+    const reached = marks.length ? marks[marks.length - 1] : null;
+    if (reached) log(`  reached phase '${reached.event}' at ${reached.atMs}ms, ${marks.length} mark(s)`);
+    send(res, 500, {
+      error: String((e && e.message) || e),
+      fault: faultCode(e),
+      diagnostics: marks,
+      reachedPhase: reached && reached.event,
+    });
     // A capture that died may have left NVDA unusable. Stop claiming readiness and try to get
     // back to it, rather than accepting the next case and failing that one too.
     // Deliberately NOT re-warmed here. The next capture's startScreenReader probes NVDA and

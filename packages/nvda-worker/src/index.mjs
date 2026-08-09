@@ -13,5 +13,9 @@
  * `server.mjs` BINDS A PORT — it calls `server.listen()` at module scope.
  */
 export { captureWithNvda, CAPTURE_PROTOCOL_VERSION } from "./capture-core.mjs";
+// Exported for HTTP CLIENTS, not for capture. A client that waits LESS than the worker's own bound gives up
+// before the worker can answer, and replaces a diagnosed failure with "fetch failed" — which is what the CLI
+// did on the first real website it was pointed at.
+export { CAPTURE_HARD_TIMEOUT_DEFAULT_MS } from "./capture-pure.mjs";
 export { codeVersion, workerSourceDir } from "./code-version.mjs";
 export { WORKER_FILES } from "./worker-files.mjs";

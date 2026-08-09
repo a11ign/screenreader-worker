@@ -165,8 +165,12 @@ const withTimeout = (promise, ms, label) =>
 
 // A diagnostics recorder: every phase appends a timestamped entry rather than
 // swallowing errors, so an empty capture can be explained after the fact.
-function createDiagnostics() {
-  const entries = [];
+function createDiagnostics(sink) {
+  // `sink` lets the CALLER own the array. A capture abandoned by the hard timeout never returns, so every
+  // phase mark it recorded died with it — which is why "the capture hung" could not be narrowed to a phase
+  // on the first real website this was pointed at. The server passes an array in, keeps a reference, and can
+  // report how far the capture got even when the capture itself never comes back.
+  const entries = sink ?? [];
   const startedAt = Date.now();
   const mark = (event, info = {}) => entries.push({ event, atMs: Date.now() - startedAt, ...info });
   return { entries, mark };
@@ -181,7 +185,7 @@ function createDiagnostics() {
  *   diagnostics:object[]}>}
  */
 export async function captureWithNvda(url, opts = {}) {
-  const diag = createDiagnostics();
+  const diag = createDiagnostics(opts.diagnosticsSink);
   const reuseBrowser = reuseBrowserFor(opts);
   const browser = await openPage(url, diag, reuseBrowser);
   let succeeded = false;
