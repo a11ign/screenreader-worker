@@ -273,6 +273,9 @@ async function runCapturePhases(url, opts, diag) {
   // I first blamed this on reusing NVDA between captures. It was not: the same loss happens
   // with reuse off. Both changes landed in one run, and the phrase COUNT was unchanged, so
   // neither the benchmark nor capture-check saw it.
+  // Rebuild the buffer BEFORE anchoring, so Ctrl+Home lands in the new document rather than moving to the
+  // top of the previous one — which is what made the fault produce a first line from the page before.
+  await refreshBrowseBuffer(diag);
   await anchorToTop();
   await recordStartupHealth(diag);
   const transcript = await readWithRetry({
@@ -377,7 +380,20 @@ let browserCaptures = 0;
  * Three cases, in cost order: navigate a browser that is already up (~0 s), start a reusable one
  * (a cold start, paid once per worker rather than once per capture), or the original one-shot launch.
  */
+/**
+ * Did this capture navigate an ALREADY-OPEN window, rather than launch a fresh browser?
+ *
+ * The distinction is the whole of the stale-buffer fault. A freshly launched Edge has no previous document,
+ * so NVDA's browse-mode buffer can only be the one we asked for. A reused window has a LIVE buffer for the
+ * page before it, and rebuilding that buffer is asynchronous — so there is a window in which NVDA reports
+ * the new document's title (which comes from the focus object, and updates on navigation) while its buffer
+ * still holds the old document's content. That is exactly what was observed: correct title, previous page's
+ * text, one phrase kept over 40 advances.
+ */
+let navigatedExistingWindow = false;
+
 async function openPage(url, diag, reuse = REUSE_BROWSER) {
+  navigatedExistingWindow = false;
   if (!reuse) return launchBrowser(url, diag);
   if (reusableBrowser && browserCaptures >= MAX_CAPTURES_PER_BROWSER) {
     diag.mark("browserRecycle", { after: browserCaptures });
@@ -389,6 +405,12 @@ async function openPage(url, diag, reuse = REUSE_BROWSER) {
     try {
       await navigateExisting(url);
       browserCaptures += 1;
+      // NVDA's virtual buffer belongs to the window, not the navigation: re-pointing an existing window
+      // over CDP does not rebuild it, so the buffer can still hold the PREVIOUS page while the document
+      // title is already the new one. `refreshBrowseBuffer` needs to know it must ask NVDA to re-read,
+      // and this assignment is the only thing that tells it. It was missing once, which made the whole
+      // remedy dead code that no test and no type-check could see -- the mark it emits is the proof.
+      navigatedExistingWindow = true;
       diag.mark("browserReused", { url, captures: browserCaptures });
       return reusableBrowser;
     } catch (error) {
@@ -477,6 +499,45 @@ async function focusBrowserWindow(maxWaitMs, diag) {
 // Deliberately does NOT throw when the title never arrives: not every page has a title,
 // and the caller (and the dataset capture step) verify content independently. Recording
 // documentReady:false makes the cause visible instead of leaving a mystery blank capture.
+/**
+ * Force NVDA to rebuild its browse-mode buffer for the document actually loaded.
+ *
+ * Only after navigating an ALREADY-OPEN window, because that is the only case where a live buffer for a
+ * different page can exist. This ELIMINATES the stale-buffer state rather than detecting it, which matters
+ * because detecting it is what failed: `waitForDocument` gates on NVDA's reported TITLE, and the title comes
+ * from the focus object and updates the moment Edge navigates. A correct title is not evidence of a correct
+ * buffer — and the gate does not even compare that title to the page requested, so any non-blank title
+ * passes.
+ *
+ * That gate was written for the LAUNCH path, where a fresh Edge process means there is no previous buffer to
+ * be stale, so the title arriving IS the document arriving. Browser reuse was added later and turned on by
+ * default, introducing a state the gate structurally cannot distinguish. Same shape as the three defects
+ * CLAUDE.md records: a remedy correct at one call site, never revisited when the behaviour reached another.
+ *
+ * `NVDA+F5` is NVDA's own "refresh browse mode document". `perform` rather than `press`, unlike the Escape
+ * remedy, because this command needs the NVDA modifier and only `perform` can send it. A failure is recorded
+ * rather than thrown: a refresh that did not happen must not fail a capture that may be perfectly fine.
+ */
+async function refreshBrowseBuffer(diag) {
+  // Always mark, even when there is nothing to do. A silent skip and a silent success are the same
+  // absence in the evidence, and that is how this remedy sat here as dead code: the mark was inside the
+  // guard, so "the flag was false" was indistinguishable from "the refresh never ran at all".
+  if (!navigatedExistingWindow) {
+    diag.mark("browseBufferFresh", { reason: "a new window was launched, so NVDA built its buffer here" });
+    return;
+  }
+  try {
+    await withTimeout(
+      nvda.perform(nvda.keyboardCommands.refreshBrowseDocument), NAV_TIMEOUT_MS, "refreshBrowseDocument");
+    // The rebuild announces the document again, and that phrase must land HERE rather than in the
+    // read-through, where `sweepStepFromSpeech` would read new speech as proof of movement.
+    await waitForSpeechQuiet("browseRefreshSettle");
+    diag.mark("browseBufferRefreshed", { reason: "navigated an already-open window" });
+  } catch (error) {
+    diag.mark("browseBufferRefreshFailed", { error: errMsg(error) });
+  }
+}
+
 async function waitForDocument(diag) {
   for (let attempt = 1; attempt <= READY_ATTEMPTS; attempt++) {
     const title = await reportedTitle(diag);
