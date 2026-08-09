@@ -182,7 +182,8 @@ function createDiagnostics() {
  */
 export async function captureWithNvda(url, opts = {}) {
   const diag = createDiagnostics();
-  const browser = await openPage(url, diag);
+  const reuseBrowser = reuseBrowserFor(opts);
+  const browser = await openPage(url, diag, reuseBrowser);
   let succeeded = false;
   try {
     const result = await runCapturePhases(url, opts, diag);
@@ -209,7 +210,9 @@ export async function captureWithNvda(url, opts = {}) {
     // On failure the screen reader is NOT kept, whatever the reuse setting says: a capture that
     // died mid-flight can leave NVDA running but unresponsive, and reusing that is how one bad
     // capture poisons every capture after it.
-    await stopAndCleanup(diag, browser, { keepScreenReader: !!opts.reuseScreenReader && succeeded })
+    await stopAndCleanup(diag, browser, {
+      keepScreenReader: !!opts.reuseScreenReader && succeeded, reuseBrowser,
+    })
       .catch((e) => diag.mark("cleanupFailed", { error: errMsg(e) }));
   }
 }
@@ -336,6 +339,20 @@ const EDGE_EXES = [
 const REUSE_BROWSER = process.env.A11Y_REUSE_BROWSER !== "0";
 
 /**
+ * Is the browser reused for THIS capture?
+ *
+ * Per-request, mirroring `reuseScreenReader`, because the env variable alone made reuse impossible to
+ * isolate without editing a scheduled task on the guest — and a diagnosis that costs a ceremony is one
+ * nobody performs. It exists for a specific open question: a capture issued after a sequence of others
+ * returned the correct document TITLE and the PREVIOUS page's content, and browser reuse is the first
+ * suspect precisely because it is on by default. See PLAN.md.
+ *
+ * The env variable remains the fleet-wide default; the option overrides it for one capture only.
+ */
+const reuseBrowserFor = (opts) =>
+  typeof opts?.reuseBrowser === "boolean" ? opts.reuseBrowser : REUSE_BROWSER;
+
+/**
  * Recycle the reused browser this often.
  *
  * Reuse trades a cold start for accumulated state, and accumulated state is an evidence risk, not just
@@ -360,8 +377,8 @@ let browserCaptures = 0;
  * Three cases, in cost order: navigate a browser that is already up (~0 s), start a reusable one
  * (a cold start, paid once per worker rather than once per capture), or the original one-shot launch.
  */
-async function openPage(url, diag) {
-  if (!REUSE_BROWSER) return launchBrowser(url, diag);
+async function openPage(url, diag, reuse = REUSE_BROWSER) {
+  if (!reuse) return launchBrowser(url, diag);
   if (reusableBrowser && browserCaptures >= MAX_CAPTURES_PER_BROWSER) {
     diag.mark("browserRecycle", { after: browserCaptures });
     await closeBrowser(diag, reusableBrowser);
@@ -2122,12 +2139,12 @@ async function probeTaskButton(phrase, { interaction }) {
 // --- Teardown phase -------------------------------------------------------
 
 // Stop NVDA and close the browser so the next capture starts fresh.
-async function stopAndCleanup(diag, browser, { keepScreenReader }) {
+async function stopAndCleanup(diag, browser, { keepScreenReader, reuseBrowser = REUSE_BROWSER }) {
   if (!keepScreenReader) await stopScreenReader(diag);
   // Leaving Edge up is the entire point of reuse: closing it here would put the cold start back on
   // every capture. It is still closed on a failed capture (see captureWithNvda's finally) and when the
   // worker shuts down, so a wedged browser is never inherited indefinitely.
-  if (REUSE_BROWSER && browser && browser === reusableBrowser) {
+  if (reuseBrowser && browser && browser === reusableBrowser) {
     diag.mark("browserKeptAlive", {});
     return;
   }

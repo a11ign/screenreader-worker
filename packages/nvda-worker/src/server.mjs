@@ -293,6 +293,9 @@ function captureOptions(parsed) {
     // repeatability pass may require a fresh NVDA lifecycle for every capture. Keep this
     // opt-in at the request boundary so the host's environment cannot be mistaken for the
     // guest's process environment (A11Y_REUSE_NVDA on the host never reaches this process).
+    // Per-request so browser reuse can be ISOLATED without editing the guest's scheduled task. Absent
+    // means the fleet default (`A11Y_REUSE_BROWSER`), so nothing changes for callers that do not send it.
+    reuseBrowser: typeof parsed.reuseBrowser === "boolean" ? parsed.reuseBrowser : undefined,
     reuseScreenReader: typeof parsed.reuseScreenReader === "boolean"
       ? parsed.reuseScreenReader
       : REUSE_NVDA,
