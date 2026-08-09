@@ -177,21 +177,73 @@ const EDGE_EXES = [
   `${process.env.ProgramFiles || "C:\\Program Files"}\\Microsoft\\Edge\\Application\\msedge.exe`,
 ];
 
+/**
+ * BOUNDED, because this is synchronous and `/health` depends on it.
+ *
+ * It had no timeout, and that is why this worker has repeatedly "looked dead": `execFileSync` blocks Node's
+ * event loop for as long as the child runs, `/health` calls this for the Edge and NVDA version strings, and on
+ * a guest where PowerShell was slow the loop stopped turning altogether. The port stayed open and nothing ever
+ * answered — which reads as a hung worker rather than a blocked one, and sent this session chasing guest
+ * memory, the browser and the screen reader in turn.
+ *
+ * Bounded is a mitigation, not the fix; the fix is the memo below, which keeps it off the polled path.
+ */
+const POWERSHELL_VALUE_TIMEOUT_MS = 5_000;
+
 function powershellValue(script) {
   if (process.platform !== "win32") return "unknown";
   try {
     const value = execFileSync("powershell.exe", [
       "-NoProfile", "-NonInteractive", "-Command", script,
-    ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    ], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: POWERSHELL_VALUE_TIMEOUT_MS,
+      windowsHide: true,
+    }).trim();
     return value || "unknown";
   } catch {
+    // "unknown" rather than throwing: a version string we could not read must never take a worker offline.
     return "unknown";
   }
 }
 
+/**
+ * Memoised for the life of the process, because an executable's version cannot change under a running worker.
+ *
+ * The environment cache was 5 seconds, so a polled `/health` re-shelled to PowerShell every 5 seconds to
+ * re-read two version strings that are fixed at boot. That is the real defect: not that the call was slow, but
+ * that a constant was being recomputed on the hottest path the worker has. Edge updating requires a restart
+ * of Edge, and NVDA updating requires provisioning — both of which restart this process.
+ */
+const productVersions = new Map();
+
 function fileProductVersion(path) {
+  if (productVersions.has(path)) return productVersions.get(path);
   const escaped = path.replace(/'/g, "''");
-  return powershellValue(`(Get-Item -LiteralPath '${escaped}').VersionInfo.ProductVersion`);
+  const version = powershellValue(`(Get-Item -LiteralPath '${escaped}').VersionInfo.ProductVersion`);
+  // Only a real answer is memoised. Caching "unknown" forever would make a transient PowerShell failure
+  // permanent for the life of the worker, and the version is reported as evidence.
+  if (version !== "unknown") productVersions.set(path, version);
+  return version;
+}
+
+/**
+ * Memoised, because this WALKS THE DISK and `/health` is polled.
+ *
+ * `currentEnvironment()` re-resolved the NVDA and Edge executables every 5 seconds, and the resolution is a
+ * recursive synchronous directory walk. On a guest whose disk was busy that blocked Node's event loop, so the
+ * worker stopped answering `/health` while remaining perfectly alive — the same shape as the unbounded
+ * `execFileSync` above, from a different syscall. Neither executable moves under a running worker.
+ */
+const foundFiles = new Map();
+
+function findFileMemo(root, wanted) {
+  const key = `${root}\u0000${wanted}`;
+  if (foundFiles.has(key)) return foundFiles.get(key);
+  const found = findFile(root, wanted);
+  // Only a hit is remembered: caching a miss forever would make a worker that started before NVDA was
+  // installed report "unknown" for its whole life.
+  if (found) foundFiles.set(key, found);
+  return found;
 }
 
 function findFile(root, wanted, depth = 0) {
@@ -227,7 +279,7 @@ function packageVersion(name) {
 function runtimeEnvironment() {
   const guidepupRoot = process.env.GUIDEPUP_SCREEN_READERS_PATH ||
     (process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "guidepup") : "");
-  const nvdaPath = findFile(join(guidepupRoot, "nvda"), "nvda.exe");
+  const nvdaPath = findFileMemo(join(guidepupRoot, "nvda"), "nvda.exe");
   const edgePath = EDGE_EXES.find((path) => existsSync(path));
   return {
     measuredAt: new Date().toISOString(),
@@ -526,7 +578,6 @@ function warmUpOnceIfNeeded() {
  * diagnostic must not take a worker offline, the rule `foregroundLockTimeout` already follows.
  */
 let dialogCache = { at: 0, dialogs: null };
-const DIALOG_SAMPLE_MS = 30_000;
 
 async function sampleDesktopDialogs() {
   const dialogs = await listBlockingDialogs((reason) => log(`could not enumerate desktop dialogs: ${reason}`));
@@ -537,8 +588,12 @@ async function sampleDesktopDialogs() {
   }
 }
 
-// Sampled rather than polled-on-demand, and unref'd so it can never hold the process open.
-setInterval(() => { void sampleDesktopDialogs(); }, DIALOG_SAMPLE_MS).unref();
+// NOT on a timer. The first version sampled every 30 s, and on a 3 GB guest that is a PowerShell process
+// compiling C# on a repeating schedule — measured timing out at 8 s, then still at 25 s, on a guest already
+// starved by Edge. A detector that loads the machine it is watching makes the condition it looks for more
+// likely, which is the opposite of a diagnostic. The sample that matters is the one at the START OF A CAPTURE,
+// where a dialog actually blocks work and where the cost is paid once; `/health` reports whatever that last
+// sample saw, and says how old it is rather than pretending to be current.
 void sampleDesktopDialogs();
 
 async function readiness() {
@@ -589,6 +644,10 @@ async function readiness() {
     // The specimen this was built for said "Couldn't terminate existing NVDA process ... Access is denied",
     // which tells you an orphaned NVDA is the cause; the check name tells you nothing.
     blockingDialogs: (dialogs ?? []).map((d) => ({ title: d.title, message: d.message })),
+    // Age, because this is sampled at capture start rather than continuously: "no dialogs, as of 40 minutes
+    // ago" is a different claim from "no dialogs now", and conflating them is how a stale check reads as a
+    // fresh one.
+    dialogsCheckedMsAgo: dialogCache.at ? Date.now() - dialogCache.at : null,
     reason: failed.length ? `not ready: ${failed.join(", ")}`
       + (dialogs?.length ? ` — desktop blocked by: ${dialogs.map((d) => d.message || d.title).join(" / ")}` : "")
       : busy ? "busy with a capture"
@@ -823,11 +882,27 @@ server.listen(PORT, () => {
 // Now the worker forgets the reused NVDA and keeps serving; the next capture cold-starts one.
 const RECOVERABLE = /Cannot connect to NVDA|ECONNREFUSED[\s\S]*6837/i;
 
+/**
+ * Socket errnos that mean "the NVDA speech channel went away", which is EXPECTED and must never be fatal.
+ *
+ * Node's own `error.code`, not prose — the rule `capture-faults.mjs` already establishes for capture faults,
+ * applied here where it was missing. The regex above could not match what actually happens: stopping NVDA
+ * after an abandoned capture resets the TLS socket to NVDA Remote, Node reports `read ECONNRESET` from
+ * `TLSWrap.onStreamRead`, and that stack contains neither "Cannot connect to NVDA" nor the port 6837 the
+ * second branch requires. So the worker exited, and the guest then sat there answering nothing — which is the
+ * "the worker is dead" symptom this project keeps re-diagnosing. It was a text match that could not
+ * discriminate, exactly as the fault-code rule warns.
+ *
+ * A reset socket is never a reason to take a worker out of service: `forgetScreenReader()` drops the stale
+ * handle and the next capture cold-starts a clean NVDA, which is work it was going to do anyway.
+ */
+const RECOVERABLE_SOCKET_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "EPIPE", "ETIMEDOUT"]);
+
 for (const fatal of ["uncaughtException", "unhandledRejection"]) {
   process.on(fatal, (error) => {
     const detail = (error && error.stack) || String(error);
     log(`${fatal}: ${detail}`);
-    if (RECOVERABLE.test(detail)) {
+    if (RECOVERABLE_SOCKET_CODES.has(error?.code) || RECOVERABLE.test(detail)) {
       forgetScreenReader();
       log("NVDA speech channel lost — forgetting it and staying up; the next capture cold-starts NVDA");
       return;

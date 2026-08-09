@@ -35,16 +35,19 @@
  * for diagnosing a wedged worker was unusable precisely when the worker was wedged, and took the worker with
  * it. A detector that can hang is worse than no detector.
  */
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
-const run = promisify(execFile);
+import { powershell as runPowershell, USER32 } from "./powershell.mjs";
 
 /** Standard Windows dialog class. NVDA's error boxes, Edge's prompts and Windows' own alerts all use it. */
 const DIALOG_CLASS = "#32770";
 
-/** Bounded hard: this runs on the capture path, and a detector may never become the thing that hangs. */
-const PS_TIMEOUT_MS = 8_000;
+/**
+ * Generous, because it is measured: the enumeration costs ~2.5 s on an idle guest and consistently exceeded
+ * 8 s on a loaded one — `Add-Type` compiles C#, and the guest is busiest exactly when a dialog is most likely.
+ * At 8 s the detector reported "could not enumerate" on every sample of a busy worker, which is a detector
+ * that switches itself off under load. It is bounded rather than unbounded because it still must never hang,
+ * and it is affordable to wait: the sampler runs on a background timer and the capture-path call happens once.
+ */
+const PS_TIMEOUT_MS = 25_000;
 
 /** Field separator for the PowerShell output. Tab, because dialog text contains almost everything else. */
 const SEP = "\t";
@@ -57,64 +60,37 @@ const SEP = "\t";
  * labels, which is where the message lives.
  */
 const LIST_SCRIPT = `
-$ErrorActionPreference = 'Stop'
-Add-Type @"
-using System;
-using System.Text;
-using System.Runtime.InteropServices;
-public class A11yWin {
-  public delegate bool EnumProc(IntPtr h, IntPtr p);
-  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc f, IntPtr p);
-  [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr h, EnumProc f, IntPtr p);
-  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
-  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
-  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
-}
-"@
-function Get-Text($h) {
-  $b = New-Object System.Text.StringBuilder 1024
-  [A11yWin]::GetWindowText($h, $b, 1024) | Out-Null
-  return $b.ToString()
-}
+${USER32}
 $out = New-Object System.Collections.ArrayList
-$top = [A11yWin+EnumProc]{
+$top = [A11yUser32+EnumProc]{
   param($h, $p)
-  $c = New-Object System.Text.StringBuilder 256
-  [A11yWin]::GetClassName($h, $c, 256) | Out-Null
-  if ($c.ToString() -eq '${DIALOG_CLASS}' -and [A11yWin]::IsWindowVisible($h)) {
+  if ((Get-A11yClass $h) -eq '${DIALOG_CLASS}' -and [A11yUser32]::IsWindowVisible($h)) {
     $parts = New-Object System.Collections.ArrayList
-    $kid = [A11yWin+EnumProc]{
+    $kid = [A11yUser32+EnumProc]{
       param($k, $q)
-      $t = Get-Text $k
+      $t = Get-A11yText $k
       if ($t -and $t.Length -gt 1) { $parts.Add($t) | Out-Null }
       return $true
     }
-    [A11yWin]::EnumChildWindows($h, $kid, [IntPtr]::Zero) | Out-Null
+    [A11yUser32]::EnumChildWindows($h, $kid, [IntPtr]::Zero) | Out-Null
     $msg = ($parts -join ' ') -replace '\\s+', ' '
-    $out.Add(("{0}${SEP}{1}${SEP}{2}" -f $h.ToInt64(), (Get-Text $h), $msg)) | Out-Null
+    $out.Add(("{0}${SEP}{1}${SEP}{2}" -f $h.ToInt64(), (Get-A11yText $h), $msg)) | Out-Null
   }
   return $true
 }
-[A11yWin]::EnumWindows($top, [IntPtr]::Zero) | Out-Null
+[A11yUser32]::EnumWindows($top, [IntPtr]::Zero) | Out-Null
 $out -join "\`n"
 `;
 
 /** WM_CLOSE to each handle. Equivalent to clicking the dialog's X or its default OK button. */
 const closeScript = (handles) => `
-$ErrorActionPreference = 'Stop'
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class A11yClose {
-  [DllImport("user32.dll")] public static extern IntPtr SendMessageTimeout(IntPtr h, uint m, IntPtr w, IntPtr l, uint f, uint t, out IntPtr r);
-}
-"@
+${USER32}
 $closed = 0
 foreach ($h in @(${handles.join(",")})) {
   $r = [IntPtr]::Zero
   # SendMessageTimeout, not SendMessage: a hung dialog would block a plain send forever, and this code runs
   # on the capture path. WM_CLOSE = 0x0010, SMTO_ABORTIFHUNG = 0x0002.
-  [A11yClose]::SendMessageTimeout([IntPtr]$h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero, 0x0002, 2000, [ref]$r) | Out-Null
+  [A11yUser32]::SendMessageTimeout([IntPtr]$h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero, 0x0002, 2000, [ref]$r) | Out-Null
   $closed += 1
 }
 "CLOSED $closed"
@@ -155,17 +131,12 @@ export function parseDialogList(stdout) {
  * ever block the loop.
  */
 async function powershell(script, onError) {
-  try {
-    const { stdout } = await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-      encoding: "utf8", timeout: PS_TIMEOUT_MS, windowsHide: true, maxBuffer: 1024 * 1024,
-    });
-    return stdout;
-  } catch (error) {
-    // Degrade to "nothing found" rather than failing the caller: this is a diagnostic aid, and a capture
-    // must still be attempted on a guest whose window enumeration did not work.
-    onError?.(error instanceof Error ? error.message : String(error));
-    return "";
-  }
+  const result = await runPowershell(script, { timeoutMs: PS_TIMEOUT_MS });
+  if (result.ok) return result.stdout;
+  // Degrade to "nothing found" rather than failing the caller: this is a diagnostic aid, and a capture
+  // must still be attempted on a guest whose window enumeration did not work.
+  onError?.(result.reason);
+  return "";
 }
 
 /**

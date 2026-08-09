@@ -16,6 +16,7 @@
 // captureWithNvda reads as a top-down narrative; each phase below it is one
 // level of abstraction down (the "stepdown rule").
 import { nvda, windowsActivate, windowsQuit } from "@guidepup/guidepup";
+import { focusExistingBrowserWindow } from "./window-focus.mjs";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { captureFault, FAULT } from "./capture-faults.mjs";
@@ -42,7 +43,9 @@ import {
 import { installSpeechChannelShim } from "./speech-channel.mjs";
 import { parkPointer } from "./pointer.mjs";
 import { browserAlive, currentPageUrl, launchReusable, navigateExisting, reusableArgs,
-  mediaCensus, structuralCensus, truncatedAnnouncements } from "./browser-session.mjs";
+  mediaCensus, structuralCensus, truncatedAnnouncements,
+  bringPageToFront,
+} from "./browser-session.mjs";
 import { connect } from "node:net";
 import { existsSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -149,6 +152,59 @@ const ADVANCE_TIMEOUT_MS = 8_000; // moving to the next line/object
 const READ_TIMEOUT_MS = 5_000; // reading the phrase after advancing
 const NAV_TIMEOUT_MS = 6_000; // a quick-nav jump (next heading/landmark/field)
 const QUERY_TIMEOUT_MS = 4_000; // reading lastSpokenPhrase / spokenPhraseLog
+
+/**
+ * Bounds for the guidepup calls that had none.
+ *
+ * Every one of these reaches outside this process — `nvda.*` over a TLS socket to NVDA Remote, `windowsQuit`
+ * through `cscript` and a WMI process scan — and an unbounded await on the outside world is how a capture ran
+ * 342 s past a 280 s budget. Audited as a set rather than one at a time, because fixing them singly is what
+ * made this take a night: each fix moved the hang to the next unbounded call and looked like a new bug.
+ *
+ * Generous rather than tight. A cold NVDA start is ~19 s measured, so 60 s is "something is wrong", not
+ * "the guest is busy" — the deadline must exceed the slowest honest answer or a bound turns a slow success
+ * into a false failure.
+ */
+const NVDA_START_TIMEOUT_MS = 60_000;
+
+/**
+ * NVDA's OWN signals for "the virtual buffer is still building" and "it finished".
+ *
+ * Read out of NVDA's source rather than inferred from behaviour (`source/virtualBuffers/__init__.py`):
+ *
+ *   def _loadProgress(self):
+ *     # Translators: Reported while loading a document.
+ *     ui.message(_("Loading document..."))
+ *
+ *   def _get_isReady(self):
+ *     return bool(self.VBufHandle and not self.isLoading)
+ *
+ * and in `_loadBufferDone`, `ui.message(_("Refreshed"))` followed by `event_treeInterceptor_gainFocus()`.
+ *
+ * Two facts that change what a capture should do. The buffer is filled by a **daemon thread with no timeout**,
+ * so on a large DOM `isLoading` simply stays true for as long as it takes — and NVDA says so out loud after one
+ * second. A blank title during that window is not a broken page, it is "we asked too early", and this project's
+ * own first rule is that those must never be the same observation. Reactivating Edge in that window, which is
+ * what the code did, cannot help: the browser is fine and NVDA is busy.
+ *
+ * **These strings are translated.** The guests run English NVDA, so matching them is sound here and stated as a
+ * limitation rather than pretended away; a non-English guest falls back to the budget, which is why the budget
+ * still exists.
+ */
+const NVDA_LOADING_RE = /loading document/i;
+const NVDA_REFRESHED_RE = /\brefreshed\b/i;
+
+/**
+ * How long a document may take to become readable before we call it a failure.
+ *
+ * Far longer than the old 6 s title timeout, because that number was measuring the wrong thing: it bounded how
+ * long NVDA had to ANSWER, on a page where NVDA had not finished reading the document into its buffer. A real
+ * marketing page exceeded it while working correctly.
+ */
+const BUFFER_READY_BUDGET_MS = 90_000;
+const BUFFER_POLL_MS = 500;
+const NVDA_STOP_TIMEOUT_MS = 20_000;
+const BROWSER_QUIT_TIMEOUT_MS = 20_000;
 const ACT_TIMEOUT_MS = 5_000; // activating a control (Enter)
 
 const MAX_SWEEP_STEPS = 40; // per-direction cap on a quick-nav sweep
@@ -471,27 +527,105 @@ function launchBrowser(url, diag) {
 // window was activated before it existed, and the capture came back as two "blank"
 // phrases with no error anywhere. Waiting for the condition is faster AND correct;
 // browserWaitMs is now the upper bound rather than the wait itself.
+/**
+ * One attempt at guidepup's activate may not exceed this.
+ *
+ * The deadline below bounded the retry LOOP and not the call inside it, so a single `windowsActivate` that
+ * blocked forever meant the deadline was never re-evaluated: measured on a real website, `browserReady` at
+ * 13.9 s and the activation still running at 342 s, against a 280 s hard timeout for the whole capture. A
+ * timeout on a loop is not a timeout on the work it does.
+ */
+const ACTIVATE_ATTEMPT_MS = 20_000;
+
+/** What one reactivation attempt inside `waitForDocument` may cost. It retries, so each try stays short. */
+const REACTIVATE_BUDGET_MS = 25_000;
+
+/**
+ * The cheap focus path gets longer than the default here, and the reason is measured.
+ *
+ * Enumerating windows costs 2.5 s on an idle guest and exceeded 8 s on one loading a heavy real page — the
+ * `Add-Type` compile is the bulk of it. At 8 s it timed out and, worse, consumed nearly the whole focus budget
+ * so guidepup's fallback was left 1 s: two bounded attempts that both failed because the budget was spent
+ * rather than because focusing was impossible.
+ */
+const FAST_FOCUS_MS = 15_000;
+
+/**
+ * Activate Edge, bounded by a deadline, whichever path gets there.
+ *
+ * ONE function, because there were two `windowsActivate` call sites and only one of them was bounded. The
+ * unbounded one — `waitForDocument`'s reactivation, reached only when NVDA cannot name the document — is
+ * exactly where a real website hung for 234 seconds inside a 280-second budget. That is this repo's own
+ * recurring shape: a remedy applied at one call site when the behaviour reaches several, so the remedy now
+ * lives in the only place either caller can use.
+ *
+ * @returns {Promise<{ok: boolean, via: string, error: string, fastReason: string}>}
+ */
+async function activateEdgeWithinDeadline(deadline) {
+  const remaining = () => deadline - Date.now();
+  if (remaining() <= 0) return { ok: false, via: "none", error: "no time left to activate", fastReason: "" };
+
+  // FIRST, because it is the only route that does not enumerate something. One CDP round trip on a socket the
+  // worker already uses, against a window Chromium owns and we just navigated. The two alternatives below both
+  // failed on a heavy real page for the same reason: guidepup's WMI process scan and our own `Add-Type` compile
+  // are both O(how busy the guest is), and the guest is busiest exactly when the page is hardest.
+  const cdp = await bringPageToFront();
+  if (cdp.ok) return { ok: true, via: "cdpBringToFront", error: "", fastReason: "" };
+
+  const fast = await focusExistingBrowserWindow({ timeoutMs: Math.min(FAST_FOCUS_MS, remaining()) });
+  if (fast.found && fast.foreground) return { ok: true, via: "setForegroundWindow", error: "", fastReason: "" };
+  // Found-but-refused and no-window-at-all are different faults: guidepup can launch a browser that is
+  // missing, but it cannot talk Windows into handing over a foreground it has refused.
+  const fastReason = [
+    cdp.reason ? `cdp: ${cdp.reason}` : "",
+    fast.found ? "SetForegroundWindow refused" : (fast.reason ?? "no Chromium window found"),
+  ].filter(Boolean).join("; ");
+
+  if (remaining() <= 0) return { ok: false, via: "fast", error: "deadline spent on the fast path", fastReason };
+  try {
+    await withTimeout(
+      windowsActivate("msedge.exe", "Edge"),
+      Math.min(ACTIVATE_ATTEMPT_MS, Math.max(1_000, remaining())),
+      "windowsActivate",
+    );
+    return { ok: true, via: "guidepup", error: "", fastReason };
+  } catch (e) {
+    return { ok: false, via: "guidepup", error: errMsg(e), fastReason };
+  }
+}
+
+/**
+ * Put the browser in the foreground, cheaply, and never for longer than we are given.
+ *
+ * Two paths, fast one first. `focusExistingBrowserWindow` enumerates windows and calls
+ * `SetForegroundWindow` — no process enumeration, so a page with fifty Edge renderers costs the same as an
+ * empty one. guidepup's `windowsActivate` remains the fallback because it can LAUNCH Edge, which our path
+ * deliberately cannot; see `window-focus.mjs` for why that launching is exactly what made it slow.
+ */
 async function focusBrowserWindow(maxWaitMs, diag) {
   const deadline = Date.now() + maxWaitMs;
   const startedAt = Date.now();
-  let lastError = "";
+  let last = { ok: false, via: "none", error: "never attempted", fastReason: "" };
   while (Date.now() < deadline) {
-    try {
-      await windowsActivate("msedge.exe", "Edge");
+    last = await activateEdgeWithinDeadline(deadline);
+    if (last.ok) {
       // Activating a window makes NVDA announce the new foreground, so "speech has gone quiet" IS the
       // condition that the transition finished -- and it is the screen reader's own view of it, which is
-      // the only view that matters for a screen-reader capture. This was a fixed 800ms; the enclosing
-      // loop was already converted to a condition and this sleep was left behind inside it.
+      // the only view that matters for a screen-reader capture.
       await waitForSpeechQuiet("windowSettle");
-      diag.mark("windowsActivate", { ok: true, waitedMs: Date.now() - startedAt });
+      diag.mark("windowsActivate", { ok: true, via: last.via, waitedMs: Date.now() - startedAt });
       return;
-    } catch (e) {
-      lastError = errMsg(e);
-      await sleep(WINDOW_POLL_MS);
     }
+    await sleep(WINDOW_POLL_MS);
   }
-  diag.mark("windowsActivate", { ok: false, error: lastError, waitedMs: Date.now() - startedAt });
+  // Both reasons on the failure, so "we never found a window" and "Windows would not give us the foreground"
+  // stay distinguishable in the evidence — they have different repairs.
+  diag.mark("windowsActivate", {
+    ok: false, via: last.via, error: last.error, fastReason: last.fastReason,
+    waitedMs: Date.now() - startedAt,
+  });
 }
+
 
 // Ask NVDA what document it is in, and re-focus until it names one.
 //
@@ -533,16 +667,58 @@ async function refreshBrowseBuffer(diag) {
   try {
     await withTimeout(
       nvda.perform(nvda.keyboardCommands.refreshBrowseDocument), NAV_TIMEOUT_MS, "refreshBrowseDocument");
-    // The rebuild announces the document again, and that phrase must land HERE rather than in the
-    // read-through, where `sweepStepFromSpeech` would read new speech as proof of movement.
+    // Wait for NVDA to finish REBUILDING, not merely for speech to pause. `_loadBufferDone` announces
+    // "Refreshed" and then reports the document, and on a large DOM that arrives long after any quiet window
+    // would have expired — the old 5 s settle returned while the buffer was still filling, which is precisely
+    // how a capture came to read a document NVDA had not finished loading.
+    const rebuilt = await waitForBufferReady(diag);
+    // The rebuild's announcement must land HERE rather than in the read-through, where `sweepStepFromSpeech`
+    // would read new speech as proof of movement.
     await waitForSpeechQuiet("browseRefreshSettle");
-    diag.mark("browseBufferRefreshed", { reason: "navigated an already-open window" });
+    diag.mark("browseBufferRefreshed", {
+      reason: "navigated an already-open window", ready: rebuilt.ready, refreshed: rebuilt.refreshed,
+    });
   } catch (error) {
     diag.mark("browseBufferRefreshFailed", { error: errMsg(error) });
   }
 }
 
+/**
+ * Is NVDA still loading the document into its virtual buffer?
+ *
+ * Waits for its progress message to STOP, which is the only signal available from outside: `isReady` is
+ * internal to NVDA and there is no command that reports it. Returns what it observed rather than a boolean, so
+ * "it was never loading" and "it loaded and we saw it finish" stay distinguishable from "we gave up waiting".
+ */
+async function waitForBufferReady(diag, budgetMs = BUFFER_READY_BUDGET_MS) {
+  const startedAt = Date.now();
+  const deadline = startedAt + budgetMs;
+  let sawLoading = false;
+  while (Date.now() < deadline) {
+    const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "bufferLog").catch(() => [])) || [];
+    const recent = log.slice(-6).join(" | ");
+    if (NVDA_LOADING_RE.test(recent)) {
+      sawLoading = true;
+      await sleep(BUFFER_POLL_MS);
+      continue;
+    }
+    // "Refreshed" is `_loadBufferDone`'s completion message on a rebuild, so seeing it is positive proof the
+    // buffer finished rather than an absence of evidence.
+    const refreshed = NVDA_REFRESHED_RE.test(recent);
+    diag.mark("bufferReady", { sawLoading, refreshed, waitedMs: Date.now() - startedAt });
+    return { ready: true, sawLoading, refreshed };
+  }
+  // Still announcing progress when the budget ran out. Reported, never silently treated as an empty page —
+  // "the document never finished loading" and "the page has nothing to say" are different findings.
+  diag.mark("bufferReady", { sawLoading, refreshed: false, timedOut: true, waitedMs: Date.now() - startedAt });
+  return { ready: false, sawLoading, refreshed: false };
+}
+
 async function waitForDocument(diag) {
+  // ONE budget for all the buffer waiting this document gets, not one per attempt. Three attempts at 90 s is
+  // 270 s inside a 280 s capture, so the retry loop could exhaust the whole capture before reading a word —
+  // the same defect as a deadline that bounds a loop rather than the work, committed while fixing it.
+  const bufferDeadline = Date.now() + BUFFER_READY_BUDGET_MS;
   for (let attempt = 1; attempt <= READY_ATTEMPTS; attempt++) {
     const title = await reportedTitle(diag);
     if (title && title.toLowerCase() !== "blank") {
@@ -550,10 +726,20 @@ async function waitForDocument(diag) {
       return title;
     }
     diag.mark("documentReady", { ok: false, title, attempt });
-    try {
-      await windowsActivate("msedge.exe", "Edge");
-    } catch (e) {
-      diag.mark("reactivate", { ok: false, error: errMsg(e), attempt });
+    // FIRST ask whether NVDA is simply still building its buffer. On a large DOM it is, for as long as it
+    // takes, and it says "Loading document..." while it works — so a blank title here means we asked too
+    // early, not that the browser lost focus. Reactivating Edge in that window is useless work that also
+    // steals the foreground from a screen reader mid-read.
+    const buffer = await waitForBufferReady(diag, Math.max(0, bufferDeadline - Date.now()));
+    if (buffer.sawLoading && Date.now() < bufferDeadline) continue;
+
+    // Only now is the browser a plausible culprit. Bounded, via the shared helper: this call used to be a bare
+    // `windowsActivate`, and it is the one that hung a real capture for 234 s, because guidepup spawns
+    // `cscript` with no timeout and its WMI `Win32_Process LIKE '%msedge.exe%'` scan crawls once a heavy page
+    // has Edge running dozens of renderers.
+    const reactivated = await activateEdgeWithinDeadline(Date.now() + REACTIVATE_BUDGET_MS);
+    if (!reactivated.ok) {
+      diag.mark("reactivate", { ok: false, error: reactivated.error, via: reactivated.via, attempt });
     }
     // Same condition as the other windowsActivate site: wait for NVDA to finish announcing the
     // foreground change rather than sleeping a guess before trying again.
@@ -741,16 +927,17 @@ const CAPTURE_OPTIONS = undefined;
 
 async function startFreshScreenReader(diag) {
   try {
-    await nvda.start(CAPTURE_OPTIONS);
+    await withTimeout(nvda.start(CAPTURE_OPTIONS), NVDA_START_TIMEOUT_MS, "nvda.start");
     diag.mark("nvdaStart", { ok: true, reused: false });
     return;
   } catch (e) {
     if (!/already running/i.test(errMsg(e))) throw e;
     diag.mark("nvdaLeftover", { error: errMsg(e) });
   }
-  await nvda.stop().catch((e) => diag.mark("nvdaStopLeftover", { error: errMsg(e) }));
+  await withTimeout(nvda.stop(), NVDA_STOP_TIMEOUT_MS, "nvda.stop")
+      .catch((e) => diag.mark("nvdaStopLeftover", { error: errMsg(e) }));
   await waitForScreenReaderGone(diag);
-  await nvda.start(CAPTURE_OPTIONS);
+  await withTimeout(nvda.start(CAPTURE_OPTIONS), NVDA_START_TIMEOUT_MS, "nvda.start");
   diag.mark("nvdaStart", { ok: true, reused: false, afterClearingLeftover: true });
 }
 
@@ -900,7 +1087,8 @@ async function waitForScreenReaderGone(diag) {
 
 async function stopScreenReader(diag) {
   if (!screenReader.running) return;
-  try { await nvda.stop(); } catch (e) { diag.mark("nvdaStop", { error: errMsg(e) }); }
+  try { await withTimeout(nvda.stop(), NVDA_STOP_TIMEOUT_MS, "nvda.stop"); }
+  catch (e) { diag.mark("nvdaStop", { error: errMsg(e) }); }
   screenReader = { running: false, captures: 0 };
 }
 
@@ -1030,7 +1218,8 @@ async function readPageInOrder({ steps, navStrategy, deadline, diag, silentAtSta
 // or the top line (often the first heading) is skipped.
 async function readFirstItem(diag) {
   try {
-    const item = ((await nvda.itemText()) || "").trim();
+    const item = ((await withTimeout(nvda.itemText(), QUERY_TIMEOUT_MS, "itemText")
+      .catch(() => "")) || "").trim();
     if (item) return item;
 
     // On a loaded Edge document NVDA can know the title while the virtual cursor has not
@@ -2228,7 +2417,10 @@ async function stopAndCleanup(diag, browser, { keepScreenReader, reuseBrowser = 
 async function closeBrowser(diag, browser) {
   const exited = browser ? once(browser, "exit") : null;
   try {
-    await windowsQuit("msedge.exe");
+    // Bounded: `windowsQuit` is the SAME cscript-and-WMI mechanism as `windowsActivate`, which took 342 s on
+    // a loaded guest. This runs on the capture path too — `openPage` closes a browser it is recycling — so an
+    // unbounded quit hangs the capture before it starts, not merely on the way out.
+    await withTimeout(windowsQuit("msedge.exe"), BROWSER_QUIT_TIMEOUT_MS, "windowsQuit");
   } catch (e) {
     diag.mark("browserQuit", { ok: false, error: errMsg(e) });
   }

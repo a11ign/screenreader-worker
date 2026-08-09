@@ -46,7 +46,16 @@ export const CDP_PORT = 9222;
 const AX_TREE_TIMEOUT_MS = 5_000;
 const CDP_HOST = "127.0.0.1";
 
-const CDP_READY_TIMEOUT_MS = 20_000;
+/**
+ * How long Edge gets to open its DevTools port.
+ *
+ * Was 20 s, which is generous for a dataset page and far too tight for a real one: launching with `--app=URL`
+ * starts LOADING the page, so on a heavy site on a 3 GB guest the port opened well past 20 s and the reusable
+ * launch was declared failed — after which the fallback relaunched Edge and paid the cost twice, inside a
+ * 280 s capture budget. Raised deliberately, and it is still a bound: an Edge that has not answered in a
+ * minute is broken, not busy.
+ */
+const CDP_READY_TIMEOUT_MS = 60_000;
 const CDP_POLL_MS = 200;
 const NAVIGATE_TIMEOUT_MS = 30_000;
 
@@ -211,6 +220,47 @@ function classifyAXNode(node) {
   // detector needs every name a capture can produce.
   if (isGeneratedContent(node)) return { named, bucket: null };
   return { named, bucket: bucket ?? null };
+}
+
+/**
+ * Ask Chromium to bring its own window to the front, over the DevTools Protocol.
+ *
+ * This is the cheap answer to the phase that has cost the most: `windowsActivate` was ~10 s of a ~25 s capture
+ * and did not finish at all on a heavy real website. Every other route goes outside the browser and pays for
+ * it — guidepup shells out to `cscript`, which runs a WMI `Win32_Process LIKE '%msedge.exe%'` scan and a nested
+ * PowerShell; a hand-rolled `SetForegroundWindow` still needs an `Add-Type` C# compile, which timed out at 15 s
+ * on a loaded guest. `Page.bringToFront` asks the process that owns the window, through a socket that is
+ * already how this worker drives the browser, and costs one round trip.
+ *
+ * It is not a complete replacement: it cannot LAUNCH a browser, and Windows can still refuse the foreground,
+ * so the callers keep their fallbacks. But it is the right thing to try first, and on the path that matters —
+ * a window that already exists — it is the only route that does not enumerate something.
+ *
+ * @returns {Promise<{ok: boolean, reason?: string}>}
+ */
+export async function bringPageToFront() {
+  let socket;
+  try {
+    const target = await pageTarget();
+    socket = new WebSocket(target.webSocketDebuggerUrl);
+    await once(socket, "open", CDP_READY_TIMEOUT_MS);
+    const done = waitForResult(socket, 1, CDP_READY_TIMEOUT_MS);
+    socket.send(JSON.stringify({ id: 1, method: "Page.bringToFront" }));
+    // A resolved round trip is the confirmation. `waitForResult` rejects on a CDP error frame, so a refusal
+    // arrives here as a throw rather than as a quiet success — the distinction this project keeps having to
+    // relearn about verifications that share a failure mode with the action.
+    await done;
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  } finally {
+    try {
+      socket?.close();
+    } catch (error) {
+      // A socket that will not close is not a failed activation; the request already went.
+      void error;
+    }
+  }
 }
 
 export function censusFromAXTree(nodes) {

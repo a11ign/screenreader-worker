@@ -23,6 +23,8 @@ export const WORKER_FILES = [
   "nvda-logging.mjs",
   "speech-channel.mjs",
   "desktop-dialogs.mjs",
+  "powershell.mjs",
+  "window-focus.mjs",
   "windows-trim.mjs",
   "browser-session.mjs",
   "pointer.mjs",
