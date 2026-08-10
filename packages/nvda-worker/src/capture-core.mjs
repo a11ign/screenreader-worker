@@ -516,16 +516,30 @@ async function openPage(url, diag, reuse = REUSE_BROWSER) {
 // instead of polling the task list. That is what lets the next capture know the previous
 // Edge has genuinely gone -- captures run back to back, and starting one while the last is
 // still tearing down produced exactly the "blank, blank" transcripts we kept retrying past.
+/**
+ * Launch Edge the simple way, WITH the DevTools port.
+ *
+ * The port used to be added only by `reusableArgs`, so any capture that took this path — a failed reusable
+ * launch, or reuse turned off — had no DevTools endpoint at all. Everything CDP-based then failed for a reason
+ * that reads like a timeout and is really an absence: the structural census came back `null` with
+ * "CDP /json/list did not answer", which is true and misleading, because nothing was listening. The census is
+ * the AX tree's own count of links, graphics and controls, and it is the ONLY ground truth this capture has
+ * against which to state how much of the page a sweep actually reached.
+ *
+ * Costs nothing to add. Chromium opens the port and ignores it if nobody connects, and this path only runs
+ * when there is no reusable browser holding the port already.
+ */
 function launchBrowser(url, diag) {
   const exe = EDGE_EXES.find((p) => existsSync(p));
+  const args = reusableArgs(url, edgeArgs(url));
   if (!exe) {
     // Fall back to the old indirect launch rather than failing the capture: an unusual Edge
     // install should cost us the exit event, not the whole run.
     diag.mark("browserLaunched", { url, owned: false, reason: "msedge.exe not found in the standard locations" });
-    spawn("cmd", ["/c", "start", "", "msedge", ...edgeArgs(url)], { detached: true, stdio: "ignore" });
+    spawn("cmd", ["/c", "start", "", "msedge", ...args], { detached: true, stdio: "ignore" });
     return null;
   }
-  const child = spawn(exe, edgeArgs(url), { stdio: "ignore" });
+  const child = spawn(exe, args, { stdio: "ignore" });
   child.on("error", (e) => diag.mark("browserError", { error: errMsg(e) }));
   diag.mark("browserLaunched", { url, owned: true, pid: child.pid });
   return child;
