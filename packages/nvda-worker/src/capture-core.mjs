@@ -1693,6 +1693,9 @@ async function sweepInDirection(cmd, { label, out, seenKeys, onItem, deadline, t
   // `prev` still guards genuine repetition, but starts EMPTY: seeding it across sweeps is what made
   // a stale phrase look like news.
   let prev = "";
+  // Threaded through so the repeat threshold is CONSECUTIVE. Resetting it on every step would make three-in-a-
+  // row unreachable and restore the one-repeat behaviour this replaced.
+  let repeats = 0;
   let recoveries = 0;
   // Read once, then advance as we go, so this costs the same two round trips per step as the
   // lastSpokenPhrase version it replaces. `trips` therefore stays comparable across the change.
@@ -1711,12 +1714,13 @@ async function sweepInDirection(cmd, { label, out, seenKeys, onItem, deadline, t
       trips.count += 2;
       await withTimeout(nvda.perform(cmd), NAV_TIMEOUT_MS, label);
       const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label)) || [];
-      step = sweepStepFromSpeech({ log, seen, prev });
+      step = sweepStepFromSpeech({ log, seen, prev, repeats });
     } catch (error) {
       // Same asymmetry: a round trip that threw is not evidence the page ran out of elements.
       return { stop: "error", steps: i, stopPhrase: prev, error: String(error?.message ?? error) };
     }
     seen = step.seen;
+    repeats = step.repeats ?? 0;
     // `prev` is the phrase that ENDED the sweep, and naming it is what makes a leak legible. A sweep
     // reporting `found=0 stop=repeat` says only "nothing"; the same sweep reporting `stopPhrase: "k"` says
     // NVDA was in focus mode and this pipeline typed its own quick-navigation key into the page. That

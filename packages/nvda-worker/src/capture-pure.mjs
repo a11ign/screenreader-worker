@@ -269,7 +269,24 @@ export const dedupeKey = (phrase) => phrase.replace(CONTAINER_PREFIX, "").slice(
  * @returns {{phrase?: string, stop?: string, seen: number}} `stop` names WHY, so a diagnostic can
  *   distinguish "ran out of elements" from "the channel was rebuilt" -- previously both were `break`.
  */
-export function sweepStepFromSpeech({ log, seen, prev }) {
+/**
+ * An ANTI-SPIN BACKSTOP, not a movement detector — and the distinction is the whole lesson here.
+ *
+ * Identical announcement text cannot tell "the cursor did not move" from "the cursor moved to something
+ * announced the same way", so no threshold makes it a sound movement test. Raising it from 1 to 3 took the
+ * graphic sweep on a real page from 5 items to 59 of 66; the sweeps that still stopped early were the ones
+ * whose page has FOUR consecutive images announced "Joe Kearns Avatar", which is simply what a testimonial
+ * row looks like. Chasing the number is chasing the wrong signal.
+ *
+ * What actually terminates a sweep correctly is NVDA's own answer — "no next graphic" — which the `exhausted`
+ * branch catches, and which four of six sweeps on that page reported. This constant exists only so a stuck or
+ * wrapping cursor cannot burn the whole budget, and `MAX_SWEEP_STEPS` plus the deadline are the real bounds.
+ * So it is set well above any plausible run of identical siblings: a table of twenty identical "Edit" links is
+ * ordinary markup, and losing the rest of the page to it would be the original defect in a slower form.
+ */
+export const MAX_CONSECUTIVE_REPEATS = 25;
+
+export function sweepStepFromSpeech({ log, seen, prev, repeats = 0 }) {
   const entries = log ?? [];
   // Shorter than what we already consumed means the log was cleared under us: a speech-channel
   // rebuild. Slicing into it would silently invent a delta out of unrelated phrases.
@@ -282,8 +299,29 @@ export function sweepStepFromSpeech({ log, seen, prev }) {
   // speaks yields byte-identical evidence to before the fix, and 2,122 cached captures stay valid.
   const phrase = spoken[spoken.length - 1];
   if (/\bno (next|previous|more)\b/i.test(phrase)) return { stop: "exhausted", seen: advanced };
-  if (phrase === prev) return { stop: "repeat", seen: advanced };
-  return { phrase, seen: advanced };
+  // A repeated phrase needs CONSECUTIVE repeats, not one.
+  //
+  // The comment in `sweepInDirection` already named the flaw and then stopped on it anyway: silence is
+  // unambiguous evidence of not moving, but an unchanged phrase is ambiguous between "did not move" and
+  // "moved to something announced the same way". Stopping on the first one resolves that ambiguity the wrong
+  // way, and real pages are full of the second case — a marketing page with 66 images and 47 distinct alt
+  // values has four images all announced "Joe Kearns Avatar". Measured on one: the graphic sweep reported
+  // `stop: repeat` after 5 items on a page whose accessibility tree contains 66 graphics, while the link
+  // sweep, whose text is mostly distinct, reached 52 of 58. The sweep was not running out of page, it was
+  // running into duplicate alt text.
+  //
+  // Note WHY this is safe: `spoken.length` was non-empty to reach this line, so NVDA said something new and
+  // the cursor did move. The silent branch above already catches a cursor that did not, and `exhausted`
+  // catches NVDA's own "no next graphic". This threshold is only for the remaining case — a genuine wrap or
+  // a stuck position that keeps re-announcing — and `seenKeys` in the caller discards the duplicates either
+  // way, so the cost of the extra steps is time, not wrong evidence.
+  if (phrase === prev) {
+    const consecutive = repeats + 1;
+    return consecutive >= MAX_CONSECUTIVE_REPEATS
+      ? { stop: "repeat", seen: advanced, repeats: consecutive }
+      : { phrase, seen: advanced, repeats: consecutive };
+  }
+  return { phrase, seen: advanced, repeats: 0 };
 }
 
 // A tree ROW as NVDA announces it while focused:

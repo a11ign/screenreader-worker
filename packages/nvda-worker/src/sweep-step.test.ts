@@ -17,7 +17,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 
-import { sweepStepFromSpeech } from "./capture-pure.mjs";
+import { sweepStepFromSpeech, MAX_CONSECUTIVE_REPEATS } from "./capture-pure.mjs";
 
 test("silence stops the sweep even when older speech is still in the log", () => {
   // This input is chosen so it DISCRIMINATES. The jump added nothing (log length == seen), and `prev`
@@ -54,8 +54,38 @@ test("NVDA's own end-of-document wording stops the sweep", () => {
   }
 });
 
-test("a genuinely repeated phrase stops the sweep, but a repeat of the SEED does not", () => {
-  assert.equal(sweepStepFromSpeech({ log: ["a", "same"], seen: 1, prev: "same" }).stop, "repeat");
+test("ONE repeated phrase does not stop the sweep — real pages repeat announcements", () => {
+  // This asserted the opposite, and that is the defect. A page with 66 images and 47 distinct alt values has
+  // four announced "Joe Kearns Avatar", so two adjacent identical announcements are ordinary MOVEMENT. The
+  // graphic sweep stopped after 5 items on such a page while its accessibility tree held 66 graphics, and the
+  // link sweep — mostly distinct text — reached 52 of 58. It was running into duplicate alt text, not out of
+  // page. `spoken` being non-empty already proves the cursor moved; the silent branch catches one that did not.
+  const step = sweepStepFromSpeech({ log: ["a", "same"], seen: 1, prev: "same" });
+  assert.equal(step.stop, undefined, "one duplicate announcement must not end the sweep");
+  assert.equal(step.phrase, "same", "and the element must still be collected");
+  assert.equal(step.repeats, 1, "but the run of duplicates is counted");
+});
+
+test("THREE consecutive repeats do stop it — that is a wrap or a stuck cursor", () => {
+  let repeats = 0;
+  let stop;
+  for (let i = 0; i < MAX_CONSECUTIVE_REPEATS; i += 1) {
+    const step = sweepStepFromSpeech({ log: ["a", "same"], seen: 1, prev: "same", repeats });
+    repeats = step.repeats ?? 0;
+    stop = step.stop;
+  }
+  assert.equal(stop, "repeat", `${MAX_CONSECUTIVE_REPEATS} identical announcements in a row is not movement`);
+});
+
+test("a DIFFERENT phrase resets the run, so duplicates must be consecutive", () => {
+  // Without the reset, scattered duplicates across a long sweep would accumulate to the threshold and stop a
+  // sweep that was moving perfectly well — the same over-eager stop in a slower form.
+  const step = sweepStepFromSpeech({ log: ["a", "different"], seen: 1, prev: "same", repeats: 2 });
+  assert.equal(step.stop, undefined);
+  assert.equal(step.repeats, 0, "a new phrase clears the duplicate run");
+});
+
+test("a repeat of the SEED does not end a sweep before it starts", () => {
   // `prev` starts empty precisely so a phrase left over from the previous sweep cannot end this one
   // before it starts -- the mirror of the phantom, which would silently truncate the list instead.
   assert.equal(sweepStepFromSpeech({ log: ["a", "b"], seen: 1, prev: "" }).phrase, "b");
