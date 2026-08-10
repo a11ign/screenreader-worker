@@ -222,6 +222,15 @@ const ACT_TIMEOUT_MS = 5_000; // activating a control (Enter)
  */
 const MAX_SWEEP_STEPS = 250;
 
+/**
+ * How many times a silent sweep step waits for late speech before believing the page ran out.
+ *
+ * Three, and each wait is a speech-quiet poll rather than a fixed sleep. Bounded because a genuinely stuck
+ * sweep must still end, and small because NVDA's real end-of-page answer is spoken ("no next heading") and
+ * arrives on the first read — this only covers speech that was late, not speech that will never come.
+ */
+const SWEEP_SILENT_RETRIES = 3;
+
 const errMsg = (e) => (e && e.message) || String(e);
 
 // Reject if `promise` has not settled within `ms`, naming the step so a timeout
@@ -1675,6 +1684,68 @@ const BROWSE_MODE_REMEDIES = [
     nvda.perform(nvda.keyboardCommands.moveToContainingBrowseModeDocument), NAV_TIMEOUT_MS, "leaveEmbedded"),
 ];
 
+/**
+ * Record one announcement, unless this sweep has already seen it.
+ *
+ * De-duplication is by announcement, so two elements announced identically collapse to one entry. That is the
+ * right behaviour for evidence — the same phrase twice is not two findings — but it means the collected COUNT
+ * is distinct announcements rather than elements reached, which is why the coverage report says so explicitly.
+ */
+async function collectPhrase(phrase, { out, seenKeys, onItem }) {
+  const key = dedupeKey(phrase);
+  if (seenKeys.has(key)) return;
+  seenKeys.add(key);
+  out.push(phrase);
+  if (onItem) await onItem(phrase);
+}
+
+/**
+ * Try the next remedy for a stuck focus mode. Returns false when they are exhausted.
+ *
+ * Extracted alongside `awaitLateSpeech` because `sweepInDirection` had grown past three separate budgets —
+ * complexity, nesting depth and the 90-physical-line limit — and both blocks are "what we do when a step goes
+ * wrong", which is a different level of abstraction from walking the page. The reasoning stays at the call site
+ * where the symptom is visible.
+ */
+async function applyBrowseModeRemedy(attempt) {
+  if (attempt > BROWSE_MODE_REMEDIES.length) return false;
+  await BROWSE_MODE_REMEDIES[attempt - 1]().catch(() => undefined);
+  return true;
+}
+
+/**
+ * A sweep step said nothing. Wait for late speech and re-read, rather than pressing again.
+ *
+ * LATE SPEECH IS NOT THE END OF THE PAGE. `silent` meant "no new speech, therefore the cursor did not move",
+ * and the sweep returned on it immediately. That is sound on an idle guest and wrong on a busy one: NVDA's
+ * speech can arrive after the poll, and the cost is a silently truncated sweep. Measured on a real page,
+ * headings came back 3 when the accessibility tree held 10, with `nextStop: silent` — evidence lost with no
+ * error anywhere, which is the failure this project forbids above all others.
+ *
+ * The decisive argument for retrying is that NVDA ANNOUNCES the real end of the page: a quick-nav with nowhere
+ * to go says "no next heading", which the `exhausted` branch catches. Silence is therefore not the normal
+ * terminus at all, so treating it as one resolves an ambiguity the wrong way — the same mistake as stopping on
+ * a single repeated phrase, made with a different signal.
+ *
+ * Re-READS at the same log offset; it never re-issues the navigation command. Pressing again would advance the
+ * cursor, so a step whose speech was merely late would SKIP an element — a hole in the middle of a sweep, which
+ * is worse than a short one because nothing reports it.
+ *
+ * @returns the recovered step, or a step carrying a `stop` if speech never arrived.
+ */
+async function awaitLateSpeech({ step, prev, repeats, label, trips }) {
+  for (let retry = 0; retry < SWEEP_SILENT_RETRIES; retry += 1) {
+    await waitForSpeechQuiet(`${label}SilentRetry`);
+    trips.count += 1;
+    const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label).catch(() => [])) || [];
+    const again = sweepStepFromSpeech({ log, seen: step.seen, prev, repeats });
+    // Anything other than silence is a real answer — "no next heading", a channel reset — and belongs to the
+    // caller unchanged. Only continued silence is worth another wait.
+    if (again.stop !== "silent") return again;
+  }
+  return { stop: "silent", seen: step.seen, silentRetries: SWEEP_SILENT_RETRIES };
+}
+
 async function sweepInDirection(cmd, { label, out, seenKeys, onItem, deadline, trips }) {
   // Movement is decided by "did NVDA say anything NEW?", never by "did lastSpokenPhrase change?".
   //
@@ -1721,6 +1792,14 @@ async function sweepInDirection(cmd, { label, out, seenKeys, onItem, deadline, t
     }
     seen = step.seen;
     repeats = step.repeats ?? 0;
+    // Late speech is not the end of the page — see `awaitLateSpeech`.
+    if (step.stop === "silent") {
+      const settled = await awaitLateSpeech({ step, prev, repeats, label, trips });
+      if (settled.stop) return { ...settled, steps: i, stopPhrase: prev };
+      seen = settled.seen;
+      repeats = settled.repeats ?? 0;
+      step = settled;
+    }
     // `prev` is the phrase that ENDED the sweep, and naming it is what makes a leak legible. A sweep
     // reporting `found=0 stop=repeat` says only "nothing"; the same sweep reporting `stopPhrase: "k"` says
     // NVDA was in focus mode and this pipeline typed its own quick-navigation key into the page. That
@@ -1738,18 +1817,13 @@ async function sweepInDirection(cmd, { label, out, seenKeys, onItem, deadline, t
     // page has no links" and "we could not ask".
     if (phrase.length < MIN_CONTROL_NAME_LEN) {
       recoveries += 1;
-      if (recoveries > BROWSE_MODE_REMEDIES.length) {
+      if (!(await applyBrowseModeRemedy(recoveries))) {
         return { stop: "focusModeStuck", steps: i, stopPhrase: phrase };
       }
-      await BROWSE_MODE_REMEDIES[recoveries - 1]().catch(() => undefined);
       prev = ""; // the echo is not evidence of position, so it must not count as a repeat
       continue;
     }
-    const key = dedupeKey(phrase);
-    if (seenKeys.has(key)) continue;
-    seenKeys.add(key);
-    out.push(phrase);
-    if (onItem) await onItem(phrase);
+    await collectPhrase(phrase, { out, seenKeys, onItem });
   }
   return { stop: "cap", steps: MAX_SWEEP_STEPS };
 }

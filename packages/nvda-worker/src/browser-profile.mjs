@@ -27,7 +27,8 @@
  * every msedge" safe here and nowhere else.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
@@ -140,14 +141,19 @@ export function prunablePaths({ megabytes, root, exists }) {
  * @param {number | null} megabytes current size, from diagnostics.treeSize
  * @param {(line: string) => void} log
  */
-export function pruneEdgeProfile(root, megabytes, log) {
+export async function pruneEdgeProfile(root, megabytes, log) {
   const targets = prunablePaths({ megabytes, root, exists: existsSync });
   if (!targets.length) return [];
   log(`Edge profile is ${megabytes} MB; dropping ${targets.length} regenerable path(s)`);
   const removed = [];
   for (const path of targets) {
     try {
-      rmSync(path, { recursive: true, force: true });
+      // AWAITED, not `rmSync`. Deleting an Edge profile's caches recursively is tens of thousands of file
+      // operations, and doing it synchronously blocked Node's event loop at boot — so the port was bound and
+      // nothing answered, which reads as a dead worker. Measured on a guest whose profile had grown to 336 MB
+      // through real-page captures: `worker-ctl up` reported NOT ready after 180 s, repeatedly, and the profile
+      // grows with every capture so it got worse each time.
+      await rm(path, { recursive: true, force: true });
       removed.push(path);
     } catch (error) {
       // Locked by something, or already gone. Pruning is best-effort by design: a profile we could not

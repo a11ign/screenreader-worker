@@ -99,7 +99,7 @@ function trimWindowsAtBoot() {
   }
 }
 
-function tidyBrowserAtBoot() {
+async function tidyBrowserAtBoot() {
   try {
     reportBrowserPolicyDrift(edgePolicy(), log);
     // Opt-in, and at boot so it is in force before NVDA warms up. Unset by default: NVDA writes a lot at
@@ -113,7 +113,13 @@ function tidyBrowserAtBoot() {
       }).config ?? []).map((c) => c.path), log);
     const strays = processCounts(["msedge"])?.msedge ?? 0;
     killStrayBrowsers(strays, log);
-    pruneEdgeProfile(EDGE_PROFILE_DIR, treeSize(EDGE_PROFILE_DIR)?.megabytes ?? null, log);
+    // `treeSize` walks up to 200,000 directory entries SYNCHRONOUSLY, and the prune then deletes recursively.
+    // Both ran inside the `listen` callback, so the port was bound while the event loop could not turn — the
+    // worker accepted connections and answered none, which is indistinguishable from a dead one. Yielding
+    // first is what makes the "hygiene is not a precondition for serving" comment below actually true: the
+    // walk still costs what it costs, but `/health` can answer while it happens.
+    await new Promise((resolve) => setImmediate(resolve));
+    await pruneEdgeProfile(EDGE_PROFILE_DIR, treeSize(EDGE_PROFILE_DIR)?.megabytes ?? null, log);
   } catch (error) {
     // Hygiene is not a precondition for serving. Say what went wrong and carry on.
     log(`browser tidy-up at boot failed: ${error.message}`);
@@ -854,9 +860,12 @@ async function runCapture(res, url, opts) {
 
 server.listen(PORT, () => {
   rotateLogIfLarge();
-  tidyBrowserAtBoot();
-  trimWindowsAtBoot();
   log(`a11y-witness NVDA worker listening on :${PORT} (reuse NVDA: ${REUSE_NVDA})`);
+  // Hygiene AFTER the log line and deliberately not awaited, for the same reason warm-up is not: a caller
+  // must see "not ready yet" rather than silence. These used to run BEFORE the log, synchronously, which is
+  // why a guest with a large Edge profile reported NOT ready for three minutes after every deploy.
+  void tidyBrowserAtBoot().catch((e) => log("browser tidy-up threw: " + e.message));
+  trimWindowsAtBoot();
   // Deliberately not awaited: the port must answer immediately so callers can see "not ready yet"
   // instead of a connection refusal, which reads as a dead worker.
   warmUp("worker start").catch((e) => log("warm-up threw: " + e.message));
