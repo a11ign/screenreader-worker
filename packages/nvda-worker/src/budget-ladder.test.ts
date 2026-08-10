@@ -64,12 +64,21 @@ test("startup is counted against the hard timeout, because the budget excludes i
   // visible to the hard timeout. Ignoring it is how a "safe" budget trips the timeout on a cold guest.
   assert.ok(DEFAULT_BUDGET_MS + WORST_CASE_STARTUP_MS < CAPTURE_HARD_TIMEOUT_DEFAULT_MS);
   // And the naive check that omits startup must not be what we rely on: prove it would pass a bad ladder.
+  //
+  // DERIVED from the shipped hard timeout rather than hardcoded. The previous version used a literal 270_000,
+  // chosen to be unsafe against a 280_000 hard timeout — so raising the hard timeout for real pages made that
+  // budget safe and this assertion failed for a reason that had nothing to do with the property under test. A
+  // test whose fixture is pinned to a constant it does not own goes stale the moment the constant moves.
+  const unsafeBudget = CAPTURE_HARD_TIMEOUT_DEFAULT_MS - Math.floor(WORST_CASE_STARTUP_MS / 5);
+  assert.ok(unsafeBudget + WORST_CASE_STARTUP_MS > CAPTURE_HARD_TIMEOUT_DEFAULT_MS
+    && unsafeBudget < CAPTURE_HARD_TIMEOUT_DEFAULT_MS,
+    "the fixture must be a budget that fits WITHOUT startup and overflows WITH it, or it tests nothing");
   assert.ok(budgetLadderIsSound({
-    budgetMs: 270_000, hardTimeoutMs: CAPTURE_HARD_TIMEOUT_DEFAULT_MS, hostTimeoutMs: HOST_TIMEOUT_MS,
+    budgetMs: unsafeBudget, hardTimeoutMs: CAPTURE_HARD_TIMEOUT_DEFAULT_MS, hostTimeoutMs: HOST_TIMEOUT_MS,
     startupMs: 0,
   }), "with startup ignored, an unsafe budget looks fine — which is why startupMs is a parameter");
   assert.equal(budgetLadderIsSound({
-    budgetMs: 270_000, hardTimeoutMs: CAPTURE_HARD_TIMEOUT_DEFAULT_MS, hostTimeoutMs: HOST_TIMEOUT_MS,
+    budgetMs: unsafeBudget, hardTimeoutMs: CAPTURE_HARD_TIMEOUT_DEFAULT_MS, hostTimeoutMs: HOST_TIMEOUT_MS,
     startupMs: WORST_CASE_STARTUP_MS,
   }), false, "and why the real check refuses it");
 });

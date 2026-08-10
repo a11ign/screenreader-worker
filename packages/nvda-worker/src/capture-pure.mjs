@@ -417,7 +417,7 @@ export function probeKindFor(phrase, { probeForms, task }) {
  * CEILING, not a cost. A page that finishes in 12 s still takes 12 s. Only pages that need more are
  * affected, and those are exactly the pages currently losing evidence.
  */
-export const DEFAULT_BUDGET_MS = 180_000;
+export const DEFAULT_BUDGET_MS = 420_000;
 
 /**
  * Time held back from the read-through for everything after it.
@@ -430,7 +430,7 @@ export const DEFAULT_BUDGET_MS = 180_000;
 export const POST_READ_RESERVE_MS = 60_000;
 
 /** What the worker abandons a capture at. The default only; `server.mjs` keeps its env override. */
-export const CAPTURE_HARD_TIMEOUT_DEFAULT_MS = 280_000;
+export const CAPTURE_HARD_TIMEOUT_DEFAULT_MS = 520_000;
 
 /**
  * Worst observed time from request to NVDA being ready, which the budget does NOT include but the hard

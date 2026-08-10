@@ -99,12 +99,40 @@ export function choosePageTarget(targets) {
   ) ?? null;
 }
 
+/**
+ * How long Edge gets to list its targets, and how many tries.
+ *
+ * Was a single attempt at 5 s, and that lost the STRUCTURAL CENSUS on the one page that most needed it: 150 s
+ * into a capture of a real site, with Edge busy, `/json/list` did not answer in time and the census came back
+ * `null` with "fetch failed". The census is the AX tree's own count of links, graphics and controls — the
+ * ground truth against which a sweep's coverage can be stated as a number rather than as the word
+ * "INCOMPLETE". Losing it exactly when the page is large is losing it exactly when it matters.
+ *
+ * Retried because a busy Chromium answers late, not never — and still bounded, because this sits inside a
+ * capture budget.
+ */
+const CDP_LIST_TIMEOUT_MS = 15_000;
+const CDP_LIST_ATTEMPTS = 3;
+const CDP_LIST_RETRY_MS = 750;
+
 async function pageTarget() {
-  const response = await fetch(endpoint("/json/list"), { signal: AbortSignal.timeout(5_000) });
-  if (!response.ok) throw new Error(`CDP /json/list returned HTTP ${response.status}`);
-  const target = choosePageTarget(await response.json());
-  if (!target) throw new Error("CDP listed no page target to navigate");
-  return target;
+  let last;
+  for (let attempt = 1; attempt <= CDP_LIST_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch(endpoint("/json/list"), {
+        signal: AbortSignal.timeout(CDP_LIST_TIMEOUT_MS),
+      });
+      if (!response.ok) throw new Error(`CDP /json/list returned HTTP ${response.status}`);
+      const target = choosePageTarget(await response.json());
+      if (!target) throw new Error("CDP listed no page target to navigate");
+      return target;
+    } catch (error) {
+      last = error;
+      if (attempt < CDP_LIST_ATTEMPTS) await new Promise((r) => setTimeout(r, CDP_LIST_RETRY_MS));
+    }
+  }
+  // Rethrow with the cause, so a caller sees WHY rather than a bare "fetch failed" after three silent tries.
+  throw new Error(`CDP /json/list did not answer in ${CDP_LIST_ATTEMPTS} attempts`, { cause: last });
 }
 
 /**

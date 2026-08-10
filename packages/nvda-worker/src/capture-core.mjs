@@ -207,7 +207,20 @@ const NVDA_STOP_TIMEOUT_MS = 20_000;
 const BROWSER_QUIT_TIMEOUT_MS = 20_000;
 const ACT_TIMEOUT_MS = 5_000; // activating a control (Enter)
 
-const MAX_SWEEP_STEPS = 40; // per-direction cap on a quick-nav sweep
+/**
+ * Per-direction cap on a quick-nav sweep — sized for a REAL page, not a dataset page.
+ *
+ * Was 40, which is generous for the generated corpus (its largest page has 40 links by construction) and too
+ * small for anything published: a real marketing page reported `link (cap)` in BOTH directions, having seen 48
+ * links on a page whose initial HTML alone contains 57 `<a href>`. The tool then said "examination was
+ * INCOMPLETE", which is honest but useless — a partial sweep means an absence of findings among the elements it
+ * never reached is not evidence they are correct, so the page was sampled rather than validated. Validating the
+ * whole page is the entire point of this product.
+ *
+ * The deadline, not this number, is what should end a sweep on a pathological page. This exists only so a
+ * quick-nav that wraps forever cannot spin, which is why it is now far above any real element count.
+ */
+const MAX_SWEEP_STEPS = 250;
 
 const errMsg = (e) => (e && e.message) || String(e);
 
