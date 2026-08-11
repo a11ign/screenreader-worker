@@ -1,0 +1,8 @@
+{
+  "name": "@a11y-witness/nvda-speech",
+  "version": "0.0.0",
+  "private": true,
+  "description": "NVDA's announcement composition, ported to run without Windows. Derived from NVDA (GPL-2.0-or-later), so this package is GPL and MUST NOT be imported by Apache-2.0 packages.",
+  "license": "GPL-3.0-or-later",
+  "type": "module"
+}
