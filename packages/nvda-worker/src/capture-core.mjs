@@ -24,11 +24,10 @@ import { captureFault, FAULT } from "./capture-faults.mjs";
 // guidepup, which THROWS at import time where no screen reader exists — that is why CI was red on six
 // files. Imported and re-exported here, so every existing caller of `capture-core` is unchanged and
 // there is still exactly one definition of each.
+import { browserArgs, browserFor } from "./browsers.mjs";
 import {
-  EDGE_PROFILE_DIR,
   crossCheckStructure,
   dedupeKey,
-  edgeArgs,
   elementsListRowName,
   failIfScreenReaderIsMute,
   lastMark,
@@ -87,12 +86,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 // makes the corpus uniform afterwards.
 export const CAPTURE_PROTOCOL_VERSION = 5;
 
-export { edgeArgs as edgeArgsForTest };
-
-// Re-exported for callers that had these from `capture-core` before the split: `server.mjs` uses
-// EDGE_PROFILE_DIR, and the pure tests use the rest. `edgeArgsForTest` keeps its test-only name.
+// Re-exported for callers that had these from `capture-core` before the split.
 export {
-  EDGE_PROFILE_DIR,
   phraseAction,
   failIfScreenReaderIsMute,
   dedupeKey,
@@ -265,7 +260,12 @@ function createDiagnostics(sink) {
 export async function captureWithNvda(url, opts = {}) {
   const diag = createDiagnostics(opts.diagnosticsSink);
   const reuseBrowser = reuseBrowserFor(opts);
-  const browser = await openPage(url, diag, reuseBrowser);
+  // Which browser this capture drives. Resolved from an allow-list, so an unknown name fails the request
+  // here rather than reaching a shell; and recorded on the result, because the browser is evidence — the
+  // host's cache key already reserves a slot for it.
+  const app = browserFor(opts);
+  diag.mark("browserSelected", { id: app.id, name: app.name });
+  const browser = await openPage(url, diag, { reuse: reuseBrowser, app });
   let succeeded = false;
   try {
     const result = await runCapturePhases(url, opts, diag);
@@ -390,16 +390,18 @@ async function runCapturePhases(url, opts, diag) {
 
 // --- Setup phases ---------------------------------------------------------
 
-// Where Edge lives. Resolved so we can spawn it directly and OWN the process: launching
-// via `cmd /c start` returns no handle, which means teardown can only be guessed at. See
-// closeBrowser.
-const EDGE_EXES = [
-  `${process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)"}\\Microsoft\\Edge\\Application\\msedge.exe`,
-  `${process.env.ProgramFiles || "C:\\Program Files"}\\Microsoft\\Edge\\Application\\msedge.exe`,
-];
+/**
+ * Where the configured browser lives on this guest, or null if it is not installed.
+ *
+ * Resolved so we can spawn it directly and OWN the process: launching via `cmd /c start` returns no
+ * handle, which means teardown can only be guessed at. See `closeBrowser`.
+ */
+function resolveExe(app) {
+  return app.exes().find((path) => existsSync(path)) ?? null;
+}
 
 /**
- * Keep Edge alive between captures and re-point it, rather than cold-starting Chromium every time.
+ * Keep the browser alive between captures and re-point it, rather than cold-starting Chromium every time.
  *
  * **On by default**, disable with `A11Y_REUSE_BROWSER=0`. It was gated behind an opt-in until
  * `evidence:check` had answered, and the answer came back better than expected.
@@ -457,6 +459,28 @@ let reusableBrowser = null;
 let browserCaptures = 0;
 
 /**
+ * WHICH browser the live process is, so teardown kills the one we started.
+ *
+ * Module state rather than a threaded argument because it is describing a fact about the running process,
+ * not a choice the caller is making: `closeBrowser` must kill whatever `openPage` actually launched, and a
+ * request that asked for Chrome while Edge is still up would otherwise pass "chrome" into a taskkill aimed
+ * at an Edge process. The worker serves one capture at a time (`busy`), so there is exactly one of these.
+ */
+let activeApp = null;
+
+/**
+ * The preset the running browser belongs to, falling back to the guest's configured one.
+ *
+ * The fallback is not decoration: `closeBrowser` and the activate fallback can both run before any capture
+ * has launched anything — teardown at shutdown, a stray left by a previous worker — and `activeApp.image`
+ * on a null would be a TypeError thrown from inside a `finally`, which is the shape that leaks a browser
+ * process rather than reporting a fault.
+ */
+function runningApp() {
+  return activeApp ?? browserFor();
+}
+
+/**
  * Get a window showing `url`, by the cheapest route available.
  *
  * Three cases, in cost order: navigate a browser that is already up (~0 s), start a reusable one
@@ -474,14 +498,34 @@ let browserCaptures = 0;
  */
 let navigatedExistingWindow = false;
 
-async function openPage(url, diag, reuse = REUSE_BROWSER) {
+/**
+ * Close and forget the reusable browser, recording why.
+ *
+ * Three call sites reach this — the capture cap, a navigation that failed, and a request that asked for a
+ * different browser — and each of them previously repeated the same three lines. Repeating them is how one
+ * of them comes to forget `browserCaptures = 0` and recycle every capture thereafter.
+ */
+async function discardReusable(diag, mark, detail) {
+  diag.mark(mark, detail);
+  await closeBrowser(diag, reusableBrowser);
+  reusableBrowser = null;
+  browserCaptures = 0;
+}
+
+// `app` defaults rather than being required: every caller passes one, and a future caller that forgets
+// should get the guest's configured browser rather than a TypeError inside the capture path.
+async function openPage(url, diag, { reuse = REUSE_BROWSER, app = browserFor() } = {}) {
   navigatedExistingWindow = false;
-  if (!reuse) return launchBrowser(url, diag);
+  if (!reuse) return launchBrowser(url, diag, app);
+  // A request may name a different browser than the one still running. Reusing that window would capture
+  // Edge and label the evidence Chrome — the cache key would be a lie told by the tool about itself, which
+  // is worse than a slow capture. Switching costs one cold start and happens only when a run deliberately
+  // compares the two.
+  if (reusableBrowser && activeApp && activeApp.id !== app.id) {
+    await discardReusable(diag, "browserSwitched", { from: activeApp.id, to: app.id });
+  }
   if (reusableBrowser && browserCaptures >= MAX_CAPTURES_PER_BROWSER) {
-    diag.mark("browserRecycle", { after: browserCaptures });
-    await closeBrowser(diag, reusableBrowser);
-    reusableBrowser = null;
-    browserCaptures = 0;
+    await discardReusable(diag, "browserRecycle", { after: browserCaptures });
   }
   if (reusableBrowser && await browserAlive()) {
     try {
@@ -499,22 +543,21 @@ async function openPage(url, diag, reuse = REUSE_BROWSER) {
       // A reusable browser that will not navigate is worse than none: fall back to a clean one-shot
       // rather than capturing whatever page happened to be showing. Reading the PREVIOUS page while
       // every check passes is the evidence-rot failure this project has already paid for once.
-      diag.mark("browserReuseFailed", { error: errMsg(error) });
-      await closeBrowser(diag, reusableBrowser);
-      reusableBrowser = null;
+      await discardReusable(diag, "browserReuseFailed", { error: errMsg(error) });
     }
   }
-  const exe = EDGE_EXES.find((p) => existsSync(p));
-  if (!exe) return launchBrowser(url, diag);
+  const exe = resolveExe(app);
+  if (!exe) return launchBrowser(url, diag, app);
   try {
     reusableBrowser = await launchReusable({
-      exe, args: reusableArgs(url, edgeArgs(url)), onEvent: (e) => diag.mark(e.type, e),
+      exe, args: reusableArgs(url, browserArgs(app, url)), onEvent: (e) => diag.mark(e.type, e),
     });
+    activeApp = app;
     browserCaptures = 1;
     return reusableBrowser;
   } catch (error) {
     diag.mark("browserReuseLaunchFailed", { error: errMsg(error) });
-    return launchBrowser(url, diag);
+    return launchBrowser(url, diag, app);
   }
 }
 
@@ -538,14 +581,18 @@ async function openPage(url, diag, reuse = REUSE_BROWSER) {
  * Costs nothing to add. Chromium opens the port and ignores it if nobody connects, and this path only runs
  * when there is no reusable browser holding the port already.
  */
-function launchBrowser(url, diag) {
-  const exe = EDGE_EXES.find((p) => existsSync(p));
-  const args = reusableArgs(url, edgeArgs(url));
+function launchBrowser(url, diag, app) {
+  const exe = resolveExe(app);
+  const args = reusableArgs(url, browserArgs(app, url));
+  activeApp = app;
   if (!exe) {
-    // Fall back to the old indirect launch rather than failing the capture: an unusual Edge
+    // Fall back to the old indirect launch rather than failing the capture: an unusual browser
     // install should cost us the exit event, not the whole run.
-    diag.mark("browserLaunched", { url, owned: false, reason: "msedge.exe not found in the standard locations" });
-    spawn("cmd", ["/c", "start", "", "msedge", ...args], { detached: true, stdio: "ignore" });
+    diag.mark("browserLaunched",
+      { url, owned: false, reason: `${app.image} not found in the standard locations` });
+    // The image name comes from an allow-list, never from the request — see `resolveBrowser`. That is
+    // what makes interpolating it into a `cmd` line safe.
+    spawn("cmd", ["/c", "start", "", app.image, ...args], { detached: true, stdio: "ignore" });
     return null;
   }
   const child = spawn(exe, args, { stdio: "ignore" });
@@ -597,7 +644,7 @@ const FAST_FOCUS_MS = 15_000;
  *
  * @returns {Promise<{ok: boolean, via: string, error: string, fastReason: string}>}
  */
-async function activateEdgeWithinDeadline(deadline) {
+async function activateBrowserWithinDeadline(deadline) {
   const remaining = () => deadline - Date.now();
   if (remaining() <= 0) return { ok: false, via: "none", error: "no time left to activate", fastReason: "" };
 
@@ -619,8 +666,11 @@ async function activateEdgeWithinDeadline(deadline) {
 
   if (remaining() <= 0) return { ok: false, via: "fast", error: "deadline spent on the fast path", fastReason };
   try {
+    // guidepup matches `windowTitle` as a REGEX over MainWindowTitle, and an `--app` window is titled with
+    // the page title — so this rarely matches for either browser. It is kept because it can LAUNCH a
+    // browser that is missing, which the fast path deliberately cannot.
     await withTimeout(
-      windowsActivate("msedge.exe", "Edge"),
+      windowsActivate(runningApp().image, runningApp().windowTitle),
       Math.min(ACTIVATE_ATTEMPT_MS, Math.max(1_000, remaining())),
       "windowsActivate",
     );
@@ -643,7 +693,7 @@ async function focusBrowserWindow(maxWaitMs, diag) {
   const startedAt = Date.now();
   let last = { ok: false, via: "none", error: "never attempted", fastReason: "" };
   while (Date.now() < deadline) {
-    last = await activateEdgeWithinDeadline(deadline);
+    last = await activateBrowserWithinDeadline(deadline);
     if (last.ok) {
       // Activating a window makes NVDA announce the new foreground, so "speech has gone quiet" IS the
       // condition that the transition finished -- and it is the screen reader's own view of it, which is
@@ -773,7 +823,7 @@ async function waitForDocument(diag) {
     // `windowsActivate`, and it is the one that hung a real capture for 234 s, because guidepup spawns
     // `cscript` with no timeout and its WMI `Win32_Process LIKE '%msedge.exe%'` scan crawls once a heavy page
     // has Edge running dozens of renderers.
-    const reactivated = await activateEdgeWithinDeadline(Date.now() + REACTIVATE_BUDGET_MS);
+    const reactivated = await activateBrowserWithinDeadline(Date.now() + REACTIVATE_BUDGET_MS);
     if (!reactivated.ok) {
       diag.mark("reactivate", { ok: false, error: reactivated.error, via: reactivated.via, attempt });
     }
@@ -1159,9 +1209,16 @@ export function screenReaderReady() {
   return screenReaderResponds();
 }
 
-/** Is there a browser to drive at all? Cheap, and a missing Edge is otherwise a mid-capture error. */
+/**
+ * Is there a browser to drive at all? Cheap, and a missing browser is otherwise a mid-capture error.
+ *
+ * Answers for the browser this guest is CONFIGURED for, and deliberately does not fall back to another
+ * one that happens to be installed. A tiny11 image ships without Edge, so a silent fallback would put two
+ * browsers' evidence into one corpus — the failure the cache key exists to prevent, arriving by a
+ * different door. `A11Y_BROWSER=chrome` is how such a guest says so.
+ */
 export function browserAvailable() {
-  return EDGE_EXES.some((exe) => existsSync(exe));
+  return resolveExe(browserFor()) !== null;
 }
 
 /**
@@ -2520,17 +2577,19 @@ async function stopAndCleanup(diag, browser, { keepScreenReader, reuseBrowser = 
 // When we own the process this is an event, not a poll: await its "exit". The taskkill is
 // the escalation for a browser that ignores the request, and the unowned fallback path.
 async function closeBrowser(diag, browser) {
+  // Whatever `openPage` actually launched, which is not necessarily what this request asked for.
+  const app = runningApp();
   const exited = browser ? once(browser, "exit") : null;
   try {
     // Bounded: `windowsQuit` is the SAME cscript-and-WMI mechanism as `windowsActivate`, which took 342 s on
     // a loaded guest. This runs on the capture path too — `openPage` closes a browser it is recycling — so an
     // unbounded quit hangs the capture before it starts, not merely on the way out.
-    await withTimeout(windowsQuit("msedge.exe"), BROWSER_QUIT_TIMEOUT_MS, "windowsQuit");
+    await withTimeout(windowsQuit(app.image), BROWSER_QUIT_TIMEOUT_MS, "windowsQuit");
   } catch (e) {
     diag.mark("browserQuit", { ok: false, error: errMsg(e) });
   }
   if (!exited) {
-    spawn("cmd", ["/c", "taskkill", "/im", "msedge.exe", "/f"], { stdio: "ignore" });
+    spawn("cmd", ["/c", "taskkill", "/im", app.image, "/f"], { stdio: "ignore" });
     diag.mark("browserClosed", { owned: false });
     return;
   }

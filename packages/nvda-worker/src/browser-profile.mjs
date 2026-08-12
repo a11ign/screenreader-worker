@@ -213,20 +213,24 @@ export function reportBrowserPolicyDrift(actual, log) {
 }
 
 /**
- * Kill Edge processes left over from a previous worker.
+ * Kill browser processes left over from a previous worker.
  *
- * Safe **only** at boot. `captureWithNvda` closes Edge in a `finally`, so a stray at boot means the
+ * Safe **only** at boot. `captureWithNvda` closes the browser in a `finally`, so a stray at boot means the
  * previous worker died mid-capture or was killed — and those strays are what compound into
  * `nvda.start` timeouts.
  *
- * @param {number | null} count from diagnostics.processCounts
+ * Takes the image name rather than assuming `msedge.exe`, and the caller passes the one image this guest
+ * is configured for. It comes from the preset allow-list in `browsers.mjs`, never from a request — which
+ * is what makes putting it on a `taskkill` command line safe.
+ *
+ * @param {{ count: number | null, image: string }} stray count from diagnostics.processCounts
  * @param {(line: string) => void} log
  */
-export function killStrayBrowsers(count, log) {
+export function killStrayBrowsers({ count, image }, log) {
   if (process.platform !== "win32" || !count) return false;
-  log(`${count} orphaned msedge process(es) at boot — a previous capture did not clean up; killing them`);
+  log(`${count} orphaned ${image} process(es) at boot — a previous capture did not clean up; killing them`);
   try {
-    execFileSync("taskkill", ["/im", "msedge.exe", "/f"], { stdio: "ignore", timeout: 30_000 });
+    execFileSync("taskkill", ["/im", image, "/f"], { stdio: "ignore", timeout: 30_000 });
     return true;
   } catch {
     // taskkill exits non-zero when nothing matched, which is a race we do not care about losing.

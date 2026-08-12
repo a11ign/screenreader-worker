@@ -27,6 +27,7 @@ export const WORKER_FILES = [
   "window-focus.mjs",
   "windows-trim.mjs",
   "browser-session.mjs",
+  "browsers.mjs",
   "pointer.mjs",
   "worker-files.mjs",
   "code-version.mjs",

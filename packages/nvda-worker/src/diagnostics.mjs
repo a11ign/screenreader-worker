@@ -21,6 +21,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, statfsSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { ALL_BROWSER_IMAGES } from "./browsers.mjs";
 
 /** Stop walking a runaway tree. An Edge profile is large but not unbounded. */
 const MAX_WALK_ENTRIES = 200_000;
@@ -164,8 +165,15 @@ export function parseTasklistMemory(csv, limit = 15) {
     .slice(0, limit);
 }
 
-/** Image names worth counting: the three that have each caused an outage by leaking or dying. */
-const WATCHED_PROCESSES = ["msedge", "nvda", "node"];
+/**
+ * Image names worth counting: the ones that have each caused an outage by leaking or dying.
+ *
+ * EVERY browser image, not just the configured one. This is a diagnostic, and the question it answers is
+ * "what is actually running on this guest" — a Chrome guest with a stray Edge left by an earlier
+ * configuration is exactly the thing a human reading /diagnostics needs to see. Killing is the narrow
+ * operation (see `killStrayBrowsers`); counting is the wide one.
+ */
+const WATCHED_PROCESSES = [...ALL_BROWSER_IMAGES.map((i) => i.replace(/\.exe$/i, "")), "nvda", "node"];
 
 /** The services the trim disables, plus Defender's, so their real state is visible after a trim. */
 const TRIMMED_SERVICES = [

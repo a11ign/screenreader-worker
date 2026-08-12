@@ -11,10 +11,11 @@ import { createRequire } from "node:module";
 import { freemem, totalmem, uptime as osUptime } from "node:os";
 import { join, resolve } from "node:path";
 import {
-  browserAvailable, CAPTURE_PROTOCOL_VERSION, captureWithNvda, EDGE_PROFILE_DIR, forgetScreenReader,
+  browserAvailable, CAPTURE_PROTOCOL_VERSION, captureWithNvda, forgetScreenReader,
   screenReaderSettings,
   screenReaderReady, shutdownScreenReader, warmUpScreenReader,
 } from "./capture-core.mjs";
+import { configuredBrowser, browserProfileDir, resolveBrowser } from "./browsers.mjs";
 import { CAPTURE_HARD_TIMEOUT_DEFAULT_MS } from "./capture-pure.mjs";
 import { isLocallyRecoverable } from "./worker-recovery.mjs";
 import { codeVersion } from "./code-version.mjs";
@@ -111,15 +112,19 @@ async function tidyBrowserAtBoot() {
         tempDir: process.env.TEMP || process.env.TMP || ".",
         tailLines: 1,
       }).config ?? []).map((c) => c.path), log);
-    const strays = processCounts(["msedge"])?.msedge ?? 0;
-    killStrayBrowsers(strays, log);
+    // Only OUR browser's strays. Killing every Chromium image would take out a browser somebody had open
+    // on the guest for a reason, and at boot we can only justify killing what a previous worker left.
+    const image = BROWSER.image.replace(/\.exe$/i, "");
+    const strays = processCounts([image])?.[image] ?? 0;
+    killStrayBrowsers({ count: strays, image: BROWSER.image }, log);
     // `treeSize` walks up to 200,000 directory entries SYNCHRONOUSLY, and the prune then deletes recursively.
     // Both ran inside the `listen` callback, so the port was bound while the event loop could not turn — the
     // worker accepted connections and answered none, which is indistinguishable from a dead one. Yielding
     // first is what makes the "hygiene is not a precondition for serving" comment below actually true: the
     // walk still costs what it costs, but `/health` can answer while it happens.
     await new Promise((resolve) => setImmediate(resolve));
-    await pruneEdgeProfile(EDGE_PROFILE_DIR, treeSize(EDGE_PROFILE_DIR)?.megabytes ?? null, log);
+    const profileDir = browserProfileDir(BROWSER);
+    await pruneEdgeProfile(profileDir, treeSize(profileDir)?.megabytes ?? null, log);
   } catch (error) {
     // Hygiene is not a precondition for serving. Say what went wrong and carry on.
     log(`browser tidy-up at boot failed: ${error.message}`);
@@ -178,10 +183,15 @@ function reportedCodeVersion() {
 
 const CODE_VERSION = reportedCodeVersion();
 
-const EDGE_EXES = [
-  `${process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)"}\\Microsoft\\Edge\\Application\\msedge.exe`,
-  `${process.env.ProgramFiles || "C:\\Program Files"}\\Microsoft\\Edge\\Application\\msedge.exe`,
-];
+/**
+ * The browser this guest is configured to drive. One lookup, so /health and the capture path agree.
+ *
+ * `configuredBrowser` never throws — a typo in `A11Y_BROWSER` must not stop this process binding its port,
+ * because a worker that does not answer /health is indistinguishable from a dead machine and this project
+ * has already spent two days on that mistake. It falls back and reports instead, and the report is what
+ * `/health` carries below.
+ */
+const { app: BROWSER, error: BROWSER_CONFIG_ERROR } = configuredBrowser();
 
 /**
  * BOUNDED, because this is synchronous and `/health` depends on it.
@@ -286,13 +296,17 @@ function runtimeEnvironment() {
   const guidepupRoot = process.env.GUIDEPUP_SCREEN_READERS_PATH ||
     (process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "guidepup") : "");
   const nvdaPath = findFileMemo(join(guidepupRoot, "nvda"), "nvda.exe");
-  const edgePath = EDGE_EXES.find((path) => existsSync(path));
+  const browserPath = BROWSER.exes().find((path) => existsSync(path));
   return {
     measuredAt: new Date().toISOString(),
     screenReader: "NVDA",
     screenReaderVersion: nvdaPath ? fileProductVersion(nvdaPath) : "unknown",
-    browser: "Microsoft Edge",
-    browserVersion: edgePath ? fileProductVersion(edgePath) : "unknown",
+    // The capture cache keys on this pair, exactly as it keys on `os` and `architecture`, and for the same
+    // reason: a fleet can have more than one image, and now more than one BROWSER. It was the literal
+    // string "Microsoft Edge" while there was only ever one — a constant standing in for a variable, which
+    // is only correct until it is not.
+    browser: BROWSER.name,
+    browserVersion: browserPath ? fileProductVersion(browserPath) : "unknown",
     guidepupVersion: packageVersion("@guidepup/guidepup"),
     nodeVersion: process.version,
     windowsVersion: powershellValue("$os = Get-CimInstance Win32_OperatingSystem; \"$($os.Caption) $($os.Version)\""),
@@ -355,6 +369,10 @@ function captureOptions(parsed) {
     // Per-request so browser reuse can be ISOLATED without editing the guest's scheduled task. Absent
     // means the fleet default (`A11Y_REUSE_BROWSER`), so nothing changes for callers that do not send it.
     reuseBrowser: typeof parsed.reuseBrowser === "boolean" ? parsed.reuseBrowser : undefined,
+    // Per-request, so comparing Edge against Chrome is one run against one guest with one NVDA rather than
+    // a redeploy — the only way to hold everything else constant. Validated HERE, at the boundary, so a
+    // bad value is a 400 rather than a string reaching a `taskkill` command line.
+    browser: typeof parsed.browser === "string" ? resolveBrowser(parsed.browser).id : undefined,
     reuseScreenReader: typeof parsed.reuseScreenReader === "boolean"
       ? parsed.reuseScreenReader
       : REUSE_NVDA,
@@ -610,6 +628,10 @@ async function readiness() {
     // no NVDA is still able to take work -- and gating on it caused the restart loop above.
     screenReader: await screenReaderReady(),
     browser: browserAvailable(),
+    // A misconfigured A11Y_BROWSER did not stop this worker booting, and it must not be allowed to pass
+    // silently either — the guest is capturing in a browser nobody asked for, and every capture it
+    // produces is labelled with that browser in the cache key. `true` means "the setting parsed".
+    browserConfigured: BROWSER_CONFIG_ERROR === null,
     // Applied per session by run-server.cmd. Left non-zero, Edge is refused the foreground and
     // every capture returns 0 phrases with NO error at all -- the worst failure mode we have.
     foregroundLockTimeout: foregroundLockTimeout(),
@@ -654,7 +676,11 @@ async function readiness() {
     // ago" is a different claim from "no dialogs now", and conflating them is how a stale check reads as a
     // fresh one.
     dialogsCheckedMsAgo: dialogCache.at ? Date.now() - dialogCache.at : null,
+    // The message, not just the failed check name: "not ready: browserConfigured" says nothing about
+    // WHICH value was wrong, and the whole point of catching it was to make it diagnosable.
+    browserConfigError: BROWSER_CONFIG_ERROR,
     reason: failed.length ? `not ready: ${failed.join(", ")}`
+      + (BROWSER_CONFIG_ERROR ? ` — ${BROWSER_CONFIG_ERROR}` : "")
       + (dialogs?.length ? ` — desktop blocked by: ${dialogs.map((d) => d.message || d.title).join(" / ")}` : "")
       : busy ? "busy with a capture"
         : warm.ok ? null : `ready, but not warmed up (${warm.error})`,
@@ -726,7 +752,7 @@ function respondWithHealth(res) {
 function respondWithDiagnostics(res) {
   try {
     return send(res, 200, {
-      ...guestDiagnostics({ edgeProfile: EDGE_PROFILE_DIR, logPath: LOG_PATH }),
+      ...guestDiagnostics({ edgeProfile: browserProfileDir(BROWSER), logPath: LOG_PATH }),
       screenReaderSettings: screenReaderSettings(),
     });
   } catch (e) {
@@ -763,7 +789,14 @@ function acceptCaptureRequest(req, res) {
     try { parsed = JSON.parse(body || "{}"); }
     catch { busy = false; return send(res, 400, { error: "invalid JSON body" }); }
     if (!parsed.url) { busy = false; return send(res, 400, { error: "url is required" }); }
-    await runCapture(res, parsed.url, captureOptions(parsed));
+    // `captureOptions` VALIDATES, so it can throw — an unknown browser name does. Left unhandled that
+    // rejection escapes an async listener with `busy` still set, and a worker that answers /health, reports
+    // ready and 429s every capture forever is this project's most-misdiagnosed fault. A rejected option is
+    // a 400, not a wedge.
+    let options;
+    try { options = captureOptions(parsed); }
+    catch (error) { busy = false; return send(res, 400, { error: error.message }); }
+    await runCapture(res, parsed.url, options);
   });
 }
 
