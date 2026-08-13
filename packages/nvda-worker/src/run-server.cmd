@@ -49,8 +49,20 @@ rem
 rem NO %ProgramFiles(x86)% candidate, deliberately: cmd matches the parentheses in a for-set
 rem NAIVELY, and the "(x86)" in that variable name closes the set early -- quotes do not
 rem reliably protect it. We install the x64 build, so the 32-bit locations are moot anyway.
-set "NODE_EXE="
-for %%C in (
+rem ARGUMENT 1 WINS. Provisioning resolves node.exe from an interactive elevated session, where
+rem %ProgramFiles% is correct, and bakes the absolute path into the scheduled task's arguments.
+rem That removes the environment from the question entirely.
+rem
+rem Why: the task's environment has no %ProgramFiles% and no node on PATH, and a for-set of
+rem absolute candidates ALSO failed to match a literal path that provably exists -- so cmd's
+rem parsing in that context is not something to keep guessing at from a Mac. A value written into
+rem the task definition is inspectable with Get-ScheduledTask and cannot be re-derived wrongly.
+rem No goto and no label: jumping out of a parenthesised block is a cmd quirk, and this file has
+rem already cost enough on cmd semantics that cannot be tested from here. An empty %~1 leaves
+rem NODE_EXE undefined, so the search below simply runs when nothing was passed.
+set "NODE_EXE=%~1"
+
+if not defined NODE_EXE for %%C in (
   "%ProgramFiles%\nodejs\node.exe"
   "%ProgramW6432%\nodejs\node.exe"
   "C:\Program Files\nodejs\node.exe"
