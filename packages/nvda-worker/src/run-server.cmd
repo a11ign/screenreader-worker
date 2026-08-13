@@ -3,10 +3,16 @@ rem Launch the NVDA capture worker. Invoked by the a11ysrv scheduled task, which
 rem use LogonType Interactive so this runs inside the logged-on desktop session (NVDA
 rem is a GUI app and announces nothing without one).
 rem
-rem Paths derive from this script's own location (%~dp0 = ...\src\capture\nvda\) rather
-rem than being hardcoded. A hardcoded C:\Users\<name>\a11y-witness breaks the moment the
-rem worker is set up under a different account -- which is exactly what happens when a
-rem prebuilt VM image is reused. See docs/local-worker-vm.md.
+rem Paths derive from this script's own location (%~dp0) rather than being hardcoded. A
+rem hardcoded C:\Users\<name>\a11y-witness breaks the moment the worker is set up under a
+rem different account -- which is exactly what happens when a prebuilt VM image is reused.
+rem See docs/local-worker-vm.md.
+rem
+rem server.mjs is addressed as "%~dp0server.mjs" -- BESIDE this file -- rather than as a path
+rem from the repo root. It used to read src\capture\nvda\server.mjs, and when the repo was
+rem restructured into packages/ that became a file which does not exist: node exited
+rem immediately, nothing listened on 8765, and provisioning reported only "worker did not
+rem listen". A sibling reference cannot rot when the tree moves.
 setlocal
 cd /d "%~dp0..\..\.." || exit /b 1
 
@@ -16,8 +22,16 @@ rem registry value at logon, so every worker start re-applies it via SystemParam
 rem Left non-zero, Edge is refused the foreground and every capture returns 0 phrases with
 rem no error at all. Best-effort: if it fails, still start the worker (and the failure shows
 rem up in diagnose-nvda-worker.ps1's Layer 5).
-if exist "scripts\apply-foreground-lock-timeout.ps1" (
-  powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\apply-foreground-lock-timeout.ps1" >> server.log 2>&1
+rem NOT silently skipped when missing. This path was also stale after the restructure, and
+rem because it sits behind `if exist` it vanished without a word -- so ForegroundLockTimeout
+rem stopped being re-applied per session, which is the fault that makes Edge lose the
+rem foreground and every capture return 0 phrases with NO error. Absent must be LOUD.
+set "FLT=packages\\worker-fleet\\src\\provisioning\\apply-foreground-lock-timeout.ps1"
+if exist "%FLT%" (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%FLT%" >> server.log 2>&1
+) else (
+  echo [run-server] WARNING: %FLT% not found -- ForegroundLockTimeout NOT re-applied for this session>> server.log
+  echo [run-server] WARNING: %FLT% not found -- ForegroundLockTimeout NOT re-applied for this session
 )
 
 set "NODE_EXE=%ProgramFiles%\nodejs\node.exe"
@@ -28,4 +42,4 @@ rem
 rem This window is the only thing an operator sees on the guest, and it used to be blank --
 rem everything went to the log, so a worker mid-capture and a wedged one looked identical.
 rem A capture takes ~12s, which reads as a hang.
-"%NODE_EXE%" src\capture\nvda\server.mjs
+"%NODE_EXE%" "%~dp0server.mjs"
