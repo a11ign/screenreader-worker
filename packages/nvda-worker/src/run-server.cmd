@@ -42,4 +42,16 @@ rem
 rem This window is the only thing an operator sees on the guest, and it used to be blank --
 rem everything went to the log, so a worker mid-capture and a wedged one looked identical.
 rem A capture takes ~12s, which reads as a hang.
-"%NODE_EXE%" "%~dp0server.mjs"
+rem stderr is REDIRECTED to server.log, and that is the point rather than tidiness.
+rem
+rem server.mjs writes its own lines to server.log once it is running -- but a crash at IMPORT
+rem time happens before any of that exists, so the stack went to a console window that closes
+rem with the process. Observed: the window opened, vanished in two seconds, and server.log ended
+rem at the ForegroundLockTimeout line with no hint of why. Unreadable exactly when it matters.
+rem
+rem The exit code is recorded too, the same way run-capture-check.cmd already does it: a worker
+rem that stops is a different fact from a worker that never started, and without this they look
+rem identical from the outside.
+echo [run-server] starting %NODE_EXE% at %DATE% %TIME%>> server.log
+"%NODE_EXE%" "%~dp0server.mjs" 2>> server.log
+echo [run-server] node exited with %ERRORLEVEL% at %DATE% %TIME%>> server.log
