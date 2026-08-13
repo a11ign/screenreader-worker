@@ -34,8 +34,36 @@ if exist "%FLT%" (
   echo [run-server] WARNING: %FLT% not found -- ForegroundLockTimeout NOT re-applied for this session
 )
 
-set "NODE_EXE=%ProgramFiles%\nodejs\node.exe"
-if not exist "%NODE_EXE%" set "NODE_EXE=node"
+rem Resolve node WITHOUT trusting the environment, because a scheduled task does not get the one
+rem an interactive shell has. Measured on the first bare-metal worker: manual runs logged
+rem "starting C:\Program Files\nodejs\node.exe" and served fine, while every task-launched run
+rem logged "starting node" and died with 9009, '"node"' is not recognized.
+rem
+rem %ProgramFiles% was EMPTY in the task's environment, so "%ProgramFiles%\nodejs\node.exe"
+rem became "\nodejs\node.exe", `if not exist` fired, and the fallback to bare `node` then failed
+rem because the task's PATH has no node either. Two environment assumptions, one silent fallback,
+rem and a worker that appeared to start and vanish in two seconds.
+rem
+rem So: several ABSOLUTE candidates, literal paths included, and PATH only as a last resort.
+rem
+rem NO %ProgramFiles(x86)% candidate, deliberately: cmd matches the parentheses in a for-set
+rem NAIVELY, and the "(x86)" in that variable name closes the set early -- quotes do not
+rem reliably protect it. We install the x64 build, so the 32-bit locations are moot anyway.
+set "NODE_EXE="
+for %%C in (
+  "%ProgramFiles%\nodejs\node.exe"
+  "%ProgramW6432%\nodejs\node.exe"
+  "C:\Program Files\nodejs\node.exe"
+  "%LOCALAPPDATA%\Programs\nodejs\node.exe"
+) do if not defined NODE_EXE if exist "%%~C" set "NODE_EXE=%%~C"
+
+rem LOUD, not silent. Falling back to PATH is a guess, and the last time it was made quietly it
+rem cost hours: the log said "starting node" and nothing said that was a degraded choice.
+if not defined NODE_EXE (
+  echo [run-server] WARNING: node.exe not found in any known location; falling back to PATH>> server.log
+  echo [run-server] WARNING: node.exe not found in any known location; falling back to PATH
+  set "NODE_EXE=node"
+)
 
 rem No redirect: server.mjs writes to BOTH the console and server.log itself.
 rem
