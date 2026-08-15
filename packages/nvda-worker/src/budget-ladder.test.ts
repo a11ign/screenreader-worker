@@ -16,7 +16,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -148,15 +148,48 @@ test("the reserve is big enough for the phases it protects", () => {
  */
 const UNDICI_HEADERS_CAP_MS = 300_000;
 
+/**
+ * Every capture client, DISCOVERED rather than listed.
+ *
+ * The previous version of this guard named three files. Seven others posted captures and it could not
+ * see any of them -- including `occurrence-verdict-stability.mjs`, which declared 560 s and got 300 s,
+ * the exact defect this guard was written for. A hardcoded list is a guard that only checks the places
+ * somebody already thought of, which is the same shape as the worker-file list that let a file deploy
+ * invisibly.
+ */
+function captureClients(): Array<[string, string]> {
+  const packages = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const found: Array<[string, string]> = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      // `dist` is build output of the very files we are checking, so including it double-counts and
+      // reports a stale copy as a violation after the source has been fixed.
+      if (entry.isDirectory()) {
+        if (entry.name !== "node_modules" && entry.name !== "dist") walk(path);
+      } else if (/\.(mjs|ts)$/.test(entry.name) && !entry.name.includes(".test.")) {
+        const src = readFileSync(path, "utf8");
+        // The worker SERVES this route; it is not a client of it.
+        if (path.endsWith("server.mjs")) continue;
+        if (/\/capture\b/.test(src) && /method:\s*["']POST["']/.test(src)) {
+          found.push([path.slice(packages.length + 1), src]);
+        }
+      }
+    }
+  };
+  walk(packages);
+  return found;
+}
+
 test("no capture client declares a budget that undici will silently ignore", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const clients = [
-    ["cli", join(here, "..", "..", "cli", "src", "cli.ts")],
-    ["dataset", join(here, "..", "..", "lab", "src", "training", "capture-screenreader-dataset.mjs")],
-    ["identity-rate", join(here, "..", "..", "lab", "src", "harnesses", "page-identity-rate.mjs")],
-  ];
-  for (const [name, path] of clients) {
-    const src = readFileSync(path, "utf8");
+  const clients = captureClients();
+
+  // A discovery that finds nothing would pass every assertion below in perfect silence -- this repo's
+  // own rule about checks that report success having examined nothing. Ten clients exist today.
+  assert.ok(clients.length >= 8,
+    `only found ${clients.length} capture clients; the discovery walk is broken, not the codebase clean`);
+
+  for (const [name, src] of clients) {
     assert.match(src, /requestJson/,
       `${name} must post captures through requestJson (worker-http.mjs), which has no headers cap`);
 
@@ -177,7 +210,10 @@ test("no capture client declares a budget that undici will silently ignore", () 
 
 /** A literal, or a `const NAME = <number>` / `Number(process.env.X || <number>)` in the same file. */
 function resolveMs(src: string, argument: string): number | null {
-  if (/^\d+$/.test(argument)) return Number(argument);
+  // `15_000` is a literal too. Without the separator strip this fell through to the identifier branch,
+  // failed to resolve, and reported a perfectly good 15 s page fetch as an unresolvable budget — a guard
+  // that cries wolf gets deleted, which is worse than one that never fired.
+  if (/^\d[\d_]*$/.test(argument)) return Number(argument.replace(/_/g, ""));
   const declared = src.match(new RegExp(`const\\s+${argument}\\s*=\\s*([^;]+);`));
   if (!declared) return null;
   const literal = declared[1].replace(/_/g, "").match(/(\d+)\s*\)?\s*$/);
