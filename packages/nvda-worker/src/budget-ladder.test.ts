@@ -127,3 +127,59 @@ test("the reserve is big enough for the phases it protects", () => {
   assert.ok(POST_READ_RESERVE_MS > measuredTailMs * 4,
     "the reserve should carry the measured tail several times over, since pages vary");
 });
+
+/**
+ * The ladder above is arithmetic over constants. This asserts the constants are the ones that actually
+ * APPLY -- which they were not.
+ *
+ * Node's global `fetch` is undici, and undici stops waiting for response HEADERS after 300 s independently
+ * of any `AbortSignal`. So while the capture clients used `fetch`, the real outermost rung was 300 s: it sat
+ * BELOW the worker's own 520 s hard timeout, and every constant this file checks was decorative above it.
+ * The ladder test passed throughout, because a rung it does not know about is a rung it cannot measure.
+ *
+ * Measured on Node v24.7.0 against a server that withheld headers for 310 s: global fetch threw
+ * UND_ERR_HEADERS_TIMEOUT with a 560 s AbortSignal; the same request over `node:http` returned 200.
+ *
+ * The rule is not "never use fetch" -- `pageTitle` fetches a dataset page on a 15 s budget and is fine.
+ * It is that a budget which can EXCEED undici's cap must not be expressed as an AbortSignal, because there
+ * the number is simply ignored and the failure looks like a dead worker.
+ *
+ * Grepping the source is crude, but the alternative is a 300-second test.
+ */
+const UNDICI_HEADERS_CAP_MS = 300_000;
+
+test("no capture client declares a budget that undici will silently ignore", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const clients = [
+    ["cli", join(here, "..", "..", "cli", "src", "cli.ts")],
+    ["dataset", join(here, "..", "..", "lab", "src", "training", "capture-screenreader-dataset.mjs")],
+    ["identity-rate", join(here, "..", "..", "lab", "src", "harnesses", "page-identity-rate.mjs")],
+  ];
+  for (const [name, path] of clients) {
+    const src = readFileSync(path, "utf8");
+    assert.match(src, /requestJson/,
+      `${name} must post captures through requestJson (worker-http.mjs), which has no headers cap`);
+
+    for (const [, argument] of src.matchAll(/AbortSignal\.timeout\(\s*([A-Za-z0-9_]+)\s*\)/g)) {
+      const ms = resolveMs(src, argument);
+      if (ms === null) {
+        assert.fail(
+          `${name} passes ${argument} to AbortSignal.timeout() and this test cannot resolve it to a number. `
+          + `Either inline the value or route the request through requestJson — an unresolvable budget is how `
+          + `a 300 s ceiling hid behind a 560 s constant.`);
+      }
+      assert.ok(ms < UNDICI_HEADERS_CAP_MS,
+        `${name} declares a ${ms} ms budget via AbortSignal.timeout(), but undici stops waiting for response `
+        + `headers at ${UNDICI_HEADERS_CAP_MS} ms whatever the signal says. Use requestJson (worker-http.mjs).`);
+    }
+  }
+});
+
+/** A literal, or a `const NAME = <number>` / `Number(process.env.X || <number>)` in the same file. */
+function resolveMs(src: string, argument: string): number | null {
+  if (/^\d+$/.test(argument)) return Number(argument);
+  const declared = src.match(new RegExp(`const\\s+${argument}\\s*=\\s*([^;]+);`));
+  if (!declared) return null;
+  const literal = declared[1].replace(/_/g, "").match(/(\d+)\s*\)?\s*$/);
+  return literal ? Number(literal[1]) : null;
+}
