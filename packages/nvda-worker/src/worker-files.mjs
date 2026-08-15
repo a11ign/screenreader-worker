@@ -18,6 +18,7 @@ export const WORKER_FILES = [
   "server.mjs",
   "worker-recovery.mjs",
   "capture-faults.mjs",
+  "capture-results.mjs",
   "diagnostics.mjs",
   "browser-profile.mjs",
   "nvda-logging.mjs",

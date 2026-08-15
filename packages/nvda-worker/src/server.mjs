@@ -1,7 +1,10 @@
 // server.mjs — NVDA capture worker as an HTTP service.
 // MUST run in an interactive desktop session (see run-server.cmd + the README).
-//   POST /capture  { url, task?, steps?, probeForms?, probeFocus?, probeTables? }
+//   POST /capture  { url, task?, steps?, probeForms?, probeFocus?, probeTables?, captureId? }
 //                                          -> { url, screenReader, transcript, task }
+//   GET  /capture/<captureId>              -> the response that POST returned, replayed verbatim,
+//                                             or 202 while it is still running, or 404 if unknown.
+//                                             Name a capture in the POST and it survives a lost socket.
 //   GET  /health                           -> { ok, screenReader, busy, code, environment }
 // NVDA is a single shared resource, so captures are serialized.
 import { createServer } from "node:http";
@@ -21,6 +24,7 @@ import { isLocallyRecoverable } from "./worker-recovery.mjs";
 import { codeVersion } from "./code-version.mjs";
 import { listBlockingDialogs, dismissBlockingDialogs } from "./desktop-dialogs.mjs";
 import { faultCode } from "./capture-faults.mjs";
+import { createResultStore, isValidCaptureId, storedResultResponse } from "./capture-results.mjs";
 import { edgePolicy, guestDiagnostics, processCounts, screenReaderState, treeSize } from "./diagnostics.mjs";
 import { killStrayBrowsers, pruneEdgeProfile, reportBrowserPolicyDrift } from "./browser-profile.mjs";
 import { applyRequestedLogLevel } from "./nvda-logging.mjs";
@@ -142,6 +146,14 @@ function rotateLogIfLarge() {
   }
 }
 let busy = false;
+
+/**
+ * Recent capture outcomes, so a lost response does not destroy a finished capture.
+ *
+ * In this process rather than in `capture-results.mjs` as module state, because a store owned by the module
+ * would be shared by any test that imported it and the leakage between cases would be invisible.
+ */
+const results = createResultStore();
 
 // Keep NVDA running between captures. Starting it costs ~5s, and this process serves many
 // captures in a row.
@@ -708,7 +720,7 @@ async function readiness() {
 }
 
 /**
- * The worker's whole HTTP surface: three routes, dispatched here and answered one level down.
+ * The worker's whole HTTP surface: five routes, dispatched here and answered one level down.
  *
  * A function that ONLY routes is where a chain of `if`s belongs — the request shape is the thing being
  * branched on, it happens in exactly one place, and each route is a function so it can do one thing. This IS
@@ -720,8 +732,31 @@ const server = createServer((req, res) => {
   if (req.method === "GET" && req.url === "/progress") return respondWithProgress(res);
   if (req.method === "GET" && req.url === "/diagnostics") return respondWithDiagnostics(res);
   if (req.method === "POST" && req.url === "/capture") return acceptCaptureRequest(req, res);
+  // A READ, and deliberately not gated on `busy`: the whole point is to be answerable while a capture runs,
+  // and asking about a finished one must never be refused because a new one has started.
+  if (req.method === "GET" && req.url.startsWith("/capture/")) {
+    return respondWithStoredResult(res, decodeURIComponent(req.url.slice("/capture/".length)));
+  }
   send(res, 404, { error: "not found" });
 });
+
+/**
+ * Replay a capture the host already asked for but may not have received.
+ *
+ * Three answers, and collapsing any two of them would make the endpoint useless:
+ *
+ *   404  we have never heard of this id      -> the capture never started; re-issue the case
+ *   202  we have it and it is still running  -> wait, do NOT start a second capture
+ *   200/500  the original response, verbatim -> use it exactly as if the POST had returned it
+ *
+ * The middle one is the reason this is worth having at all. "Not finished" and "never happened" produce
+ * opposite correct actions, and this project's own history is a list of faults that cost days precisely
+ * because two different states were reported as one.
+ */
+function respondWithStoredResult(res, id) {
+  const { status, body } = storedResultResponse(results.recall(id), id);
+  send(res, status, body);
+}
 
 /**
  * What is the running capture doing RIGHT NOW? Cheap by contract, like `/health`.
@@ -816,7 +851,15 @@ function acceptCaptureRequest(req, res) {
     let options;
     try { options = captureOptions(parsed); }
     catch (error) { busy = false; return send(res, 400, { error: error.message }); }
-    await runCapture(res, parsed.url, options);
+    // Optional and validated here, so an older host that sends nothing behaves exactly as before and a
+    // malformed id is a 400 rather than a strange Map key that later appears in a URL.
+    const captureId = parsed.captureId;
+    if (captureId !== undefined && !isValidCaptureId(captureId)) {
+      busy = false;
+      return send(res, 400, { error: "captureId must be 1-64 characters of [A-Za-z0-9_-]" });
+    }
+    if (captureId) results.begin(captureId);
+    await runCapture(res, { url: parsed.url, opts: options, captureId });
   });
 }
 
@@ -849,8 +892,18 @@ function releaseOnAbandon(req) {
  */
 let inFlight = null;
 
-/** Drive one capture and answer with it. `busy` was claimed by the caller and is released here. */
-async function runCapture(res, url, opts) {
+/**
+ * Drive one capture and answer with it. `busy` was claimed by the caller and is released here.
+ *
+ * Every response goes through `answer`, which REMEMBERS it before sending. That ordering is the whole
+ * point: a result stored only after a successful write would be missing in exactly the case the store
+ * exists for -- a socket that died before the host read it.
+ */
+async function runCapture(res, { url, opts, captureId }) {
+  const answer = (status, body) => {
+    if (captureId) results.finish(captureId, { status, body });
+    send(res, status, body);
+  };
   const startedAt = new Date().toISOString();
   log(`[${startedAt}] capture ${url} (nav=${opts.nav || "object"}, probeForms=${opts.probeForms}, probeFocus=${opts.probeFocus})`);
   // Ours, not the capture's, so an abandoned capture cannot take its own evidence down with it, and
@@ -878,7 +931,7 @@ async function runCapture(res, url, opts) {
       log("  WARNING: 0 phrases. If afterStart.lastSpoken is empty, NVDA is running but not speaking — restart/reboot the worker.");
     }
     worked.captures += 1;
-    send(res, 200, {
+    answer(200, {
       ...result,
       screenReader: environment.screenReader,
       task: opts.task,
@@ -894,7 +947,10 @@ async function runCapture(res, url, opts) {
     // that would name the phase were being discarded with the abandoned capture.
     const reached = marks.length ? marks[marks.length - 1] : null;
     if (reached) log(`  reached phase '${reached.event}' at ${reached.atMs}ms, ${marks.length} mark(s)`);
-    send(res, 500, {
+    // Stored like a success, and for a stronger reason: the worker is the component that knows WHY a
+    // capture failed, so losing this response replaces a diagnosis with "no answer" -- which this project
+    // has repeatedly misread as a dead machine.
+    answer(500, {
       error: String((e && e.message) || e),
       fault: faultCode(e),
       diagnostics: marks,
