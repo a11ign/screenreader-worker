@@ -34,6 +34,18 @@ test("there is exactly ONE definition of the worker file list, and one hasher", 
     // comes from the one definition, not how it is spelled.
     assert.match(source, /worker-files\.mjs|code-version\.mjs|@a11y-witness\/nvda-worker/,
       `${path} should get the worker file list, or the hash itself, from the shared module`);
+
+    // AND it must not compute the hash ITSELF. The assertion above only proved the shared module was
+    // imported for something -- deploy-worker.mjs imported it for WORKER_FILES and then hand-rolled its
+    // own sha256 over raw bytes, satisfying this test while `codeVersion()` normalises CRLF. A worker
+    // whose repo was git-cloned on Windows therefore hashed differently on the two sides and the deploy
+    // verification reported STALE for ever: measured 31979b551b7a2cfa against 22822b7a3a08969c.
+    //
+    // "One hasher" is the claim in this test's own name; this is the half that enforces it.
+    assert.ok(!/createHash\s*\(/.test(source),
+      `${path} builds its own hash. Call codeVersion() from code-version.mjs instead — a second `
+      + `implementation of the comparison is a second chance for the two sides to disagree, and the `
+      + `whole purpose of this check is that they agree.`);
   }
 });
 
