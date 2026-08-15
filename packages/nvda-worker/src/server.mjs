@@ -230,16 +230,30 @@ function powershellValue(script) {
  * that a constant was being recomputed on the hottest path the worker has. Edge updating requires a restart
  * of Edge, and NVDA updating requires provisioning — both of which restart this process.
  */
-const productVersions = new Map();
+const bootConstants = new Map();
 
-function fileProductVersion(path) {
-  if (productVersions.has(path)) return productVersions.get(path);
-  const escaped = path.replace(/'/g, "''");
-  const version = powershellValue(`(Get-Item -LiteralPath '${escaped}').VersionInfo.ProductVersion`);
+/**
+ * A PowerShell value that cannot change while this process runs, read at most once.
+ *
+ * Every caller is a value fixed before the worker started: an executable's version (updating Edge or NVDA
+ * restarts this process) and the Windows build (changing it needs a reboot). So the second read can only
+ * ever return what the first did, at the cost of a blocking child process on the hottest path we have.
+ *
+ * There were two memos and one unmemoised call, which is the shape this repo keeps paying for -- a remedy
+ * applied where it was noticed rather than everywhere its reason holds.
+ */
+function bootConstant(script) {
+  if (bootConstants.has(script)) return bootConstants.get(script);
+  const value = powershellValue(script);
   // Only a real answer is memoised. Caching "unknown" forever would make a transient PowerShell failure
   // permanent for the life of the worker, and the version is reported as evidence.
-  if (version !== "unknown") productVersions.set(path, version);
-  return version;
+  if (value !== "unknown") bootConstants.set(script, value);
+  return value;
+}
+
+function fileProductVersion(path) {
+  const escaped = path.replace(/'/g, "''");
+  return bootConstant(`(Get-Item -LiteralPath '${escaped}').VersionInfo.ProductVersion`);
 }
 
 /**
@@ -309,7 +323,13 @@ function runtimeEnvironment() {
     browserVersion: browserPath ? fileProductVersion(browserPath) : "unknown",
     guidepupVersion: packageVersion("@guidepup/guidepup"),
     nodeVersion: process.version,
-    windowsVersion: powershellValue("$os = Get-CimInstance Win32_OperatingSystem; \"$($os.Caption) $($os.Version)\""),
+    // Memoised, and the reason is the cache key rather than the ~200 ms. This value is half of the key's
+    // `os` field, and `powershellValue` answers "unknown" when PowerShell exceeds its 5 s bound -- which
+    // happens exactly when the guest is loaded, measured at 8 s and then 25 s on this fleet. So a slow
+    // moment silently changed a capture's environment key, and those captures can never be reused: the
+    // guest being busy quietly fragmented the corpus, and the resulting misses read as ordinary churn.
+    // Reading it once means a capture's key cannot depend on how loaded the guest was when it was taken.
+    windowsVersion: bootConstant("$os = Get-CimInstance Win32_OperatingSystem; \"$($os.Caption) $($os.Version)\""),
     // The guest's architecture, from the worker process itself -- free, and no PowerShell round trip.
     // Part of the capture cache key: an ARM64 guest and an x64 one are different environments, and
     // without this the cache treats their evidence as interchangeable.
