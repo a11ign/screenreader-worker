@@ -8,7 +8,7 @@
 //   GET  /health                           -> { ok, screenReader, busy, code, environment }
 // NVDA is a single shared resource, so captures are serialized.
 import { createServer } from "node:http";
-import { appendFileSync, existsSync, openSync, readFileSync, readdirSync, renameSync, statSync } from "node:fs";
+import { existsSync, openSync, readFileSync, readdirSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { freemem, totalmem, uptime as osUptime } from "node:os";
@@ -29,6 +29,7 @@ import { edgePolicy, guestDiagnostics, processCounts, screenReaderState, treeSiz
 import { killStrayBrowsers, pruneEdgeProfile, reportBrowserPolicyDrift } from "./browser-profile.mjs";
 import { applyRequestedLogLevel } from "./nvda-logging.mjs";
 import { trimAlreadyDone } from "./windows-trim.mjs";
+import { createLogWriter, silenceStreamErrors } from "./server-log.mjs";
 import { fileURLToPath } from "node:url";
 
 const PORT = Number(process.env.A11Y_PORT || 8765);
@@ -43,18 +44,13 @@ const LOG_PATH = process.env.A11Y_SERVER_LOG || "server.log";
 // Doing it in-process rather than piping through PowerShell's Tee-Object, which on Windows
 // PowerShell 5.1 has no -Encoding parameter and writes UTF-16 -- that changed the log's
 // encoding mid-file and broke every existing reader of it.
-function log(line) {
-  const stamped = `${line}\n`;
-  process.stdout.write(stamped);
-  try {
-    appendFileSync(LOG_PATH, stamped, "utf8");
-  } catch {
-    // Console output is the fallback; a failed append must not take the worker down.
-  }
-}
-
-/** One generation kept. Enough to read the death of the previous worker, not enough to fill a disk. */
-const MAX_LOG_BYTES = 16 * 1024 * 1024;
+//
+// The writer itself lives in server-log.mjs, where it can be tested: this file binds a port on import, and
+// the console write below used to be OUTSIDE the try that guarded the append -- an EPIPE from a parent that
+// had gone away then reached the uncaughtException handler, which logged, which wrote to the same broken
+// pipe. That loop reached 354 GB. See that module's header.
+silenceStreamErrors(process.stdout);
+const log = createLogWriter({ path: LOG_PATH });
 
 /**
  * Roll `server.log` over at boot if it has grown too big.
@@ -135,16 +131,6 @@ async function tidyBrowserAtBoot() {
   }
 }
 
-function rotateLogIfLarge() {
-  try {
-    if (statSync(LOG_PATH, { throwIfNoEntry: false })?.size <= MAX_LOG_BYTES) return;
-    renameSync(LOG_PATH, `${LOG_PATH}.1`); // replaces any previous generation
-    log(`rotated ${LOG_PATH} (over ${MAX_LOG_BYTES} bytes); previous generation is ${LOG_PATH}.1`);
-  } catch (error) {
-    // A worker that cannot rotate its log must still serve. Say so and carry on.
-    log(`could not rotate ${LOG_PATH}: ${error.message}`);
-  }
-}
 let busy = false;
 
 /**
@@ -968,7 +954,9 @@ async function runCapture(res, { url, opts, captureId }) {
 }
 
 server.listen(PORT, () => {
-  rotateLogIfLarge();
+  // No rotate call here: the writer is seeded with the size already on disk and rotates on the append path,
+  // so a log inherited from a dead worker is retired by this very line. Rotating only HERE is what let one
+  // process write 354 GB without the bound ever being consulted.
   log(`a11y-witness NVDA worker listening on :${PORT} (reuse NVDA: ${REUSE_NVDA})`);
   // Hygiene AFTER the log line and deliberately not awaited, for the same reason warm-up is not: a caller
   // must see "not ready yet" rather than silence. These used to run BEFORE the log, synchronously, which is

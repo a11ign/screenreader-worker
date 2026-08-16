@@ -16,6 +16,7 @@ export const WORKER_FILES = [
   "capture-core.mjs",
   "capture-pure.mjs",
   "server.mjs",
+  "server-log.mjs",
   "worker-recovery.mjs",
   "capture-faults.mjs",
   "capture-results.mjs",
