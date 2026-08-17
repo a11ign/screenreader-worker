@@ -84,7 +84,21 @@ import { setTimeout as sleep } from "node:timers/promises";
 // is the finding — and that single record was the false negative that made the retrained scorer fail its
 // release gate. A 1-in-125 race cannot be recaptured away, so the fix is the race and the bump is what
 // makes the corpus uniform afterwards.
-export const CAPTURE_PROTOCOL_VERSION = 5;
+// Protocol 5 bumped for that race and did NOT fix it. Measured again on 2026-08-17, on a bare-metal
+// fleet: one capture in five of `filter-status-silent-solar/bad` recorded the same
+// `after: "Energy results, document"`, and the diagnostics say why. The contaminated capture is the one
+// carrying `browserRecycle` — a cold Edge start at the 25-capture boundary — while the four clean ones
+// carry `browserReused`. So it was never 1-in-125 chance; it is ~1-in-25 and tied to a cadence.
+//
+// Protocol 5's remedy — `waitForSpeechQuiet` before the baseline — was reachable and ran. It just gave up:
+// a 5 s budget against a cold browser's document announcement, returning `quiet: false` to a caller that
+// discarded it, at all ten call sites. The guard could only fail one way and that way was unobservable,
+// so on the slow path it degraded into the fixed sleep it had replaced.
+//
+// Protocol 6 raises the baseline ceiling to 20 s and CONSUMES the result. The bump is not for the new
+// `baselineQuiet` field, which no signal reads yet — it is because the same page can now produce
+// different evidence than it did under 5, which is the definition this file gives for a bump.
+export const CAPTURE_PROTOCOL_VERSION = 6;
 
 // Re-exported for callers that had these from `capture-core` before the split.
 export {
@@ -1641,6 +1655,20 @@ async function crossCheckAgainstElementsList({ structure, deadline, diag }) {
 // are willing to wait for that.
 const SPEECH_QUIET_WINDOW_MS = 300;
 const SPEECH_QUIET_BUDGET_MS = 5_000;
+/**
+ * The baseline before an activation gets a much larger ceiling than the settle sites, because it is the
+ * one call where giving up CORRUPTS evidence rather than merely costing time.
+ *
+ * Everywhere else an early return means a slightly noisy log. Here it means the PREVIOUS step's speech
+ * becomes this activation's evidence — measured on `filter-status-silent-solar/bad`, whose entire finding
+ * is that activating the filter announces nothing, and which recorded `after: "Energy results, document"`
+ * on the one capture of five that followed a browser recycle.
+ *
+ * Raising a ceiling is free. `waitForSpeechQuiet` returns as soon as the log has been unchanged for
+ * SPEECH_QUIET_WINDOW_MS, so a quiet guest still leaves in ~300 ms; only the path that was silently
+ * failing pays anything, and it pays instead of lying.
+ */
+const BASELINE_QUIET_BUDGET_MS = 20_000;
 
 /**
  * Wait until NVDA stops talking, rather than sleeping a guessed duration.
@@ -1666,9 +1694,9 @@ const SPEECH_QUIET_BUDGET_MS = 5_000;
  * @returns {Promise<{quiet: boolean, waitedMs: number, reads: number}>} `quiet: false` means the budget
  *   ran out with NVDA still talking -- recorded, never silently treated as settled.
  */
-async function waitForSpeechQuiet(label) {
+async function waitForSpeechQuiet(label, budgetMs = SPEECH_QUIET_BUDGET_MS) {
   const startedAt = Date.now();
-  const deadline = startedAt + SPEECH_QUIET_BUDGET_MS;
+  const deadline = startedAt + budgetMs;
   let length = -1;
   let lastChange = startedAt;
   let reads = 0;
@@ -2492,7 +2520,25 @@ async function activateAndCaptureDelta(phrase, interaction, kind) {
     // `waitForAnnouncement` already guards the other end. This is its missing counterpart, and the
     // asymmetry is why the hole survived: the code waited carefully for speech to arrive and not at all
     // for the previous speech to finish.
-    await waitForSpeechQuiet(`${kind}Baseline`);
+    // The RESULT is consumed, which is the half that was missing. `waitForSpeechQuiet` returns
+    // `{quiet:false}` when its budget runs out with NVDA still talking, and its own JSDoc promises that
+    // is "recorded, never silently treated as settled" — but all ten call sites discarded it, so no code
+    // path anywhere behaved differently when the guard gave up. A guard whose only failure signal has no
+    // consumer is not a guard: on a slow path it degrades back into the fixed sleep it replaced, with the
+    // same consequences and none of the visibility.
+    //
+    // That is why this survived. The budget was too short for a browser recycle AND nothing could say so.
+    const baseline = await waitForSpeechQuiet(`${kind}Baseline`, BASELINE_QUIET_BUDGET_MS);
+    if (!baseline.quiet) {
+      // Recorded where it reaches the capture file and the corpus test, not merely returned. Both
+      // possible outcomes are untrustworthy once this fires: a non-empty delta may be the previous
+      // step's speech, and an EMPTY one may be a real announcement we stopped listening for — and on
+      // these pages an empty delta is the finding, so it cannot be read as clean either.
+      interaction.sweepLog.push(
+        `${kind} BASELINE-NOT-QUIET waited=${baseline.waitedMs}ms reads=${baseline.reads} `
+        + "-- this delta is not trustworthy in either direction",
+      );
+    }
     const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, kind)) || []).length;
     await withTimeout(nvda.act(), ACT_TIMEOUT_MS, kind); // Enter on the control under the cursor
     const log = await waitForAnnouncement(before, kind);
@@ -2503,7 +2549,11 @@ async function activateAndCaptureDelta(phrase, interaction, kind) {
     // formChanges, so opening a disclosure counted -- and apache.org's SEARCH toggle was reported as a
     // form submitted with invalid input and no error announced. Nothing was submitted and nothing was
     // invalid.
-    interaction.formChanges.push({ control: phrase, kind, after });
+    // `baselineQuiet` travels WITH the entry, for the same reason `kind` does: a consumer deciding what
+    // this activation proves needs to know whether the measurement was sound. Carried on the evidence
+    // rather than left in a log, because a log nothing reads is a comment — this repo lost 604 captures
+    // to a crash that was faithfully written to `sweepLog` and never once read.
+    interaction.formChanges.push({ control: phrase, kind, after, baselineQuiet: baseline.quiet });
   } catch (e) {
     interaction.sweepLog.push(`${kind} ERROR ${errMsg(e)}`);
   }
