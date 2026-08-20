@@ -208,6 +208,72 @@ test("no capture client declares a budget that undici will silently ignore", () 
   }
 });
 
+/**
+ * Every client's ceiling must sit ABOVE the worker's own hard timeout, not just below undici's cap.
+ *
+ * The ladder test above reads ONE hardcoded path, `capture-screenreader-dataset.mjs`, so it could not see
+ * that `capture-real-pages.mjs` capped at 300 s against a 520 s hard timeout -- inverted, on the client that
+ * captures REAL pages, which are the pages most likely to need the full budget. A real page that used its
+ * budget was killed by the host before the worker's own backstop and dropped with no retry, so the corpus
+ * was silently biased toward small simple pages: exactly the axis the real-page corpus exists to add.
+ *
+ * The undici check in the test above and this one look similar and are not: that one is about a ceiling the
+ * transport imposes regardless of what you asked for, this one is about asking for less than the thing you
+ * are waiting on can take. A client can satisfy either and violate the other.
+ *
+ * Matches `timeoutMs:` as well as `AbortSignal.timeout(...)`, because the offending client used the former
+ * and neither existing pattern looked for it.
+ */
+test("the shared client ceiling sits above the worker's hard timeout", () => {
+  // Read from source, not imported, for the same reason the ladder above reads its host rung from source:
+  // a hardcoded copy here would keep asserting the old number after somebody lowered the real one.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const src = readFileSync(join(here, "..", "..", "worker-fleet", "src", "worker-http.mjs"), "utf8");
+  const declared = src.match(/CAPTURE_CLIENT_TIMEOUT_MS\s*=\s*([\d_]+)/);
+  assert.ok(declared, "CAPTURE_CLIENT_TIMEOUT_MS is gone from worker-http.mjs — has it been renamed?");
+  const ms = Number(declared[1].replace(/_/g, ""));
+  assert.ok(ms > CAPTURE_HARD_TIMEOUT_DEFAULT_MS,
+    `clients wait ${ms} ms but the worker's hard timeout is ${CAPTURE_HARD_TIMEOUT_DEFAULT_MS} ms. The `
+    + `client would give up first, so a capture that used its budget is reported as a client failure.`);
+});
+
+/**
+ * No client may declare its OWN capture ceiling below the worker's hard timeout.
+ *
+ * The ladder test at the top reads ONE hardcoded path, so it could not see that seven clients capped at
+ * 300-320 s against a 520 s hard timeout: `compare-workers`, `bench-capture`, `evidence-check`,
+ * `repeat-capture`, `capture-real-pages`, `capture-check` and `page-identity-rate`. The client gave up
+ * first, so a capture the worker would have finished was reported as a client failure and dropped.
+ *
+ * On the generated corpus nothing noticed -- a 1,338-byte page finishes in seconds. On REAL pages it
+ * silently discarded whatever used its budget, biasing the real-page corpus toward small simple pages:
+ * exactly the axis that corpus exists to add.
+ *
+ * This is a DIFFERENT check from the undici one above. That is about a ceiling the transport imposes
+ * whatever you ask for; this is about asking for less than the thing you are waiting on can take. A client
+ * can satisfy either and violate the other, which is how these seven passed for so long.
+ *
+ * Matches `timeoutMs:` as well as `AbortSignal.timeout(...)`, because every one of the seven used the
+ * former and neither existing pattern looked for it.
+ */
+test("no capture client declares its own ceiling below the worker's hard timeout", () => {
+  const clients = captureClients();
+  assert.ok(clients.length >= 8, `only found ${clients.length} capture clients; the discovery walk is broken`);
+
+  for (const [name, src] of clients) {
+    for (const [, argument] of src.matchAll(/(?:timeoutMs:\s*|AbortSignal\.timeout\(\s*)([A-Za-z0-9_]+)/g)) {
+      // Unresolvable means it comes from the shared constant, asserted above. A short page fetch is not a
+      // capture ceiling, so anything under half the hard timeout is out of scope for this check.
+      const ms = resolveMs(src, argument);
+      if (ms === null || ms < CAPTURE_HARD_TIMEOUT_DEFAULT_MS / 2) continue;
+      assert.ok(ms > CAPTURE_HARD_TIMEOUT_DEFAULT_MS,
+        `${name} declares its own ${ms} ms capture ceiling, below the worker's `
+        + `${CAPTURE_HARD_TIMEOUT_DEFAULT_MS} ms hard timeout. Import CAPTURE_CLIENT_TIMEOUT_MS from `
+        + `worker-http.mjs instead of declaring a local one.`);
+    }
+  }
+});
+
 /** A literal, or a `const NAME = <number>` / `Number(process.env.X || <number>)` in the same file. */
 function resolveMs(src: string, argument: string): number | null {
   // `15_000` is a literal too. Without the separator strip this fell through to the identifier branch,
