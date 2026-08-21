@@ -523,10 +523,16 @@ export function screenReaderState({ nvdaRoot, tempDir, tailLines = 80 }) {
  * standalone box still (`roles/worker/tasks/edge-version.yml`). Reported, never re-applied: this endpoint
  * is a read, and the thing that fixes drift is the role, which runs elevated.
  *
- * **`tasksEnumerable` exists because the first version of this probe reported `tasks: []` on a guest with
- * two disabled tasks.** The worker is unelevated, so an empty list means either "there are none" or "this
- * process cannot see them" -- and those are opposite answers, one reassuring and one meaning the probe is
- * blind. Reporting them identically is the exact defect this endpoint is usually used to diagnose.
+ * **`tasksNote` exists because this probe CANNOT answer for tasks, and said `[]` anyway.** The worker runs
+ * unelevated: measured on a guest carrying three Edge update tasks -- all `Disabled`, confirmed through
+ * Ansible -- it returned `tasks: []`, which reads as "no updater tasks, all clear" and is the opposite of
+ * the truth.
+ *
+ * The first attempt at a fix asked whether scheduled tasks were enumerable AT ALL, which came back `true`
+ * while the Edge ones stayed invisible -- so it swapped one wrong reassurance for another. The worker can
+ * list some tasks and not these, so "absent" and "unreadable" are genuinely indistinguishable from here.
+ * The payload therefore SAYS that, in the field itself, rather than encoding a confidence it does not have.
+ * `services` is kept because `Get-Service` does answer honestly for an unelevated caller.
  */
 export function edgeUpdaterState() {
   if (process.platform !== "win32") return null;
@@ -543,8 +549,11 @@ export function edgeUpdaterState() {
       // being used to find. The worker runs unelevated, and on a box that demonstrably had two disabled
       // tasks this returned `tasks: []` -- which reads as "no updater tasks, all clear", the opposite of
       // the truth. So say which it is: enumerable-and-empty, or not enumerable by this process.
-      "$readable = ($null -ne (Get-ScheduledTask -ErrorAction SilentlyContinue | Select-Object -First 1));" +
-      "@{ tasks = $t; services = $s; tasksEnumerable = $readable } | ConvertTo-Json -Depth 4 -Compress"],
+      "$note = if ($t.Count) { $null } else {" +
+      " 'EMPTY DOES NOT MEAN NONE: the worker runs unelevated and cannot read Edge''s update tasks. " +
+      "Measured on a guest carrying three of them, all Disabled, where this returned []. " +
+      "The authoritative check is roles/worker/tasks/edge-version.yml, which enumerates them elevated.' };" +
+      "@{ tasks = $t; services = $s; tasksNote = $note } | ConvertTo-Json -Depth 4 -Compress"],
       { encoding: "utf8", timeout: 60_000 });
     return parsePowerShellJson(raw)[0] ?? null;
   } catch (error) {
