@@ -8,7 +8,7 @@
 //   GET  /health                           -> { ok, screenReader, busy, code, environment }
 // NVDA is a single shared resource, so captures are serialized.
 import { createServer } from "node:http";
-import { existsSync, openSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, openSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { freemem, totalmem, uptime as osUptime } from "node:os";
@@ -250,12 +250,19 @@ const bootConstants = new Map();
 /**
  * A PowerShell value that cannot change while this process runs, read at most once.
  *
- * Every caller is a value fixed before the worker started: an executable's version (updating Edge or NVDA
- * restarts this process) and the Windows build (changing it needs a reboot). So the second read can only
- * ever return what the first did, at the cost of a blocking child process on the hottest path we have.
+ * Correct for the Windows build, which needs a reboot to change -- and a reboot restarts this process.
  *
- * There were two memos and one unmemoised call, which is the shape this repo keeps paying for -- a remedy
- * applied where it was noticed rather than everywhere its reason holds.
+ * **It was NOT correct for an executable's version, and this comment used to assert that it was**: "updating
+ * Edge or NVDA restarts this process". Nothing makes that true. Edge's updater replaces files on disk; the
+ * worker is a separate scheduled task and keeps running. Measured on a11y-worker-2: reporting Edge
+ * 151.0.4129.93 with an uptime of 5 days while `msedge.exe` on disk was 151.0.4129.101, written four days
+ * INTO that uptime.
+ *
+ * That is not a stale display value. `browserVersion` is part of the capture cache key, for the documented
+ * reason that a fleet can run more than one browser -- so every capture taken after the update was stamped
+ * with a version it was not captured under, and shared a key with evidence from a different browser build.
+ * That is the exact failure the key exists to prevent, arriving through the memo instead of through the key.
+ * See `fileProductVersion`, which now re-reads when the file changes.
  */
 function bootConstant(script) {
   if (bootConstants.has(script)) return bootConstants.get(script);
@@ -266,9 +273,58 @@ function bootConstant(script) {
   return value;
 }
 
-function fileProductVersion(path) {
+/**
+ * An executable's version, re-read when the executable changes.
+ *
+ * Memoised on the file's identity (path, mtime, size) rather than for the life of the process, because Edge
+ * and NVDA are both updated UNDER a running worker -- see `bootConstant` for the measurement. The point of
+ * the memo was never the version, it was keeping a blocking PowerShell child process off `/health`, which is
+ * polled; a `statSync` is one syscall and preserves that. A replaced binary changes mtime, so it costs one
+ * read and then memoises again.
+ *
+ * A version that MOVES under a live worker is worth saying out loud: captures either side of it are keyed
+ * differently and are not interchangeable, so a silent change would surface later as unexplained cache
+ * churn -- which is how this was nearly dismissed.
+ */
+const fileVersions = new Map();
+
+/**
+ * `stat` and `read` are injectable so this is testable off Windows, where `powershellValue` cannot run.
+ * The defect it fixes was invisible to every check precisely because nothing could exercise it, and a
+ * deploy would have HIDDEN it -- restarting the worker rebuilds the memo, so a correct version after a
+ * deploy proves the restart worked and says nothing about the invalidation.
+ *
+ * The injected types name only the FIELDS this function reads, rather than `typeof statSync` -- same
+ * reasoning as `ScorableCapture` in evidence-units.ts. A narrow contract is what makes the seam usable from
+ * a test, and it says in the type system that nothing here depends on the rest of `Stats`.
+ *
+ * @param {string} path
+ * @param {{ stat?: (path: string) => { mtimeMs: number, size: number },
+ *           read?: (script: string) => string }} [injected]
+ * @returns {string}
+ */
+export function fileProductVersion(path, { stat = statSync, read = powershellValue } = {}) {
+  let identity;
+  try {
+    const info = stat(path);
+    identity = `${path}|${info.mtimeMs}|${info.size}`;
+  } catch {
+    // Vanished or unreadable. Not memoisable, and "unknown" is the honest answer -- the same rule
+    // `bootConstant` applies to a failed read.
+    return "unknown";
+  }
+  if (fileVersions.has(identity)) return fileVersions.get(identity);
   const escaped = path.replace(/'/g, "''");
-  return bootConstant(`(Get-Item -LiteralPath '${escaped}').VersionInfo.ProductVersion`);
+  const value = read(`(Get-Item -LiteralPath '${escaped}').VersionInfo.ProductVersion`);
+  if (value === "unknown") return value; // a transient PowerShell failure must not become permanent
+  const previous = [...fileVersions.entries()].find(([key]) => key.startsWith(`${path}|`));
+  if (previous && previous[1] !== value) {
+    log(`${path} changed version under a running worker: ${previous[1]} -> ${value}. `
+      + "Captures before and after this point have different cache keys and are not interchangeable.");
+    fileVersions.delete(previous[0]);
+  }
+  fileVersions.set(identity, value);
+  return value;
 }
 
 /**
