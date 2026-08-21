@@ -16,7 +16,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,6 +28,7 @@ import {
   readThroughDeadline,
   WORST_CASE_STARTUP_MS,
 } from "./capture-pure.mjs";
+import { sourceFiles } from "../../worker-fleet/src/source-walk.mjs";
 
 /**
  * The host's per-capture timeout, READ from the file that owns it rather than copied here.
@@ -158,27 +159,14 @@ const UNDICI_HEADERS_CAP_MS = 300_000;
  * invisibly.
  */
 function captureClients(): Array<[string, string]> {
-  const packages = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-  const found: Array<[string, string]> = [];
-  const walk = (dir: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const path = join(dir, entry.name);
-      // `dist` is build output of the very files we are checking, so including it double-counts and
-      // reports a stale copy as a violation after the source has been fixed.
-      if (entry.isDirectory()) {
-        if (entry.name !== "node_modules" && entry.name !== "dist") walk(path);
-      } else if (/\.(mjs|ts)$/.test(entry.name) && !entry.name.includes(".test.")) {
-        const src = readFileSync(path, "utf8");
-        // The worker SERVES this route; it is not a client of it.
-        if (path.endsWith("server.mjs")) continue;
-        if (/\/capture\b/.test(src) && /method:\s*["']POST["']/.test(src)) {
-          found.push([path.slice(packages.length + 1), src]);
-        }
-      }
-    }
-  };
-  walk(packages);
-  return found;
+  // The WALK comes from `source-walk.mjs`; only the PREDICATE is this test's business. It was a private
+  // copy here, and a second copy was about to be written for the `--worker` validation guard — two
+  // discoveries of the same tree, which drift, which is the defect this test exists to catch one level up.
+  // `dist` and `.test.` exclusions live in the shared walk with the reasons attached.
+  return sourceFiles()
+    // The worker SERVES this route; it is not a client of it.
+    .filter(([path]) => !path.endsWith("server.mjs"))
+    .filter(([, src]) => /\/capture\b/.test(src) && /method:\s*["']POST["']/.test(src));
 }
 
 test("no capture client declares a budget that undici will silently ignore", () => {
