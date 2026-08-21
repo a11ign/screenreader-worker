@@ -30,7 +30,24 @@ import { killStrayBrowsers, pruneEdgeProfile, reportBrowserPolicyDrift } from ".
 import { applyRequestedLogLevel } from "./nvda-logging.mjs";
 import { trimAlreadyDone } from "./windows-trim.mjs";
 import { createLogWriter, silenceStreamErrors } from "./server-log.mjs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+/**
+ * Was this file RUN, or merely imported?
+ *
+ * `createServer` above is inert; `listen` below is what serves and warms up NVDA. Until this predicate
+ * existed, importing this module STARTED THE WORKER: measured on a Mac, `node -e "import('./server.mjs')"`
+ * logged "listening on :8765", began "warming up NVDA (worker start)", and then hung holding the listener
+ * until SIGTERM. On a guest that starts a screen reader — and this project's own notes are explicit that
+ * repeated NVDA starts are what produce the `nvdaHelperRemote (injection_terminate)` modal that wedges a
+ * box, and that "nothing may restart NVDA while a worker is idle".
+ *
+ * That import is not hypothetical: CLAUDE.md makes it the only real check that an .mjs file still loads,
+ * because neither lint nor tsc can see a ReferenceError at import — a fault this repo has already had in
+ * `capture-core.mjs`. The worker's own entry point was the one file that check could not be run against.
+ */
+const IS_MAIN = import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
+
 
 const PORT = Number(process.env.A11Y_PORT || 8765);
 const LOG_PATH = process.env.A11Y_SERVER_LOG || "server.log";
@@ -636,7 +653,10 @@ async function sampleDesktopDialogs() {
 // likely, which is the opposite of a diagnostic. The sample that matters is the one at the START OF A CAPTURE,
 // where a dialog actually blocks work and where the cost is paid once; `/health` reports whatever that last
 // sample saw, and says how old it is rather than pretending to be current.
-void sampleDesktopDialogs();
+// Gated with the listener: this spawns PowerShell, which the comment above notes "compiles C#" and was
+// measured timing out at 25 s on a starved guest. A worker that is booting should pay that once; a process
+// that merely imported this module should not pay it at all.
+if (IS_MAIN) void sampleDesktopDialogs();
 
 async function readiness() {
   warmUpOnceIfNeeded();
@@ -953,7 +973,7 @@ async function runCapture(res, { url, opts, captureId }) {
   }
 }
 
-server.listen(PORT, () => {
+if (IS_MAIN) server.listen(PORT, () => {
   // No rotate call here: the writer is seeded with the size already on disk and rotates on the append path,
   // so a log inherited from a dead worker is retired by this very line. Rotating only HERE is what let one
   // process write 354 GB without the bound ever being consulted.
@@ -1021,7 +1041,9 @@ for (const fatal of ["uncaughtException", "unhandledRejection"]) {
 // A reused NVDA outlives the capture that started it, so it has to be stopped when this
 // process goes away -- otherwise the scheduled task restarts the worker into a machine that
 // already has a screen reader running, which is how the speech channel destabilises.
-for (const signal of ["SIGINT", "SIGTERM"]) {
+// Guarded with the listener: a process that merely IMPORTED this module must not have its SIGTERM
+// repurposed into `process.exit(0)`, and it has no reused NVDA of its own to shut down.
+for (const signal of IS_MAIN ? ["SIGINT", "SIGTERM"] : []) {
   process.on(signal, async () => {
     log(`${signal}: stopping NVDA before exit`);
     await shutdownScreenReader();
