@@ -505,10 +505,48 @@ export function screenReaderState({ nvdaRoot, tempDir, tailLines = 80 }) {
   };
 }
 
+/**
+ * WHAT ACTUALLY GOVERNS EDGE UPDATES ON THESE BOXES — the updater's tasks and services.
+ *
+ * `edgePolicy` above reports two Edge *browser* policies and has never reported the EdgeUpdate ones, and
+ * for a while that looked like the gap. It is not. Microsoft documents twelve EdgeUpdate policies —
+ * `UpdateDefault`, the per-app `Update{56EB18F8-…}` and `TargetVersionPrefix{…}` among them — as
+ * "available only on Windows instances that are joined to a Microsoft Active Directory domain", and these
+ * are standalone machines. Provisioning wrote `UpdateDefault=0`, the role read it back correctly, and
+ * a11y-worker-2 updated itself from Edge .93 to .101 four days into a five-day uptime anyway.
+ *
+ * So reporting those policy values would have shown a green number for a control that was never in effect —
+ * worse than reporting nothing, because `browserVersion` is a capture cache key and a fleet that silently
+ * splits on it writes two evidence populations into one corpus.
+ *
+ * The scheduled tasks and services ARE the mechanism, because disabling them is what actually holds a
+ * standalone box still (`roles/worker/tasks/edge-version.yml`). Reported, never re-applied: this endpoint
+ * is a read, and the thing that fixes drift is the role, which runs elevated.
+ */
+export function edgeUpdaterState() {
+  if (process.platform !== "win32") return null;
+  try {
+    const raw = execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command",
+      "$t = Get-ScheduledTask -TaskName 'MicrosoftEdgeUpdateTaskMachine*' -ErrorAction SilentlyContinue |" +
+      " Select-Object @{n='name';e={$_.TaskName}},@{n='state';e={[string]$_.State}};" +
+      "$s = Get-Service -Name 'edgeupdate','edgeupdatem' -ErrorAction SilentlyContinue |" +
+      " Select-Object @{n='name';e={$_.Name}},@{n='status';e={[string]$_.Status}},@{n='startType';e={[string]$_.StartType}};" +
+      "@{ tasks = @($t); services = @($s) } | ConvertTo-Json -Depth 4 -Compress"],
+      { encoding: "utf8", timeout: 60_000 });
+    return parsePowerShellJson(raw)[0] ?? null;
+  } catch (error) {
+    // An image without the updater at all is a real answer; so is a blocked cmdlet. Report the reason.
+    return probeError(error);
+  }
+}
+
 export function guestDiagnostics({ edgeProfile, logPath }) {
   return {
     measuredAt: new Date().toISOString(),
     edgePolicy: edgePolicy(),
+    // The tasks and services, not just the policies — see `edgeUpdaterState` for why the policies cannot
+    // answer this question on a machine that is not domain-joined.
+    edgeUpdater: edgeUpdaterState(),
     edgeProfileBreakdown: largestSubtrees(edgeProfile),
     edgeProfileDefaultBreakdown: largestSubtrees(join(edgeProfile, "Default")),
     // The leading suspect for a slow worker: Edge is launched per capture, so its cold start is on the
