@@ -2656,6 +2656,12 @@ async function probeRouteChange({ interaction, deadline, diag }) {
     }
 
     const activation = await activateAndCaptureDelta(control, interaction, "route");
+    // FIRST, before anything moves the caret. This reading is where focus went as a RESULT of the
+    // activation, and every other measurement below rewinds to the top of the document to take its own —
+    // `firstHeadingFromTop` and `reportedTitle` both anchor. Taken afterwards it recorded the first link on
+    // the page for every variant of every case, identically, which reads as "the skip link did nothing" on
+    // a page where it worked perfectly.
+    const nextFocusAfter = await focusedAfterTab("routeChangeFocusAfter");
     const titleAfter = await reportedTitle(diag);
     // The FIRST HEADING, before and after, and it is the signal that makes this probe sound.
     //
@@ -2682,8 +2688,7 @@ async function probeRouteChange({ interaction, deadline, diag }) {
       // asking where focus went afterwards is the whole difference, and only a real browser driven by a real
       // screen reader can answer it.
       //
-      // Read AFTER the heading, so the caret work above cannot be blamed for moving focus.
-      nextFocusAfter: await focusedAfterTab("routeChangeFocusAfter"),
+      nextFocusAfter,
       announced: activation?.after ?? "",
       navigated: true,
     };
