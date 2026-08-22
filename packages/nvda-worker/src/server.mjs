@@ -1,6 +1,6 @@
 // server.mjs — NVDA capture worker as an HTTP service.
 // MUST run in an interactive desktop session (see run-server.cmd + the README).
-//   POST /capture  { url, task?, steps?, probeForms?, probeFocus?, probeTables?, captureId? }
+//   POST /capture  { url, task?, steps?, probeForms?, probeFocus?, probeTables?, probeNavigation?, captureId? }
 //                                          -> { url, screenReader, transcript, task }
 //   GET  /capture/<captureId>              -> the response that POST returned, replayed verbatim,
 //                                             or 202 while it is still running, or 404 if unknown.
@@ -442,6 +442,20 @@ function currentEnvironment() {
   return environmentCache;
 }
 
+/**
+ * The request boundary: which fields of a POST body the worker will act on.
+ *
+ * **Enumerated on purpose** — this decides what the machine DOES, and an unknown field must be ignored
+ * rather than obeyed. That is what lets an older worker take a request from a newer host and simply not do
+ * the new thing (`captureId` shipped that way deliberately).
+ *
+ * **And enumerating has a cost that has now been paid three times**: a probe flag added to a case reaches
+ * the guest through five places that each name their fields by hand — `pair()`, the generator's manifest,
+ * the host runner's `captureOptions`, THIS function, and `capture-core`'s own option read. `probeFocus` was
+ * dropped at the second and `probeNavigation` at this one, and both failures look identical from outside:
+ * the field the probe writes is simply absent, which is indistinguishable from a page that had nothing to
+ * report. `probe-chain.test.ts` now walks all five, so a sixth hop cannot be added silently either.
+ */
 function captureOptions(parsed) {
   return {
     steps: parsed.steps,
@@ -450,6 +464,9 @@ function captureOptions(parsed) {
     probeForms: parsed.probeForms ?? false,
     probeFocus: parsed.probeFocus ?? false,
     probeTables: parsed.probeTables ?? false,
+    // Opt-in navigation probe: activates the first link and asks NVDA for the page title before and after.
+    // 2.4.2's single-page-app failure, where the route changes and the title does not.
+    probeNavigation: parsed.probeNavigation ?? false,
     // Opt-in cross-check against NVDA's own Elements List totals. Opens a modal
     // dialog on the guest, so it is never on by default.
     probeElementsList: parsed.probeElementsList ?? false,
