@@ -2610,10 +2610,20 @@ async function activateAndCaptureDelta(phrase, interaction, kind) {
  * `navigated` travels with the evidence. Aiming it at a nav landmark, or at a link whose href changes the
  * route, is the obvious next step and is deliberately not guessed at here.
  */
+async function firstHeadingFromTop(kind) {
+  await anchorToTop();
+  const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, kind)) || []).length;
+  await withTimeout(nvda.perform(nvda.keyboardCommands.moveToNextHeading), NAV_TIMEOUT_MS, kind)
+    .catch(() => undefined);
+  const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, kind)) || [];
+  return log.slice(before).map((x) => String(x).trim()).filter(Boolean).join(" | ");
+}
+
 async function probeRouteChange({ interaction, deadline, diag }) {
   const mark = (fields) => diag.mark("routeChange", fields);
   try {
     if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
+    const headingBefore = await firstHeadingFromTop("routeChangeHeadingBefore");
     await anchorToTop();
     const titleBefore = await reportedTitle(diag);
 
@@ -2630,19 +2640,37 @@ async function probeRouteChange({ interaction, deadline, diag }) {
       // the same way -- `check-signals` has to be able to tell "nothing to navigate" from "we could not ask".
       mark({ found: false, reason: "no link reached" });
       interaction.sweepLog.push("routeChange no-link");
-      return { control: null, titleBefore, titleAfter: titleBefore, announced: "", navigated: false };
+      return { control: null, titleBefore, titleAfter: titleBefore, headingBefore, headingAfter: headingBefore, announced: "", navigated: false };
     }
 
     const activation = await activateAndCaptureDelta(control, interaction, "route");
     const titleAfter = await reportedTitle(diag);
+    // The FIRST HEADING, before and after, and it is the signal that makes this probe sound.
+    //
+    // The obvious corroboration -- "was anything announced?" -- is wrong, and the corpus said so on the
+    // first capture: the failing page announced `"visited"`, NVDA reporting the link's own state. Not
+    // silence, and it names nothing about where the user now is, so a rule keyed on silence would never
+    // fire on the very page it was written for.
+    //
+    // What actually distinguishes the failure is whether the VIEW MOVED while the title stood still. It
+    // also disposes of this probe's real false-positive risk: if the first link was a skip link or a plain
+    // fragment jump, the heading does not change either, and the rule correctly makes no claim.
+    const headingAfter = await firstHeadingFromTop("routeChangeHeadingAfter");
     const result = {
       control,
       titleBefore,
       titleAfter,
+      headingBefore,
+      headingAfter,
       announced: activation?.after ?? "",
       navigated: true,
     };
-    mark({ found: true, titleChanged: titleBefore !== titleAfter, announcedChars: result.announced.length });
+    mark({
+      found: true,
+      titleChanged: titleBefore !== titleAfter,
+      viewChanged: headingBefore !== headingAfter,
+      announcedChars: result.announced.length,
+    });
     return result;
   } catch (e) {
     // A failed measurement is not a silent page. An empty `announced` with an unchanged title IS the
@@ -2650,7 +2678,7 @@ async function probeRouteChange({ interaction, deadline, diag }) {
     // cost 1 in 20 captures of a correctly implemented page.
     mark({ error: errMsg(e) });
     interaction.sweepLog.push(`routeChange ERROR ${errMsg(e)}`);
-    return { control: null, titleBefore: null, titleAfter: null, announced: null, error: errMsg(e) };
+    return { control: null, titleBefore: null, titleAfter: null, headingBefore: null, headingAfter: null, announced: null, error: errMsg(e) };
   }
 }
 
