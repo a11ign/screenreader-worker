@@ -383,6 +383,7 @@ async function runCapturePhases(url, opts, diag) {
   const { structure, interaction, media } = await navigateByStructureThenAudit({
     deadline, diag,
     probeForms: !!opts.probeForms, probeFocus: !!opts.probeFocus, probeTables: !!opts.probeTables,
+    probeNavigation: !!opts.probeNavigation,
     probeElementsList: !!opts.probeElementsList,
     task: opts.task,
   });
@@ -1462,7 +1463,7 @@ async function navigateByStructureThenAudit(options) {
  * Reads as the order the phases must run in, and that order is load-bearing rather than incidental — each
  * phase below says which cursor state it leaves behind and therefore why it cannot move.
  */
-async function navigateByStructure({ deadline, diag, probeForms, probeFocus, probeTables, probeElementsList, task }) {
+async function navigateByStructure({ deadline, diag, probeForms, probeFocus, probeTables, probeNavigation, probeElementsList, task }) {
   const interaction = { stateChanges: [], formChanges: [], sweepLog: [] };
   const trips = { count: 0 };
   const structure = {
@@ -1477,6 +1478,11 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   // and the Elements List opens a modal dialog leaving the caret somewhere arbitrary — so everything
   // position-dependent has already run, and these two cannot swap.
   const focusOrder = probeFocus ? await probeFocusOrder({ deadline, diag }) : [];
+  // LAST of the three, because it is the only probe that can leave the page under measurement: it activates
+  // a link. Everything position-dependent has finished by here, so navigating away costs nothing.
+  const routeChange = probeNavigation
+    ? await probeRouteChange({ interaction, deadline, diag })
+    : null;
   if (probeElementsList) await crossCheckAgainstElementsList({ structure, deadline, diag });
 
   const result = {
@@ -1485,6 +1491,10 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
     formChanges: interaction.formChanges,
     postSubmitFields,
     focusOrder,
+    // Absent unless asked for, exactly like the other opt-in evidence. Absent and "we navigated and nothing
+    // was announced" must stay distinguishable: the second IS the 2.4.2 finding, and a field that is `null`
+    // in both cases would make a page nobody probed look like a page that failed.
+    ...(routeChange ? { routeChange } : {}),
     // Named explicitly, because this object is rebuilt from named fields and anything set on `interaction`
     // but not listed here is SILENTLY DROPPED -- which is how a field a signal reads can go missing with
     // every check still green. `postSubmitFields` itself was empty on all 2,122 captures for a related
@@ -2553,9 +2563,94 @@ async function activateAndCaptureDelta(phrase, interaction, kind) {
     // this activation proves needs to know whether the measurement was sound. Carried on the evidence
     // rather than left in a log, because a log nothing reads is a comment — this repo lost 604 captures
     // to a crash that was faithfully written to `sweepLog` and never once read.
-    interaction.formChanges.push({ control: phrase, kind, after, baselineQuiet: baseline.quiet });
+    const entry = { control: phrase, kind, after, baselineQuiet: baseline.quiet };
+    interaction.formChanges.push(entry);
+    // RETURNED as well as pushed, so a caller that needs the result does not have to reach into the array
+    // and assume its own entry is the last one. `probeRouteChange` needs it; the three existing callers
+    // ignore it and are unaffected.
+    return entry;
   } catch (e) {
     interaction.sweepLog.push(`${kind} ERROR ${errMsg(e)}`);
+    // Null, distinctly from an entry whose `after` is empty: "we could not measure" and "the page said
+    // nothing" are opposite findings on the criteria this feeds, and returning undefined for both is how
+    // that distinction gets lost at the next call site.
+    return null;
+  }
+}
+
+/**
+ * 2.4.2, the half a screen reader is uniquely placed to prove: **does navigating tell you where you went?**
+ *
+ * The detectable-by-absence half of Page Titled is not worth a probe. Measured across 4,895 captures there
+ * are ZERO missing or placeholder titles, WebAIM's million-page survey does not list missing title among the
+ * failures covering 96% of errors, and the documented real-world failures are the "does not describe its
+ * topic" kind, which is human judgement — W3C flags 2.4.2 on a page whose title reads
+ * "Welcome to CityLights! [Inaccessible Survey Page]". A rule there adds a row to the coverage table
+ * without adding any detection.
+ *
+ * The half that matters is the single-page app: the route changes, the content changes, and
+ * `document.title` does not — so the screen reader still says the previous page's name, and a user
+ * navigating by title has no way to know they moved. A static analyser cannot see it (the markup is
+ * correct at every instant) and neither can a capture that reads the title ONCE, at entry, which is what
+ * every capture before this one did.
+ *
+ * So the measurement is the screen reader's own answer, twice: ask NVDA what the page is called, activate a
+ * navigation control, ask again. Both readings come from `reportTitle`, the same command that populates
+ * `documentReady.title`, so this is the user's experience rather than an inference about the DOM.
+ *
+ * Runs LAST and only when asked. Activating a link is the one probe that can leave the page under
+ * measurement, so everything position-dependent has already finished — the same ordering rule that governs
+ * `probeFocusOrder` and the Elements List, for a stronger reason.
+ *
+ * **It activates the FIRST link on the page, and that is a real limitation rather than a detail.** On a
+ * synthetic case the fixture puts the navigating link first; on a real site the first link is as likely to
+ * be a skip link, a logo or a cookie banner, and activating it proves nothing about routing. So a `null`
+ * or unchanged result here means "this page's first link did not navigate", NOT "this page fails 2.4.2" —
+ * which is why the signal requires the title to be unchanged AND nothing to have been announced, and why
+ * `navigated` travels with the evidence. Aiming it at a nav landmark, or at a link whose href changes the
+ * route, is the obvious next step and is deliberately not guessed at here.
+ */
+async function probeRouteChange({ interaction, deadline, diag }) {
+  const mark = (fields) => diag.mark("routeChange", fields);
+  try {
+    if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
+    await anchorToTop();
+    const titleBefore = await reportedTitle(diag);
+
+    // Quick-nav to the first link, and prove we MOVED by a log delta rather than by a changed phrase.
+    // `sweepInDirection` records why: silence is unambiguous evidence of not moving, while an unchanged
+    // phrase is ambiguous between "did not move" and "moved to something announced the same way".
+    const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "routeChange")) || []).length;
+    await withTimeout(nvda.perform(nvda.keyboardCommands.moveToNextLink), NAV_TIMEOUT_MS, "routeChange")
+      .catch(() => undefined);
+    const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "routeChange")) || [];
+    const control = log.slice(before).map((x) => String(x).trim()).filter(Boolean).join(" | ");
+    if (!control) {
+      // No link to activate is a fact about the PAGE, not a failed probe, and the two must not be recorded
+      // the same way -- `check-signals` has to be able to tell "nothing to navigate" from "we could not ask".
+      mark({ found: false, reason: "no link reached" });
+      interaction.sweepLog.push("routeChange no-link");
+      return { control: null, titleBefore, titleAfter: titleBefore, announced: "", navigated: false };
+    }
+
+    const activation = await activateAndCaptureDelta(control, interaction, "route");
+    const titleAfter = await reportedTitle(diag);
+    const result = {
+      control,
+      titleBefore,
+      titleAfter,
+      announced: activation?.after ?? "",
+      navigated: true,
+    };
+    mark({ found: true, titleChanged: titleBefore !== titleAfter, announcedChars: result.announced.length });
+    return result;
+  } catch (e) {
+    // A failed measurement is not a silent page. An empty `announced` with an unchanged title IS the
+    // finding here, so an error recorded as that would invert it -- the `probeDisclosure` lesson, which
+    // cost 1 in 20 captures of a correctly implemented page.
+    mark({ error: errMsg(e) });
+    interaction.sweepLog.push(`routeChange ERROR ${errMsg(e)}`);
+    return { control: null, titleBefore: null, titleAfter: null, announced: null, error: errMsg(e) };
   }
 }
 
