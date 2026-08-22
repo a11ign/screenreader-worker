@@ -2610,6 +2610,18 @@ async function activateAndCaptureDelta(phrase, interaction, kind) {
  * `navigated` travels with the evidence. Aiming it at a nav landmark, or at a link whose href changes the
  * route, is the obvious next step and is deliberately not guessed at here.
  */
+/** One Tab from wherever activation left us, and what it announced. */
+async function focusedAfterTab(kind) {
+  try {
+    await withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, kind).catch(() => undefined);
+    return (await reportFocusedControl()) || "";
+  } catch {
+    // Null, never "": an empty announcement is a real observation here (focus went somewhere silent) and a
+    // failed measurement must not be recorded as one.
+    return null;
+  }
+}
+
 async function firstHeadingFromTop(kind) {
   await anchorToTop();
   const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, kind)) || []).length;
@@ -2640,7 +2652,7 @@ async function probeRouteChange({ interaction, deadline, diag }) {
       // the same way -- `check-signals` has to be able to tell "nothing to navigate" from "we could not ask".
       mark({ found: false, reason: "no link reached" });
       interaction.sweepLog.push("routeChange no-link");
-      return { control: null, titleBefore, titleAfter: titleBefore, headingBefore, headingAfter: headingBefore, announced: "", navigated: false };
+      return { control: null, titleBefore, titleAfter: titleBefore, headingBefore, headingAfter: headingBefore, nextFocusAfter: null, announced: "", navigated: false };
     }
 
     const activation = await activateAndCaptureDelta(control, interaction, "route");
@@ -2662,6 +2674,16 @@ async function probeRouteChange({ interaction, deadline, diag }) {
       titleAfter,
       headingBefore,
       headingAfter,
+      // WHERE THE NEXT TAB LANDS, which is the only way to tell a working bypass link from a decorative one.
+      //
+      // 2.4.1 does not require a skip link — headings or landmarks satisfy it, so its ABSENCE is not a
+      // failure and detecting absence would over-claim. What a static checker cannot see is a skip link that
+      // is PRESENT and inert: it reads a link and a plausible `href` and passes the page. Activating it and
+      // asking where focus went afterwards is the whole difference, and only a real browser driven by a real
+      // screen reader can answer it.
+      //
+      // Read AFTER the heading, so the caret work above cannot be blamed for moving focus.
+      nextFocusAfter: await focusedAfterTab("routeChangeFocusAfter"),
       announced: activation?.after ?? "",
       navigated: true,
     };
@@ -2678,7 +2700,7 @@ async function probeRouteChange({ interaction, deadline, diag }) {
     // cost 1 in 20 captures of a correctly implemented page.
     mark({ error: errMsg(e) });
     interaction.sweepLog.push(`routeChange ERROR ${errMsg(e)}`);
-    return { control: null, titleBefore: null, titleAfter: null, headingBefore: null, headingAfter: null, announced: null, error: errMsg(e) };
+    return { control: null, titleBefore: null, titleAfter: null, headingBefore: null, headingAfter: null, nextFocusAfter: null, announced: null, error: errMsg(e) };
   }
 }
 
