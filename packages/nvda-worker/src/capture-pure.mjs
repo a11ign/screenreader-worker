@@ -160,8 +160,8 @@ export function screenReaderWasSilentAtStart(diag) {
 // NVDA prefixes an announcement with the container it just entered, so the SAME element is
 // announced two different ways depending on which direction you reach it from:
 //
-//   "Children's story time, heading, level 3"
-//   "main landmark, Children's story time, heading, level 3"
+//   "heading, level 1, Market garden 044 guide"
+//   "main landmark, heading, level 1, Market garden 044 guide"
 //
 // A raw prefix key treats those as two elements. It shows up as a phantom extra heading --
 // harmless to the assertions, but it is noise in the evidence, and it got worse once the
@@ -169,8 +169,11 @@ export function screenReaderWasSilentAtStart(diag) {
 // keying.
 // The separator before the role may be a COMMA, not just a space. NVDA announces both shapes:
 //
-//   "main landmark, Children's story time, heading, level 3"      <- space
-//   "Main support article, region, Resetting a password, ..."     <- comma
+//   "main landmark, heading, level 1, Market garden 044 guide"           <- space
+//   "Main support article, region, heading, level 2, Resetting a password"  <- comma
+//
+// Both are real announcements from `runs/`. They are quoted verbatim on purpose: the examples here were
+// once written from memory, name-before-role, which is a shape NVDA has never produced in this corpus.
 //
 // Only the first was matched, so the second survived deduping and the same h2 was recorded twice --
 // three headings on a page with two. Found by the CDP census (sweep 3, page 2), which is exactly the
