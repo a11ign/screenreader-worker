@@ -1744,6 +1744,18 @@ async function collectByType(commands, ctx) {
   const startedAt = Date.now();
   const before = ctx.trips.count;
   const prevOutcome = await sweepInDirection(commands.prev, sweepCtx);
+  // WHERE THE BACKWARD WALK ENDED. Both directions push into one `out`, so the array is
+  // reverse(everything before the caret) followed by (everything after it, in document order) -- and
+  // without this index the two halves are indistinguishable and the array is NOT reading order.
+  //
+  // 2.4.3 compared tab order against it as though it were. Measured on check-for-flooding 2026-08-24,
+  // `structure.formFields` is exactly REVERSE document order, and the rule reported a focus-order failure
+  // on 25 of 35 conformant real pages. The capture already knew this and threw it away.
+  //
+  // Additive: `out` itself is unchanged, so every cached capture stays valid and no protocol bump is
+  // needed. A capture without this mark cannot support an order claim, and `addBrokenFocusOrder` makes
+  // none -- absence must not be read as "the array happens to be in order".
+  const prevCount = out.length;
   const afterPrev = Date.now(), tripsPrev = ctx.trips.count - before;
   const nextOutcome = await sweepInDirection(commands.next, sweepCtx);
   ctx.diag.mark("sweep", {
@@ -1758,6 +1770,7 @@ async function collectByType(commands, ctx) {
     // out of elements, went silent, or hit the step cap.
     prevStop: prevOutcome?.stop, nextStop: nextOutcome?.stop,
     prevStopPhrase: prevOutcome?.stopPhrase, nextStopPhrase: nextOutcome?.stopPhrase,
+    prevCount,
     phrases: out.slice(),
   });
   return out;
