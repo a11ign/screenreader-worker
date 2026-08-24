@@ -108,6 +108,7 @@ export {
   sweepStepFromSpeech,
   elementsListRowName,
   crossCheckStructure,
+  focusOrderCycled,
 };
 
 /**
@@ -2129,15 +2130,48 @@ async function enterFirstTable(K) {
 // OPT-IN, because it is the expensive probe: a press plus a focus report is ~2s per stop, so
 // twelve stops roughly doubles a 13s capture. The cheap sweeps above are on by default; this
 // one is requested per case.
-const MAX_TAB_STOPS = 12;
+// A SAFETY NET, not the normal terminus. It was 12, which is a number the corpus never notices and real
+// pages always hit: measured 2026-08-24 over 77 real pages, the focus probe truncated on 77 of them, and
+// overall coverage was 924 tab stops probed against 6,887 focusable elements -- 13.4%. Coverage is
+// cap/N, so it FALLS as pages grow: 3.8% on the largest (gov.wales, 312 focusable).
+//
+// The cost of that was not noise, it was four criteria going undetermined on every real site. A
+// truncated focus order makes 2.1.1, 2.1.2, 2.4.1 and 2.4.3 `cantTell` rather than `passed`, which is
+// correct -- content past the cap was never examined -- and those four are precisely the criteria this
+// project exists to reach. No corpus page has more than 22 focusable elements and 98% have 12 or fewer,
+// so every corpus gate was blind to it by construction. ADR 0019's thesis again.
+const MAX_TAB_STOPS = 150;
 const TRAP_REPEATS = 2;
+
+// The tab order is a CYCLE: past the last control, Tab returns to the first. So a complete pass is
+// DETECTABLE, and detecting it is what makes the cap a fallback rather than the usual answer.
+//
+// Confirmed over several stops rather than one, because a single phrase is ambiguous between "we wrapped"
+// and "this control announces exactly like the first one" -- four identical avatar links already cost
+// this project a sweep that reported 5 graphics of 66. Requiring the first N to recur IN ORDER makes a
+// coincidence vanishingly unlikely without needing to know anything about the page.
+const FOCUS_CYCLE_CONFIRM = 3;
+
+// The probe must not eat the capture. At the ~2s per stop this file's own comment records, 312 stops
+// would be 624s against a 280s hard capture timeout, so full coverage is not achievable on the largest
+// pages at any cap and the honest move is to bound the spend and REPORT the shortfall.
+const FOCUS_PROBE_BUDGET_MS = 120_000;
+
+/** Have we returned to where we started? See `FOCUS_CYCLE_CONFIRM` for why this is not one comparison. */
+function focusOrderCycled(stops) {
+  if (stops.length < FOCUS_CYCLE_CONFIRM * 2) return false;
+  return stops.slice(-FOCUS_CYCLE_CONFIRM)
+    .every((phrase, i) => phrase === stops[i]);
+}
 
 async function probeFocusOrder({ deadline, diag }) {
   await anchorToTop();
   const stops = [];
+  const budget = Math.min(deadline, Date.now() + FOCUS_PROBE_BUDGET_MS);
   let repeats = 0;
+  let cycled = false;
   for (let i = 0; i < MAX_TAB_STOPS; i += 1) {
-    if (Date.now() > deadline) break;
+    if (Date.now() > budget) break;
     await withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, "tab").catch(() => undefined);
     const phrase = await reportFocusedControl();
     if (!phrase) break;
@@ -2147,12 +2181,19 @@ async function probeFocusOrder({ deadline, diag }) {
     else repeats = 0;
     stops.push(phrase);
     if (repeats >= TRAP_REPEATS) break;
+    if (focusOrderCycled(stops)) { cycled = true; break; }
   }
   // Never a silent cap: a truncated focus order looks identical to a short one.
+  //
+  // `truncated` now means GENUINELY INCOMPLETE -- neither wrapped nor stalled -- rather than "hit the
+  // cap", which on real pages was always true and therefore said nothing. It is the value
+  // `sweepOutcomes` turns into a `cantTell`, so widening it to mean "we stopped early for any reason"
+  // would keep asserting ignorance about pages we walked all the way round.
   diag.mark("focusOrder", {
     stops: stops.length,
-    truncated: stops.length >= MAX_TAB_STOPS,
+    cycled,
     stalled: repeats >= TRAP_REPEATS,
+    truncated: !cycled && repeats < TRAP_REPEATS && stops.length > 0,
   });
   return stops;
 }
