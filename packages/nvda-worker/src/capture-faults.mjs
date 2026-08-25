@@ -30,6 +30,20 @@ export const FAULT = {
    * evidence about the site.
    */
   PAGE_UNREACHABLE: "page-unreachable",
+  /**
+   * The browser is showing a DIFFERENT page from the one requested — reachable, just not this one.
+   *
+   * A separate code from PAGE_UNREACHABLE, and the split is not cosmetic. Both were reported as
+   * `page-unreachable` until 2026-08-25, when five captures failed with it and the name sent the
+   * diagnosis straight at the network: the page server was serving perfectly, and the `actual` URL in
+   * every failure was a real page it was serving at that moment. "The address could not be reached" and
+   * "the browser is on the wrong document" need opposite remedies, and this repo's most-named defect is
+   * producing one answer where the other is true.
+   *
+   * NOT recoverable by a fresh NVDA — nothing about the screen reader is wrong — so it stays out of
+   * `RECOVERABLE` for the same reason PAGE_UNREACHABLE does.
+   */
+  WRONG_PAGE: "wrong-page",
 };
 
 /**

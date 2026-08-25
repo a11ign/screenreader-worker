@@ -102,6 +102,7 @@ export const CAPTURE_PROTOCOL_VERSION = 6;
 
 // Re-exported for callers that had these from `capture-core` before the split.
 export {
+  addressesSamePage,
   phraseAction,
   failIfScreenReaderIsMute,
   dedupeKey,
@@ -159,6 +160,10 @@ const STATE_WAIT_MS = 5_000;
 // parts, and cutting after the first would truncate multi-phrase live regions.
 const STATE_QUIET_MS = 600;
 const STATE_POLL_MS = 100;
+const LANDED_POLL_MS = 100;          // between reads of the browser's current URL
+// Above the slowest honest navigation, not above a fixture's. A real site is the slow case, and being
+// wrong here turns "still loading" into "wrong page" — which destroys a capture rather than costing time.
+const LANDED_BUDGET_MS = 30_000;
 
 const ADVANCE_TIMEOUT_MS = 8_000; // moving to the next line/object
 const READ_TIMEOUT_MS = 5_000; // reading the phrase after advancing
@@ -858,23 +863,88 @@ function samePath(a, b) {
   return normalise(a) === normalise(b);
 }
 
-async function assertLandedOnRequestedPage(url, diag) {
-  const actual = await currentPageUrl();
-  if (!actual) return;
-  const want = new URL(url);
+/** Does what the browser is showing address the same document we asked for? PURE. */
+function addressesSamePage(actual, url) {
   let got;
   try {
     got = new URL(actual);
   } catch {
-    return;
+    return null; // not a URL at all: this guard makes no claim
   }
-  const same = got.origin === want.origin && samePath(got.pathname, want.pathname);
-  diag.mark("landedOnRequested", { ok: same, requested: url, actual });
-  if (same) return;
+  const want = new URL(url);
+  return got.origin === want.origin && samePath(got.pathname, want.pathname);
+}
+
+/**
+ * Poll until the browser is showing the requested page, or the budget runs out.
+ *
+ * POLLED, never read once — and the one-shot version cost five captures the day it shipped.
+ *
+ * `browserReady` means `browserAlive()` returned true, and that only proves **the DevTools port
+ * answers**. It is not a claim that the requested URL has loaded. So reading the URL immediately after
+ * `openPage` reads whatever document the browser happens to be showing, which after a recycle is the
+ * previous one while the new navigation is still in flight.
+ *
+ * Measured 2026-08-25, from the diagnostics of five failed captures on one worker:
+ *
+ *     browserClosed  atMs 8153  forced: true
+ *     browserReady   atMs 8163
+ *     landedOnRequested atMs 8164  ok: false   <- ONE MILLISECOND later
+ *
+ * Every one followed `browserRecycle after: 25`, and the `actual` URL was a real page the server was
+ * serving. Nothing was unreachable; the check simply looked before the navigation landed.
+ *
+ * This is the defect CLAUDE.md's longest section is about, committed in a new place: *"a condition must
+ * be sufficient — `screenReaderResponds()` only proves the Remote port accepts a TCP connection, not
+ * that NVDA's virtual buffer is navigable."* `browserAlive()` is that same insufficient condition one
+ * subsystem over, and this guard was built on top of it with no poll at all.
+ *
+ * The budget must exceed the slowest HONEST navigation, because a wrong page is a legitimate finding and
+ * a guard that gives up early turns "still loading" into "wrong page" — the same inversion a short sleep
+ * once turned into "the page announced nothing". It costs nothing when the page is already right: the
+ * first read matches and the loop exits.
+ *
+ * INJECTABLE, because the entire defect is about WHEN the URL is read and a test that cannot control
+ * time cannot see it — the same reasoning as `file-version-memo.test.ts`.
+ *
+ * @returns {Promise<{ok: boolean, actual: string|null, attempts: number, waitedMs: number}>}
+ */
+export async function landedVerdict(url, options = {}) {
+  const {
+    read, budgetMs = LANDED_BUDGET_MS, pollMs = LANDED_POLL_MS,
+    now = () => Date.now(), wait = sleep,
+  } = options;
+  const startedAt = now();
+  let actual = null;
+  let attempts = 0;
+
+  while (now() - startedAt < budgetMs) {
+    attempts += 1;
+    actual = await read();
+    // A null URL is CDP being unreachable, which is a DIFFERENT fault reported elsewhere — but it is also
+    // transient right after a launch, so it is retried rather than taken as a verdict.
+    if (actual && addressesSamePage(actual, url) === true) {
+      return { ok: true, actual, attempts, waitedMs: now() - startedAt };
+    }
+    await wait(pollMs);
+  }
+  return { ok: false, actual, attempts, waitedMs: now() - startedAt };
+}
+
+async function assertLandedOnRequestedPage(url, diag) {
+  const verdict = await landedVerdict(url, { read: currentPageUrl });
+  // Marked whether or not it had to wait, so "matched immediately" and "matched after 4 s" are
+  // distinguishable — and so a future reader can tell this ran at all. A remedy with no mark can be inert
+  // while green results vouch for it, which is exactly what `refreshBrowseBuffer` did.
+  diag.mark("landedOnRequested", { ...verdict, requested: url });
+  if (verdict.ok) return;
+  // Silence from CDP for the whole budget is not a claim that the page is wrong. Saying it was would be
+  // the same conflation FAULT.WRONG_PAGE was split out to remove.
+  if (!verdict.actual) return;
   throw captureFault(
-    new Error(`the browser opened ${JSON.stringify(actual)}, not the page requested `
-      + `(${JSON.stringify(url)}) — the address was not reached as a URL`),
-    FAULT.PAGE_UNREACHABLE,
+    new Error(`the browser is showing ${JSON.stringify(verdict.actual)}, not the page requested `
+      + `(${JSON.stringify(url)}), after waiting ${LANDED_BUDGET_MS} ms for it to navigate`),
+    FAULT.WRONG_PAGE,
   );
 }
 
