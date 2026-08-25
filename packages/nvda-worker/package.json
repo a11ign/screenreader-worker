@@ -6,6 +6,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.mjs",
+    "./code-version": "./src/code-version.mjs",
+    "./worker-files": "./src/worker-files.mjs",
+    "./capture-pure": "./src/capture-pure.mjs",
     "./package.json": "./package.json"
   },
   "bin": {
