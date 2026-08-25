@@ -2685,6 +2685,32 @@ async function firstHeadingFromTop(kind) {
   return log.slice(before).map((x) => String(x).trim()).filter(Boolean).join(" | ");
 }
 
+/**
+ * Why the probe reached no link, or "" when it reached one.
+ *
+ * Two ways to reach nothing and they must not be recorded the same way. Silence is one. The other is
+ * NVDA ANNOUNCING THE END: quick-nav past the last link says "no next link", and that string was taken
+ * for the NAME of a control the probe had activated — on gov.scot/publications 2.4.2 reported
+ * `after activating "no next link" the page moved to "AUGUST 2025, heading, level 2"`. Nothing was
+ * activated; the caret moved, which is what quick-nav does.
+ *
+ * `sweepInDirection`'s own lesson, reaching the one probe that never learned it: prefer the screen
+ * reader's answer over an inference about its behaviour, and `exhausted` is the sound terminus.
+ */
+function noLinkReached(control) {
+  if (!control) return "no-link";
+  return NOTHING_FURTHER_RE.test(control) ? "exhausted" : "";
+}
+
+/**
+ * NVDA saying there is nothing further of a type, in the phrasings it uses.
+ *
+ * The screen reader announces the end of a page — "no next link", "no previous heading" — and that is a
+ * TERMINUS, not a control. Matching it here rather than only in the rule means the capture records the
+ * fact rather than a fiction the rule has to undo later.
+ */
+const NOTHING_FURTHER_RE = /\bno (next|previous) \w+/i;
+
 async function probeRouteChange({ interaction, deadline, diag }) {
   const mark = (fields) => diag.mark("routeChange", fields);
   try {
@@ -2701,13 +2727,17 @@ async function probeRouteChange({ interaction, deadline, diag }) {
       .catch(() => undefined);
     const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "routeChange")) || [];
     const control = log.slice(before).map((x) => String(x).trim()).filter(Boolean).join(" | ");
-    if (!control) {
-      // No link to activate is a fact about the PAGE, not a failed probe, and the two must not be recorded
-      // the same way -- `check-signals` has to be able to tell "nothing to navigate" from "we could not ask".
-      mark({ found: false, reason: "no link reached" });
-      interaction.sweepLog.push("routeChange no-link");
+    const reachedNothing = noLinkReached(control);
+    if (reachedNothing) {
+      mark({ found: false, reason: reachedNothing });
+      interaction.sweepLog.push(`routeChange ${reachedNothing}`);
       return { control: null, titleBefore, titleAfter: titleBefore, headingBefore, headingAfter: headingBefore, nextFocusAfter: null, announced: "", navigated: false };
     }
+    // WHAT WAS PRESSED, recorded before pressing it. These are live sites belonging to other people, and
+    // `probeNavigation` is defensible because following a link is ordinary browsing — the thing this tool
+    // already did to reach the page. Naming the target makes that reviewable after the fact instead of
+    // taken on trust, and it is the field to read first if a capture ever does something surprising.
+    mark({ activating: control.slice(0, 120) });
 
     const activation = await activateAndCaptureDelta(control, interaction, "route");
     // FIRST, before anything moves the caret. This reading is where focus went as a RESULT of the
