@@ -109,6 +109,7 @@ export {
   elementsListRowName,
   crossCheckStructure,
   focusOrderCycled,
+  isBrowserErrorTitle,
 };
 
 /**
@@ -816,6 +817,19 @@ async function waitForBufferReady(diag, budgetMs = BUFFER_READY_BUDGET_MS) {
   return { ready: false, sawLoading, refreshed: false };
 }
 
+/**
+ * Titles Edge gives its own error pages, which are not the page under test.
+ *
+ * Deliberately matched on the TITLE rather than on transcript content: the title is one string NVDA
+ * reports before anything else, so this fails fast and cannot be confused with a site whose prose
+ * happens to mention connectivity. Chromium's error titles are stable and short.
+ */
+/** Exported so the guard can be shown to FAIL — a check never seen to reject anything is untested. */
+const isBrowserErrorTitle = (title) => BROWSER_ERROR_TITLE_RE.test(String(title ?? ""));
+
+const BROWSER_ERROR_TITLE_RE =
+  /can.t reach this page|no internet|site can.t be reached|refused to connect|ERR_[A-Z_]+/i;
+
 async function waitForDocument(diag) {
   // ONE budget for all the buffer waiting this document gets, not one per attempt. Three attempts at 90 s is
   // 270 s inside a 280 s capture, so the retry loop could exhaust the whole capture before reading a word —
@@ -823,6 +837,23 @@ async function waitForDocument(diag) {
   const bufferDeadline = Date.now() + BUFFER_READY_BUDGET_MS;
   for (let attempt = 1; attempt <= READY_ATTEMPTS; attempt++) {
     const title = await reportedTitle(diag);
+    if (title && BROWSER_ERROR_TITLE_RE.test(title)) {
+      // THE BROWSER'S OWN ERROR PAGE IS NOT THE PAGE. It has a title, headings and text, so every check
+      // below passes and the capture is recorded as evidence about the site — measured 2026-08-25, when
+      // three fixture captures came back whose first transcript line was
+      // `"heading, level 1, Hmmm... can't reach this page"` from a run reporting "2/3 captured".
+      //
+      // Two separate causes produced it in one afternoon (no page server; a `localhost` URL a remote
+      // worker cannot reach), which is the argument for catching it HERE rather than in either fix: the
+      // ways to fail to reach a page are open-ended, and what they have in common is the page you get
+      // instead.
+      //
+      // Thrown rather than marked, so the run records a failure and retries, exactly as it does for a
+      // page that never loads. A capture of chrome://error is worse than no capture: it looks like data.
+      diag.mark("documentReady", { ok: false, title, attempt, browserError: true });
+      throw captureFault(new Error(`the browser served an error page, not the site: ${JSON.stringify(title)}`
+        + " — the URL was not reachable from this worker"), FAULT.PAGE_UNREACHABLE);
+    }
     if (title && title.toLowerCase() !== "blank") {
       diag.mark("documentReady", { ok: true, title, attempt });
       return title;

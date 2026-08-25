@@ -20,6 +20,16 @@ export const FAULT = {
   SCREEN_READER_MUTE: "screen-reader-mute",
   /** NVDA would not start. Usually a guest still settling after auto-logon. */
   SCREEN_READER_START_FAILED: "screen-reader-start-failed",
+  /**
+   * The browser served its own error page instead of the site.
+   *
+   * NOT a screen-reader fault, and the distinction matters to what the host does next: retrying on a
+   * fresh NVDA cannot help, because the URL is wrong or unreachable FROM THIS WORKER. Measured
+   * 2026-08-25 in two different ways within one afternoon — no page server running, and a `localhost`
+   * URL sent unchanged to a remote worker — both of which recorded Edge's "can't reach this page" as
+   * evidence about the site.
+   */
+  PAGE_UNREACHABLE: "page-unreachable",
 };
 
 /**
