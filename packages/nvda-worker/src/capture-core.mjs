@@ -282,6 +282,7 @@ export async function captureWithNvda(url, opts = {}) {
   const app = browserFor(opts);
   diag.mark("browserSelected", { id: app.id, name: app.name });
   const browser = await openPage(url, diag, { reuse: reuseBrowser, app });
+  await assertLandedOnRequestedPage(url, diag);
   let succeeded = false;
   try {
     const result = await runCapturePhases(url, opts, diag);
@@ -815,6 +816,46 @@ async function waitForBufferReady(diag, budgetMs = BUFFER_READY_BUDGET_MS) {
   // "the document never finished loading" and "the page has nothing to say" are different findings.
   diag.mark("bufferReady", { sawLoading, refreshed: false, timedOut: true, waitedMs: Date.now() - startedAt });
   return { ready: false, sawLoading, refreshed: false };
+}
+
+/**
+ * Did the browser open the page we asked for?
+ *
+ * The one fact that settles it, and `currentPageUrl` has been imported into this file all along to
+ * answer a different question. Measured 2026-08-25: a fixture capture came back with 173 transcript
+ * lines containing `"Back to Bing search"` and the title `"localhost - Search - Profile 1 - Microsoft
+ * Edge"`. Edge had treated the address as a SEARCH QUERY and gone to Bing — which is a real page with a
+ * real title, so every readiness check passed and it was recorded as evidence about the fixture.
+ *
+ * That is the THIRD distinct way one afternoon produced a capture of the wrong page, after a dead port
+ * and a host the worker could not reach. The first two are caught by the error-page title guard; this
+ * one cannot be, because Bing is not an error. Comparing the URL catches all three and anything else of
+ * the same shape, which is why it belongs here rather than beside either specific fix.
+ *
+ * Compared on ORIGIN AND PATH only. A site may legitimately add a query string, a fragment or a
+ * trailing slash, and failing a capture for that would be a guard that cries wolf — while a redirect to
+ * a different host or path is exactly what this must catch. A capture whose URL cannot be read at all
+ * makes no claim: `currentPageUrl` returns null when CDP is unreachable, which is a separate fault
+ * already reported elsewhere.
+ */
+async function assertLandedOnRequestedPage(url, diag) {
+  const actual = await currentPageUrl();
+  if (!actual) return;
+  const want = new URL(url);
+  let got;
+  try {
+    got = new URL(actual);
+  } catch {
+    return;
+  }
+  const same = got.origin === want.origin && got.pathname.replace(/\/$/, "") === want.pathname.replace(/\/$/, "");
+  diag.mark("landedOnRequested", { ok: same, requested: url, actual });
+  if (same) return;
+  throw captureFault(
+    new Error(`the browser opened ${JSON.stringify(actual)}, not the page requested `
+      + `(${JSON.stringify(url)}) — the address was not reached as a URL`),
+    FAULT.PAGE_UNREACHABLE,
+  );
 }
 
 /**
