@@ -110,6 +110,7 @@ export {
   crossCheckStructure,
   focusOrderCycled,
   isBrowserErrorTitle,
+  samePath,
 };
 
 /**
@@ -838,6 +839,25 @@ async function waitForBufferReady(diag, budgetMs = BUFFER_READY_BUDGET_MS) {
  * makes no claim: `currentPageUrl` returns null when CDP is unreachable, which is a separate fault
  * already reported elsewhere.
  */
+/**
+ * Two paths that address the same document.
+ *
+ * A trailing slash and a `.html` extension are both things a SERVER may add or drop while serving
+ * exactly what was asked for. Measured 2026-08-25, and it cost a run: `serve` logs
+ * `GET /route-title-stale/bad` for a request to `/bad.html` — it resolves the extension and the browser's
+ * URL then ends `/bad`, so a strict comparison rejected two captures that were completely correct. The
+ * whole run reported 0/3.
+ *
+ * That is the guard crying wolf, which is worse than useless: a check that fails on correct input gets
+ * switched off, and this one exists to catch three real ways of capturing the wrong page. Normalising
+ * here keeps it able to see a redirect to a different host or a different document, which is what it is
+ * for, and blind to a rewrite that changes neither.
+ */
+function samePath(a, b) {
+  const normalise = (path) => path.replace(/\/$/, "").replace(/\.html?$/i, "").replace(/\/index$/i, "");
+  return normalise(a) === normalise(b);
+}
+
 async function assertLandedOnRequestedPage(url, diag) {
   const actual = await currentPageUrl();
   if (!actual) return;
@@ -848,7 +868,7 @@ async function assertLandedOnRequestedPage(url, diag) {
   } catch {
     return;
   }
-  const same = got.origin === want.origin && got.pathname.replace(/\/$/, "") === want.pathname.replace(/\/$/, "");
+  const same = got.origin === want.origin && samePath(got.pathname, want.pathname);
   diag.mark("landedOnRequested", { ok: same, requested: url, actual });
   if (same) return;
   throw captureFault(

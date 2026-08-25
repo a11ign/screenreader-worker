@@ -14,7 +14,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 // capture-core is plain .mjs; it runs under bare node on the worker.
-import { isBrowserErrorTitle } from "./capture-core.mjs";
+import { isBrowserErrorTitle, samePath } from "./capture-core.mjs";
 
 test("Edge's unreachable-page titles are refused", () => {
   for (const title of [
@@ -48,4 +48,24 @@ test("an absent title is not a browser error", () => {
   // would turn a slow page into a hard failure.
   assert.equal(isBrowserErrorTitle(""), false);
   assert.equal(isBrowserErrorTitle(undefined), false);
+});
+
+test("a server that resolves .html is not a different page", () => {
+  // Measured 2026-08-25, and it cost a run: `serve` logs `GET /route-title-stale/bad` for a request to
+  // `/bad.html` — it resolves the extension, so the browser's URL ends `/bad`. A strict comparison
+  // rejected two captures that were completely correct and the run reported 0/3.
+  //
+  // A guard that fails on correct input gets switched off, which would lose the three real wrong-page
+  // faults it was built to catch.
+  assert.equal(samePath("/route-title-stale/bad", "/route-title-stale/bad.html"), true);
+  assert.equal(samePath("/a/b/", "/a/b"), true);
+  assert.equal(samePath("/docs/index.html", "/docs/"), true);
+});
+
+test("a genuinely different document is still caught", () => {
+  // The faults this exists for: a redirect to another path, and the search-engine landing that recorded
+  // 173 lines of Bing as evidence about a fixture.
+  assert.equal(samePath("/search", "/route-title-stale/bad.html"), false);
+  assert.equal(samePath("/skip-link-broken/good", "/skip-link-broken/bad"), false);
+  assert.equal(samePath("/a/b", "/a/c"), false);
 });
