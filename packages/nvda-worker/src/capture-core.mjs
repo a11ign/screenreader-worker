@@ -289,6 +289,7 @@ export async function captureWithNvda(url, opts = {}) {
   diag.mark("browserSelected", { id: app.id, name: app.name });
   const browser = await openPage(url, diag, { reuse: reuseBrowser, app });
   await assertLandedOnRequestedPage(url, diag);
+  await waitForPageToSettle(diag);
   let succeeded = false;
   try {
     const result = await runCapturePhases(url, opts, diag);
@@ -929,6 +930,53 @@ export async function landedVerdict(url, options = {}) {
     await wait(pollMs);
   }
   return { ok: false, actual, attempts, waitedMs: now() - startedAt };
+}
+
+/** Between two reads of the tree. A poll INTERVAL, not a guess at how long rendering takes. */
+const SETTLE_POLL_MS = 400;
+/** The ceiling. A page still changing after this is captured as it stands, and the mark says so. */
+const SETTLE_BUDGET_MS = 6000;
+
+/**
+ * Wait until the page STOPS CHANGING, not until it looks finished.
+ *
+ * The URL guard proves the browser is showing the right address. It says nothing about whether that
+ * document has rendered, and for a client-rendered page the address is correct immediately while the DOM
+ * is still a shell. Every other wait in this file is speech-based, and speech settles just as happily on
+ * a shell as on a page — measured 2026-08-26 on the Met Office warnings page, captured as `"blank"`, 27
+ * announcements of navigation and a census of `heading=0`, while its published HTML carries FORTY
+ * headings. That produced two WCAG findings against a page that has none of those faults.
+ *
+ * SETTLED, never "has content". Waiting for a heading would hang for the whole budget on a page that
+ * genuinely has none — which is exactly what `1.3.1:no-headings` exists to catch — and this repo's rule
+ * is that a check must never reject evidence whose absence is the finding. Two consecutive identical
+ * reads of the tree mean the DOM has stopped moving, whatever it contains.
+ *
+ * It costs nothing where nothing was wrong: a server-rendered page is already settled, so the first two
+ * reads agree and this returns after one interval.
+ */
+async function waitForPageToSettle(diag) {
+  const startedAt = Date.now();
+  let previous = null;
+  let reads = 0;
+  while (Date.now() - startedAt < SETTLE_BUDGET_MS) {
+    const census = await structuralCensus();
+    reads += 1;
+    const shape = census
+      ? `${census.heading}/${census.link}/${census.graphic}/${census.landmark}`
+      : null;
+    if (shape !== null && shape === previous) {
+      // MARKED whether or not it had to wait, so "settled immediately" and "never ran" can never be the
+      // same silence — the `refreshBrowseBuffer` rule, which sat inert while green results vouched for it.
+      diag.mark("pageSettled", { reads, waitedMs: Date.now() - startedAt, shape });
+      return;
+    }
+    previous = shape;
+    await sleep(SETTLE_POLL_MS);
+  }
+  // Still moving. Captured as it stands rather than failed: a page that never settles is a real thing
+  // (a ticker, a live feed), and refusing it would reject evidence rather than describe it.
+  diag.mark("pageSettled", { reads, waitedMs: Date.now() - startedAt, settled: false });
 }
 
 async function assertLandedOnRequestedPage(url, diag) {

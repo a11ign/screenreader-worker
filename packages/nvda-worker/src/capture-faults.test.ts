@@ -46,3 +46,24 @@ test("every captureFault call site passes the code first", () => {
     "captureFault takes (code, message) — an Error in the first position is the swap that made seven "
     + "failures log a bare `wrong-page` and made their codes unclassifiable");
 });
+
+test("the settle wait is a CONDITION, not a duration, and cannot hang on an empty page", () => {
+  // The URL guard proves the browser shows the right address; it says nothing about whether that document
+  // has RENDERED. For a client-rendered page the address is correct immediately while the DOM is a shell,
+  // and every other wait in capture-core is speech-based — speech settles just as happily on a shell.
+  // Measured: the Met Office warnings page captured as "blank", 27 announcements, census heading=0, while
+  // its published HTML carries forty headings. Two WCAG findings against faults the page does not have.
+  const source = readFileSync(new URL("./capture-core.mjs", import.meta.url), "utf8");
+  const settle = source.slice(source.indexOf("async function waitForPageToSettle"));
+  assert.match(settle, /shape === previous/,
+    "it must wait for the tree to STOP CHANGING — waiting for content would hang the whole budget on a "
+    + "page that genuinely has no headings, which is precisely what 1.3.1:no-headings exists to catch");
+  assert.ok(!/heading\s*>\s*0|heading\s*!==\s*0/.test(settle),
+    "a content test here would reject evidence whose absence is the finding");
+  assert.match(settle, /diag\.mark\("pageSettled"/,
+    "marked whether or not it waited: `settled immediately` and `never ran` must never be one silence");
+  // Both exits mark, so an unsettled page is DESCRIBED rather than refused — a ticker or a live feed
+  // never settles, and failing it would reject evidence rather than record it.
+  assert.equal(settle.match(/diag\.mark\("pageSettled"/g)?.length, 2,
+    "both the settled and the timed-out path must record what happened");
+});
