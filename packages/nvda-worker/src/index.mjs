@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * The NVDA capture worker's programmatic surface — deliberately small.
  *

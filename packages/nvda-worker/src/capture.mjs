@@ -1,3 +1,4 @@
+// @ts-check
 // capture.mjs — standalone NVDA capture CLI.
 // Usage: node capture.mjs <url> <outFile> [steps]
 // MUST run in an interactive desktop session (NVDA needs a real desktop).

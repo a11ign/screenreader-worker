@@ -1,3 +1,4 @@
+// @ts-check
 // Run by `scripts/isolation-gate.mjs` from a throwaway directory OUTSIDE this repository, against the
 // installed tarball.
 //

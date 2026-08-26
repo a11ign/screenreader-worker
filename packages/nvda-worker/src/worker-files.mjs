@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * The files that make up the worker's code version — ONE definition, deployed with the worker.
  *

@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * What code is this worker running? One hash, computed the same way on both sides.
  *
