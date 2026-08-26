@@ -1,0 +1,48 @@
+/**
+ * A fault must carry a classifiable CODE and a message that says what happened.
+ *
+ * `capture-faults.mjs` exists because recovery keyed on `error.message` could not discriminate — reword a
+ * message and recovery stops working in production while the unit tests keep passing, because the string
+ * they assert on lives in the test file rather than at the throw site. Codes fixed that.
+ *
+ * These pin the other end of it: a code that is not a code, and a message that is really a code.
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { captureFault, faultCode, FAULT } from "./capture-faults.mjs";
+
+
+test("a swapped code/message is refused at the throw site", () => {
+  // Two call sites had them the wrong way round for as long as those faults have existed. The rich
+  // diagnostic went into `.code` and the bare code became the message, so seven real-page failures logged
+  // `wrong-page` seven times — naming neither what was shown nor what was asked for, which is the whole
+  // question the fault exists to answer.
+  //
+  // The second consequence is worse and was silent: `faultCode()` returned an Error OBJECT, so nothing
+  // keyed on codes — `worker-recovery.mjs`, `capture-decisions.mjs` — could classify these two faults.
+  // This repo chose codes over message-matching so recovery could not be broken by a reworded string; a
+  // swap that turns the code into an object defeats that from the other end.
+  // Cast because the JSDoc types DO declare (code: string, message: string) — TypeScript rejects this
+  // call outright. That is the finding, not a nuisance: the types knew, and could not help, because
+  // `capture-core.mjs` is .mjs and nothing typechecks it. The runtime guard is what covers that gap.
+  assert.throws(() => captureFault(new Error("the browser is showing X") as never, FAULT.WRONG_PAGE),
+    /arguments are swapped/, "an Error as the first argument is always the swap");
+  assert.throws(() => captureFault("not-a-declared-fault", "message"),
+    /must be a FAULT code/, "a typo'd code must not ship either");
+});
+
+test("the message survives and the code is classifiable", () => {
+  const fault = captureFault(FAULT.WRONG_PAGE, 'the browser is showing "a", not "b"');
+  assert.match(fault.message, /the browser is showing/, "the diagnostic is the message, not the code");
+  assert.equal(faultCode(fault), FAULT.WRONG_PAGE, "and the code is a STRING recovery can match on");
+});
+
+test("every captureFault call site passes the code first", () => {
+  // The guard above catches it at runtime, on a Windows worker, mid-capture. This catches it here.
+  const source = readFileSync(new URL("./capture-core.mjs", import.meta.url), "utf8");
+  const swapped = [...source.matchAll(/captureFault\(\s*new Error/g)];
+  assert.equal(swapped.length, 0,
+    "captureFault takes (code, message) — an Error in the first position is the swap that made seven "
+    + "failures log a bare `wrong-page` and made their codes unclassifiable");
+});

@@ -58,10 +58,28 @@ export const FAULT = {
  * @returns {Error & { code: string }}
  */
 export function captureFault(code, message, options) {
+  // REFUSED rather than accepted, because the arguments are two strings and swapping them is silent.
+  //
+  // Two call sites had them the wrong way round — `captureFault(new Error("the browser is showing X, not
+  // the page requested Y"), FAULT.WRONG_PAGE)` — so the rich diagnostic went into `.code` and the bare
+  // code became the message. Measured 2026-08-26: seven real-page captures failed and the log read
+  // `wrong-page` seven times, naming neither what was shown nor what was asked for, which is the whole
+  // question. Worse, `faultCode()` then returned an Error OBJECT, so nothing keyed on fault codes —
+  // `worker-recovery.mjs`, `capture-decisions.mjs` — could classify these two faults at all.
+  //
+  // This repo chose codes over message-matching precisely so recovery could not be broken by a reworded
+  // string; a swap that turns the code into an object defeats that from the other end.
+  if (!KNOWN_FAULTS.has(code)) {
+    throw new TypeError(`captureFault(code, message): first argument must be a FAULT code, got `
+      + `${typeof code === "object" ? "an Error — the arguments are swapped" : JSON.stringify(code)}`);
+  }
   const fault = new Error(message, options);
   fault.code = code;
   return fault;
 }
+
+/** Every declared code, so an argument swap or a typo is refused at the throw site rather than shipped. */
+const KNOWN_FAULTS = new Set(Object.values(FAULT));
 
 /**
  * The fault code on an error, or null if it carries none.

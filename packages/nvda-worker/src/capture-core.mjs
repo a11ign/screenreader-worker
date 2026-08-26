@@ -942,9 +942,9 @@ async function assertLandedOnRequestedPage(url, diag) {
   // the same conflation FAULT.WRONG_PAGE was split out to remove.
   if (!verdict.actual) return;
   throw captureFault(
-    new Error(`the browser is showing ${JSON.stringify(verdict.actual)}, not the page requested `
-      + `(${JSON.stringify(url)}), after waiting ${LANDED_BUDGET_MS} ms for it to navigate`),
     FAULT.WRONG_PAGE,
+    `the browser is showing ${JSON.stringify(verdict.actual)}, not the page requested `
+      + `(${JSON.stringify(url)}), after waiting ${LANDED_BUDGET_MS} ms for it to navigate`,
   );
 }
 
@@ -982,8 +982,9 @@ async function waitForDocument(diag) {
       // Thrown rather than marked, so the run records a failure and retries, exactly as it does for a
       // page that never loads. A capture of chrome://error is worse than no capture: it looks like data.
       diag.mark("documentReady", { ok: false, title, attempt, browserError: true });
-      throw captureFault(new Error(`the browser served an error page, not the site: ${JSON.stringify(title)}`
-        + " — the URL was not reachable from this worker"), FAULT.PAGE_UNREACHABLE);
+      throw captureFault(FAULT.PAGE_UNREACHABLE,
+        `the browser served an error page, not the site: ${JSON.stringify(title)}`
+        + " — the URL was not reachable from this worker");
     }
     if (title && title.toLowerCase() !== "blank") {
       diag.mark("documentReady", { ok: true, title, attempt });
