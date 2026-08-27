@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Take Windows' background furniture off a capture guest, so its memory goes to Edge and NVDA.
  *
@@ -138,7 +139,7 @@ export const DISABLEABLE_SERVICES = [
  */
 export const DEFENDER_SERVICES = ["WinDefend", "WdNisSvc", "Sense"];
 
-const matchesKeep = (name) => KEEP_PATTERNS.some((k) => name.toLowerCase().includes(k));
+const matchesKeep = (/** @type {any} */ name) => KEEP_PATTERNS.some((k) => name.toLowerCase().includes(k));
 
 /**
  * Which of the installed packages should actually be removed.
@@ -183,7 +184,7 @@ export function trimSummary({ removed = [], disabled = [], failed = [], skipped 
 
 const POWERSHELL_TIMEOUT_MS = 120_000;
 
-function powershell(command) {
+function powershell(/** @type {any} */ command) {
   return execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", command],
     { encoding: "utf8", timeout: POWERSHELL_TIMEOUT_MS });
 }
@@ -228,7 +229,7 @@ export function isElevated() {
  *
  * @returns {{ registered: boolean, started: boolean, reason: string }}
  */
-export function runTrimViaElevatedTask({ scriptPath, markerPath, taskName = "a11ytrim" }) {
+export function runTrimViaElevatedTask(/** @type {any} */ { scriptPath, markerPath, taskName = "a11ytrim" }) {
   const user = "$([Security.Principal.WindowsIdentity]::GetCurrent().Name)";
   const register =
     `$a = New-ScheduledTaskAction -Execute '${process.execPath}' ` +
@@ -243,7 +244,7 @@ export function runTrimViaElevatedTask({ scriptPath, markerPath, taskName = "a11
     powershell(register);
     return { registered: true, started: true, reason: `started '${taskName}' at RunLevel Highest` };
   } catch (error) {
-    const detail = String(error?.stderr ?? error?.message ?? "").split("\n")[0].slice(0, 300);
+    const detail = String(/** @type {any} */ (error)?.stderr ?? /** @type {any} */ (error)?.message ?? "").split("\n")[0].slice(0, 300);
     return { registered: false, started: false, reason: `could not register an elevated task: ${detail}` };
   }
 }
@@ -271,7 +272,7 @@ const SELF_PATH = fileURLToPath(import.meta.url);
  * unelevated attempt wrote a marker, and every boot afterwards read that marker and returned early.
  * "Attempted" and "done" have to read differently here for the same reason they do in `trimSummary`.
  */
-export function trimAlreadyDone(markerPath) {
+export function trimAlreadyDone(/** @type {any} */ markerPath) {
   try {
     return !/needs elevation/i.test(readFileSync(markerPath, "utf8"));
   } catch {
@@ -279,7 +280,12 @@ export function trimAlreadyDone(markerPath) {
   }
 }
 
-export function applyWindowsTrim({ markerPath, log = () => {} }) {
+export function applyWindowsTrim(/** @type {any} */ { markerPath, log = () => {} }) {
+  // Three empty lists and an `escalation` added only when one is attempted. Inferred from this literal
+  // every list is `never[]` and `escalation` does not exist at all -- so recording what was removed, and
+  // recording that elevation was tried, are both errors while returning an empty report is fine.
+  /** @type {{ removed: string[], disabled: string[], failed: string[], skipped: boolean,
+   *           needsElevation: boolean, escalation?: any }} */
   const result = { removed: [], disabled: [], failed: [], skipped: false, needsElevation: false };
   if (process.platform !== "win32" || trimAlreadyDone(markerPath)) {
     result.skipped = true;
@@ -310,7 +316,7 @@ export function applyWindowsTrim({ markerPath, log = () => {} }) {
     } catch (error) {
       // Some provisioned packages are in use or system-locked. Recorded, never fatal.
       result.failed.push(pkg.split("_")[0]);
-      log(`trim: could not remove ${pkg}: ${error.message.split("\n")[0]}`);
+      log(`trim: could not remove ${pkg}: ${/** @type {any} */ (error).message.split("\n")[0]}`);
     }
   }
   for (const { name } of DISABLEABLE_SERVICES) {
@@ -322,7 +328,7 @@ export function applyWindowsTrim({ markerPath, log = () => {} }) {
       result.disabled.push(name);
     } catch (error) {
       result.failed.push(name);
-      log(`trim: could not disable ${name}: ${error.message.split("\n")[0]}`);
+      log(`trim: could not disable ${name}: ${/** @type {any} */ (error).message.split("\n")[0]}`);
       continue;
     }
     try {
@@ -352,7 +358,7 @@ export function tryDisableDefender() {
   try {
     powershell("Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop");
   } catch (error) {
-    return { disabled: false, reason: `Tamper Protection refused: ${error.message.split("\n")[0]}` };
+    return { disabled: false, reason: `Tamper Protection refused: ${/** @type {any} */ (error).message.split("\n")[0]}` };
   }
   try {
     const state = powershell("(Get-MpComputerStatus).RealTimeProtectionEnabled").trim();
@@ -360,7 +366,7 @@ export function tryDisableDefender() {
       ? { disabled: true, reason: "real-time protection off" }
       : { disabled: false, reason: `accepted the setting but still reports enabled (${state})` };
   } catch (error) {
-    return { disabled: false, reason: `could not confirm: ${error.message.split("\n")[0]}` };
+    return { disabled: false, reason: `could not confirm: ${/** @type {any} */ (error).message.split("\n")[0]}` };
   }
 }
 
@@ -380,7 +386,7 @@ if (process.argv[1]?.endsWith("windows-trim.mjs")) {
     process.stderr.write("usage: node windows-trim.mjs <marker-path>\n");
     process.exit(2);
   }
-  const write = (line) => process.stdout.write(`${line}\n`);
+  const write = (/** @type {any} */ line) => process.stdout.write(`${line}\n`);
   const trim = applyWindowsTrim({ markerPath: marker, log: write });
   const defender = tryDisableDefender();
   write(`defender: ${defender.disabled ? "disabled" : "NOT disabled"} — ${defender.reason}`);

@@ -1,3 +1,4 @@
+// @ts-check
 // server.mjs — NVDA capture worker as an HTTP service.
 // MUST run in an interactive desktop session (see run-server.cmd + the README).
 //   POST /capture  { url, task?, steps?, probeForms?, probeFocus?, probeTables?, probeNavigation?, captureId? }
@@ -113,7 +114,7 @@ function trimWindowsAtBoot() {
     log("windows trim started in the background (once per guest; see .windows-trimmed.json)");
   } catch (error) {
     // Trimming is an optimisation, never a precondition for serving captures.
-    log(`windows trim could not start: ${error.message}`);
+    log(`windows trim could not start: ${/** @type {any} */ (error).message}`);
   }
 }
 
@@ -144,7 +145,7 @@ async function tidyBrowserAtBoot() {
     await pruneEdgeProfile(profileDir, treeSize(profileDir)?.megabytes ?? null, log);
   } catch (error) {
     // Hygiene is not a precondition for serving. Say what went wrong and carry on.
-    log(`browser tidy-up at boot failed: ${error.message}`);
+    log(`browser tidy-up at boot failed: ${/** @type {any} */ (error).message}`);
   }
 }
 
@@ -191,7 +192,7 @@ function reportedCodeVersion() {
   try {
     return codeVersion();
   } catch (e) {
-    log(`could not compute code version: ${e.message}`);
+    log(`could not compute code version: ${/** @type {any} */ (e).message}`);
     return "unknown";
   }
 }
@@ -221,7 +222,7 @@ const { app: BROWSER, error: BROWSER_CONFIG_ERROR } = configuredBrowser();
  */
 const POWERSHELL_VALUE_TIMEOUT_MS = 5_000;
 
-function powershellValue(script) {
+function powershellValue(/** @type {any} */ script) {
   if (process.platform !== "win32") return "unknown";
   try {
     const value = execFileSync("powershell.exe", [
@@ -264,7 +265,7 @@ const bootConstants = new Map();
  * That is the exact failure the key exists to prevent, arriving through the memo instead of through the key.
  * See `fileProductVersion`, which now re-reads when the file changes.
  */
-function bootConstant(script) {
+function bootConstant(/** @type {any} */ script) {
   if (bootConstants.has(script)) return bootConstants.get(script);
   const value = powershellValue(script);
   // Only a real answer is memoised. Caching "unknown" forever would make a transient PowerShell failure
@@ -337,7 +338,7 @@ export function fileProductVersion(path, { stat = statSync, read = powershellVal
  */
 const foundFiles = new Map();
 
-function findFileMemo(root, wanted) {
+function findFileMemo(/** @type {any} */ root, /** @type {any} */ wanted) {
   const key = `${root}\u0000${wanted}`;
   if (foundFiles.has(key)) return foundFiles.get(key);
   const found = findFile(root, wanted);
@@ -347,6 +348,11 @@ function findFileMemo(root, wanted) {
   return found;
 }
 
+/**
+ * @param {string} root @param {string} wanted @param {number} [depth]
+ * @returns {string | null}  DECLARED because it recurses -- TypeScript refuses to infer a return type
+ *   for a self-referential function, and the result silently becomes `any`.
+ */
 function findFile(root, wanted, depth = 0) {
   if (!root || depth > 5 || !existsSync(root)) return null;
   let entries;
@@ -367,7 +373,7 @@ function findFile(root, wanted, depth = 0) {
   return null;
 }
 
-function packageVersion(name) {
+function packageVersion(/** @type {any} */ name) {
   try {
     const require = createRequire(import.meta.url);
     const packagePath = require.resolve(`${name}/package.json`);
@@ -431,6 +437,7 @@ function provisionRevision() {
   }
 }
 
+/** @type {any} */
 let environmentCache = null;
 let environmentMeasuredAt = 0;
 
@@ -456,7 +463,7 @@ function currentEnvironment() {
  * the field the probe writes is simply absent, which is indistinguishable from a page that had nothing to
  * report. `probe-chain.test.ts` now walks all five, so a sixth hop cannot be added silently either.
  */
-function captureOptions(parsed) {
+function captureOptions(/** @type {any} */ parsed) {
   return {
     steps: parsed.steps,
     nav: parsed.nav,
@@ -487,7 +494,7 @@ function captureOptions(parsed) {
   };
 }
 
-function send(res, code, obj) {
+function send(/** @type {any} */ res, /** @type {any} */ code, /** @type {any} */ obj) {
   res.writeHead(code, { "content-type": "application/json" });
   res.end(JSON.stringify(obj));
 }
@@ -531,6 +538,7 @@ function vitals() {
 // what the session uses (that is the whole reason apply-foreground-lock-timeout.ps1 exists). Left
 // non-zero, Edge is refused the foreground and every capture returns 0 phrases with no error.
 const FLT_GET = 0x2000; // SPI_GETFOREGROUNDLOCKTIMEOUT
+/** @type {any} */
 let fltCache;
 
 function foregroundLockTimeout() {
@@ -558,7 +566,7 @@ function foregroundLockTimeout() {
 //
 // Extracted from the request handler because the handler was at the complexity ceiling, and because
 // "what we do after a failure" deserves a name.
-async function recoverFromFailure(error) {
+async function recoverFromFailure(/** @type {any} */ error) {
   forgetScreenReader();
   if (!/hard timeout/.test(String((error && error.message) || error))) return;
   log("abandoned capture may still be driving NVDA — stopping it so the next capture starts clean");
@@ -596,7 +604,7 @@ const CAPTURE_HARD_TIMEOUT_MS =
 // what made the next capture succeed when this was diagnosed by hand on two guests.
 //
 // See worker-recovery.mjs for why this is bounded at one attempt and why the hard timeout is excluded.
-async function captureWithLocalRecovery(url, opts) {
+async function captureWithLocalRecovery(/** @type {any} */ url, /** @type {any} */ opts) {
   try {
     const clean = await withHardTimeout(captureWithNvda(url, opts));
     consecutiveRecoveries = 0;
@@ -619,7 +627,7 @@ async function captureWithLocalRecovery(url, opts) {
       log("  failing the case so the run can retire this worker rather than restarting NVDA in a loop");
       throw error;
     }
-    log(`  recoverable fault: ${(error && error.message) || error}`);
+    log(`  recoverable fault: ${(error && /** @type {any} */ (error).message) || error}`);
     log("  retrying once on a fresh screen reader rather than failing the caller's case");
     await recoverFromFailure(error);
     const result = await withHardTimeout(captureWithNvda(url, opts));
@@ -630,7 +638,8 @@ async function captureWithLocalRecovery(url, opts) {
   }
 }
 
-function withHardTimeout(promise) {
+function withHardTimeout(/** @type {Promise<any>} */ promise) {
+  /** @type {any} */
   let timer;
   const abandon = new Promise((_resolve, reject) => {
     timer = setTimeout(
@@ -643,10 +652,11 @@ function withHardTimeout(promise) {
 
 // Warm-up state. `error` is kept so a not-ready worker says WHY, which is the difference between
 // "give it a moment" and "this guest is broken".
+/** @type {{ ok: boolean, error: string | null, at: string | null }} */
 let warm = { ok: false, error: "not warmed up yet", at: null };
 let warming = false;
 
-async function warmUp(reason) {
+async function warmUp(/** @type {any} */ reason) {
   // One at a time. Readiness polling drives re-warms, and two concurrent NVDA starts would fight
   // over a single machine-wide screen reader.
   if (warming) return;
@@ -709,6 +719,10 @@ function warmUpOnceIfNeeded() {
  * reads memory. `dialogs: null` means "not sampled yet", which is deliberately NOT a failure: an unreadable
  * diagnostic must not take a worker offline, the rule `foregroundLockTimeout` already follows.
  */
+// `dialogs: null` means NOT SAMPLED, and every reader below depends on that being distinct from an
+// empty list -- `noBlockingDialog` answers null rather than true when nobody looked. Inferred from this
+// literal the field is `null` forever, so the sample that fills it is the type error.
+/** @type {{ at: number, dialogs: null | { handle: string, title: string, message: string }[] }} */
 let dialogCache = { at: 0, dialogs: null };
 
 async function sampleDesktopDialogs() {
@@ -792,7 +806,7 @@ async function readiness() {
     browserConfigError: BROWSER_CONFIG_ERROR,
     reason: failed.length ? `not ready: ${failed.join(", ")}`
       + (BROWSER_CONFIG_ERROR ? ` — ${BROWSER_CONFIG_ERROR}` : "")
-      + (dialogs?.length ? ` — desktop blocked by: ${dialogs.map((d) => d.message || d.title).join(" / ")}` : "")
+      + (dialogs?.length ? ` — desktop blocked by: ${dialogs.map((/** @type {any} */ d) => d.message || d.title).join(" / ")}` : "")
       : busy ? "busy with a capture"
         : warm.ok ? null : `ready, but not warmed up (${warm.error})`,
   };
@@ -813,8 +827,8 @@ const server = createServer((req, res) => {
   if (req.method === "POST" && req.url === "/capture") return acceptCaptureRequest(req, res);
   // A READ, and deliberately not gated on `busy`: the whole point is to be answerable while a capture runs,
   // and asking about a finished one must never be refused because a new one has started.
-  if (req.method === "GET" && req.url.startsWith("/capture/")) {
-    return respondWithStoredResult(res, decodeURIComponent(req.url.slice("/capture/".length)));
+  if (req.method === "GET" && (req.url ?? "").startsWith("/capture/")) {
+    return respondWithStoredResult(res, decodeURIComponent((req.url ?? "").slice("/capture/".length)));
   }
   send(res, 404, { error: "not found" });
 });
@@ -832,7 +846,7 @@ const server = createServer((req, res) => {
  * opposite correct actions, and this project's own history is a list of faults that cost days precisely
  * because two different states were reported as one.
  */
-function respondWithStoredResult(res, id) {
+function respondWithStoredResult(/** @type {any} */ res, /** @type {any} */ id) {
   const { status, body } = storedResultResponse(results.recall(id), id);
   send(res, status, body);
 }
@@ -844,7 +858,7 @@ function respondWithStoredResult(res, id) {
  * endpoint is expensive enough to be unusable on a loaded guest, which is exactly when you need this. Reading
  * an array that is already in memory cannot hang, so this answers whenever the event loop turns at all.
  */
-function respondWithProgress(res) {
+function respondWithProgress(/** @type {any} */ res) {
   if (!inFlight) return send(res, 200, { busy, capturing: null });
   const marks = inFlight.marks;
   const last = marks.length ? marks[marks.length - 1] : null;
@@ -857,12 +871,12 @@ function respondWithProgress(res) {
     // a phase that has been current for four minutes is the one that is hanging.
     lastPhase: last && last.event,
     lastPhaseAtMs: last && last.atMs,
-    phases: marks.map((m) => ({ event: m.event, atMs: m.atMs })),
+    phases: marks.map((/** @type {any} */ m) => ({ event: m.event, atMs: m.atMs })),
   });
 }
 
 /** Cheap by contract: this is polled, so nothing here may walk a disk or shell out. */
-function respondWithHealth(res) {
+function respondWithHealth(/** @type {any} */ res) {
   const environment = currentEnvironment();
   // `ok` is kept for older callers and still means "the HTTP server is answering". `ready` is
   // the one to dispatch on -- see readiness().
@@ -875,7 +889,7 @@ function respondWithHealth(res) {
     busy,
     code: CODE_VERSION,
     environment,
-  })).catch((e) => send(res, 500, { error: String((e && e.message) || e) }));
+  })).catch((e) => send(res, 500, { error: String((e && /** @type {any} */ (e).message) || e) }));
 }
 
 /**
@@ -883,14 +897,14 @@ function respondWithHealth(res) {
  * walks the Edge profile and shells out to tasklist. See diagnostics.mjs for why it exists at all -- the
  * guest agent that used to answer these questions cannot be relied on.
  */
-function respondWithDiagnostics(res) {
+function respondWithDiagnostics(/** @type {any} */ res) {
   try {
     return send(res, 200, {
       ...guestDiagnostics({ edgeProfile: browserProfileDir(BROWSER), logPath: LOG_PATH }),
       screenReaderSettings: screenReaderSettings(),
     });
   } catch (e) {
-    return send(res, 500, { error: String((e && e.message) || e) });
+    return send(res, 500, { error: String((e && /** @type {any} */ (e).message) || e) });
   }
 }
 
@@ -912,12 +926,12 @@ function respondWithDiagnostics(res) {
  * Claiming earlier buys a new hazard, so it is handled: a request that dies before `end` would hold `busy`
  * forever, which is the "wedged worker" that once cost two days of misdiagnosis. `releaseOnAbandon` covers it.
  */
-function acceptCaptureRequest(req, res) {
+function acceptCaptureRequest(/** @type {any} */ req, /** @type {any} */ res) {
   if (busy) return send(res, 429, { error: "a capture is already in progress" });
   busy = true;
   let body = "";
   releaseOnAbandon(req);
-  req.on("data", (c) => (body += c));
+  req.on("data", (/** @type {any} */ c) => (body += c));
   req.on("end", async () => {
     let parsed;
     try { parsed = JSON.parse(body || "{}"); }
@@ -929,7 +943,7 @@ function acceptCaptureRequest(req, res) {
     // a 400, not a wedge.
     let options;
     try { options = captureOptions(parsed); }
-    catch (error) { busy = false; return send(res, 400, { error: error.message }); }
+    catch (error) { busy = false; return send(res, 400, { error: /** @type {any} */ (error).message }); }
     // Optional and validated here, so an older host that sends nothing behaves exactly as before and a
     // malformed id is a 400 rather than a strange Map key that later appears in a URL.
     const captureId = parsed.captureId;
@@ -949,7 +963,7 @@ function acceptCaptureRequest(req, res) {
  * time out — a worker that answers /health, reports ready, and 429s every capture forever. That is precisely
  * the wedge this project misdiagnosed as a dead machine, arrived at from the other direction.
  */
-function releaseOnAbandon(req) {
+function releaseOnAbandon(/** @type {any} */ req) {
   let finished = false;
   req.once("end", () => { finished = true; });
   for (const event of ["aborted", "error", "close"]) {
@@ -969,6 +983,7 @@ function releaseOnAbandon(req) {
  * minutes and then died told you only that it had died. Watching a real website fail was what made that
  * unacceptable — the question "which phase?" had no answer available at any price.
  */
+/** @type {any} */
 let inFlight = null;
 
 /**
@@ -978,8 +993,8 @@ let inFlight = null;
  * point: a result stored only after a successful write would be missing in exactly the case the store
  * exists for -- a socket that died before the host read it.
  */
-async function runCapture(res, { url, opts, captureId }) {
-  const answer = (status, body) => {
+async function runCapture(/** @type {any} */ res, /** @type {any} */ { url, opts, captureId }) {
+  const answer = (/** @type {any} */ status, /** @type {any} */ body) => {
     if (captureId) results.finish(captureId, { status, body });
     send(res, status, body);
   };
@@ -987,6 +1002,7 @@ async function runCapture(res, { url, opts, captureId }) {
   log(`[${startedAt}] capture ${url} (nav=${opts.nav || "object"}, probeForms=${opts.probeForms}, probeFocus=${opts.probeFocus})`);
   // Ours, not the capture's, so an abandoned capture cannot take its own evidence down with it, and
   // `/progress` can read it WHILE the capture runs.
+  /** @type {any[]} */
   const marks = [];
   inFlight = { url, startedAt, marks };
   // Clear the desktop BEFORE driving it. A modal dialog left by an earlier failure swallows every keystroke
@@ -1004,7 +1020,7 @@ async function runCapture(res, { url, opts, captureId }) {
   try {
     const result = await captureWithLocalRecovery(url, { ...opts, diagnosticsSink: marks });
     const environment = currentEnvironment();
-    const after = (result.diagnostics || []).find((e) => e.event === "afterStart");
+    const after = (result.diagnostics || []).find((/** @type {any} */ e) => e.event === "afterStart");
     log(`  -> ${result.transcript.length} phrases; afterStart.lastSpoken=${JSON.stringify(after && after.lastSpoken)}`);
     if (result.transcript.length === 0) {
       log("  WARNING: 0 phrases. If afterStart.lastSpoken is empty, NVDA is running but not speaking — restart/reboot the worker.");
@@ -1018,7 +1034,7 @@ async function runCapture(res, { url, opts, captureId }) {
     });
   } catch (e) {
     worked.failures += 1;
-    log("  capture failed: " + ((e && e.stack) || e));
+    log("  capture failed: " + ((e && /** @type {any} */ (e).stack) || e));
     // `fault` is additive on the wire: an older host ignores it and keeps matching on `error`,
     // a newer one can classify without parsing prose. See capture-faults.mjs for why that matters.
     // The phases it DID complete, so a caller can see where it stopped. Without this a hung capture
@@ -1030,7 +1046,7 @@ async function runCapture(res, { url, opts, captureId }) {
     // capture failed, so losing this response replaces a diagnosis with "no answer" -- which this project
     // has repeatedly misread as a dead machine.
     answer(500, {
-      error: String((e && e.message) || e),
+      error: String((e && /** @type {any} */ (e).message) || e),
       fault: faultCode(e),
       diagnostics: marks,
       reachedPhase: reached && reached.event,
