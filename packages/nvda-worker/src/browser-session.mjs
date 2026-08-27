@@ -404,8 +404,16 @@ export async function structuralCensus() {
  * Returns null on any failure — this is a diagnostic and a capture must never fail because an oracle was
  * unavailable. Null reads as "not checked", never as "nothing there".
  */
-export async function domCensus() {
-  const EXPRESSION = `(() => {
+/**
+ * The census PROGRAM, as the page will run it.
+ *
+ * Module-level rather than inside `domCensus` for two reasons. It is the only part of this file that
+ * nothing here executes — it is a string handed to another engine — so it deserves to be findable, and
+ * `dom-census-expression.test.ts` extracts it by name and runs it against a synthetic DOM, which is the
+ * only check it can have. And splitting it kept `domCensus` under the line budget: the page-side program
+ * and the CDP round-trip that carries it are two things, which is what the budget was telling me.
+ */
+const DOM_CENSUS_EXPRESSION = `(() => {
     const visible = (el) => !el.closest("[aria-hidden='true']");
     const all = (selector) => [...document.querySelectorAll(selector)].filter(visible);
     // An image with an EMPTY alt is decorative by the author's instruction; Chromium marks it ignored and
@@ -430,7 +438,15 @@ export async function domCensus() {
     const describe = (el) => {
       const src = el.getAttribute("src") || "";
       const file = src ? src.split("?")[0].split("/").pop() : "";
-      const cls = (el.getAttribute("class") || "").trim().split(/\s+/)[0];
+      // Plain split, not a regex: a backslash escape inside this template literal has to be doubled
+      // to survive into the page, which ESLint reads as a useless escape in the SOURCE while the page
+      // would have received the right thing. Not worth the argument for a diagnostic label — class
+      // tokens are space-separated and filter(Boolean) absorbs runs of them.
+      //
+      // NOTE FOR ANY COMMENT ADDED HERE: this is inside a template literal, so a BACKTICK ends the
+      // string. The first version of this comment quoted the call in backticks and broke the file at
+      // parse time, which lint reported as "Unexpected token split" ten lines from the real cause.
+      const cls = (el.getAttribute("class") || "").trim().split(" ").filter(Boolean)[0];
       return [el.tagName.toLowerCase(), file, cls && \`.\${cls}\`].filter(Boolean).join(" ").slice(0, 80);
     };
     return {
@@ -445,7 +461,9 @@ export async function domCensus() {
       formField: all("input:not([type='hidden']), select, textarea, [role='textbox'], "
         + "[role='combobox']").length,
     };
-  })()`;
+})()`;
+
+export async function domCensus() {
   try {
     const target = await pageTarget();
     const socket = new WebSocket(target.webSocketDebuggerUrl);
@@ -455,7 +473,7 @@ export async function domCensus() {
       socket.send(JSON.stringify({
         id: 1,
         method: "Runtime.evaluate",
-        params: { expression: EXPRESSION, returnByValue: true },
+        params: { expression: DOM_CENSUS_EXPRESSION, returnByValue: true },
       }));
       const value = (await result)?.result?.value;
       return value && typeof value === "object" ? value : null;

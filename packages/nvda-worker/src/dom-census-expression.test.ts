@@ -24,8 +24,12 @@ const SOURCE = readFileSync(fileURLToPath(new URL("./browser-session.mjs", impor
 
 /** The expression as the page will receive it, with the template escapes undone. */
 function pageExpression(): string {
-  const match = SOURCE.match(/const EXPRESSION = `([\s\S]*?)`;/);
-  assert.ok(match, "the census expression must be findable, or this test examines nothing");
+  // Named, because this file shares its module with `mediaCensus`, which has an expression of its own.
+  // A regex for "the const named EXPRESSION" matched whichever came first, so extracting the census to
+  // module level silently pointed this test at the wrong program — it kept passing having examined
+  // something else. Reading a NAME is the difference between a fixture and a coincidence.
+  const match = SOURCE.match(/const DOM_CENSUS_EXPRESSION = `([\s\S]*?)`;/);
+  assert.ok(match, "the census expression must be findable BY NAME, or this test examines nothing");
   return match[1].replace(/\\`/g, "`").replace(/\\\$/g, "$");
 }
 
