@@ -371,6 +371,80 @@ export async function structuralCensus() {
 }
 
 /**
+ * What the DOM contains, counted in the DOM — not in the accessibility tree.
+ *
+ * THE ONE MEASUREMENT THIS PROJECT DID NOT HAVE. Both existing structure sources are accessibility-layer:
+ * the sweep is what NVDA reached, and `structuralCensus` is what Chromium EXPOSES. `crossCheckStructure`
+ * compares those two, so it can catch a sweep that stopped early — and can say nothing whatever about
+ * markup the tree never exposed.
+ *
+ * That gap has a cost and a name. On 2026-08-26 the Met Office warnings page captured as 27 announcements
+ * with `census.heading = 0`, while its published HTML carries FORTY headings — and it was IMPOSSIBLE to
+ * say whether this tool had failed to render the page or the page was failing to expose it. Those are
+ * opposite verdicts: one is our defect, the other is a severe genuine finding of the kind this whole
+ * project exists to make. The page had to be removed from the corpus because nobody could attribute it.
+ *
+ * With a DOM count beside the tree count the question answers itself:
+ *
+ *     dom.heading 0  tree.heading 0   the page did not render — our problem
+ *     dom.heading 40 tree.heading 0   forty headings the tree cannot see — THEIR problem, and a finding
+ *
+ * ## What is counted, and what is deliberately not
+ *
+ * Only what the accessibility census also counts, so the two are comparable at all. Counting things the
+ * tree has no notion of would produce a difference that means nothing.
+ *
+ * `alt=""` images are EXCLUDED, because Chromium marks a decorative image as ignored and the tree will
+ * not count it either — including them would manufacture a permanent disagreement on correct pages. That
+ * is the same reasoning `censusFromAXTree` documents for skipping ignored nodes.
+ *
+ * `aria-hidden` subtrees are excluded for the same reason: hidden from assistive technology by the
+ * author's own instruction, so a tree that omits them is obeying, not failing.
+ *
+ * Returns null on any failure — this is a diagnostic and a capture must never fail because an oracle was
+ * unavailable. Null reads as "not checked", never as "nothing there".
+ */
+export async function domCensus() {
+  const EXPRESSION = `(() => {
+    const visible = (el) => !el.closest("[aria-hidden='true']");
+    const all = (selector) => [...document.querySelectorAll(selector)].filter(visible);
+    // An image with an EMPTY alt is decorative by the author's instruction; Chromium marks it ignored and
+    // the AX census does not count it, so counting it here would invent a disagreement on a correct page.
+    const graphics = all("img, svg[role='img'], [role='img']")
+      .filter((el) => el.getAttribute("alt") !== "");
+    return {
+      heading: all("h1, h2, h3, h4, h5, h6, [role='heading']").length,
+      link: all("a[href], [role='link']").length,
+      graphic: graphics.length,
+      landmark: all("main, nav, aside, header, footer, [role='main'], [role='navigation'], "
+        + "[role='banner'], [role='contentinfo'], [role='complementary']").length,
+      formField: all("input:not([type='hidden']), select, textarea, [role='textbox'], "
+        + "[role='combobox']").length,
+    };
+  })()`;
+  try {
+    const target = await pageTarget();
+    const socket = new WebSocket(target.webSocketDebuggerUrl);
+    try {
+      await once(socket, "open", CDP_READY_TIMEOUT_MS);
+      const result = waitForResult(socket, 1, AX_TREE_TIMEOUT_MS);
+      socket.send(JSON.stringify({
+        id: 1,
+        method: "Runtime.evaluate",
+        params: { expression: EXPRESSION, returnByValue: true },
+      }));
+      const value = (await result)?.result?.value;
+      return value && typeof value === "object" ? value : null;
+    } finally {
+      try { socket.close(); } catch (error) { void error; }
+    }
+  } catch (error) {
+    void error; // a diagnostic probe must never fail a capture; null reads as "not checked"
+    return null;
+  }
+}
+
+/**
  * What URL is the browser showing RIGHT NOW?
  *
  * Needed because a form probe on a real site can NAVIGATE. Submitting Wikipedia's search moved the browser

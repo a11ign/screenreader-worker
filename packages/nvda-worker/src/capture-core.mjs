@@ -43,7 +43,7 @@ import {
 import { installSpeechChannelShim } from "./speech-channel.mjs";
 import { parkPointer } from "./pointer.mjs";
 import { browserAlive, currentPageUrl, launchReusable, navigateExisting, reusableArgs,
-  mediaCensus, structuralCensus, truncatedAnnouncements,
+  mediaCensus, structuralCensus, domCensus, truncatedAnnouncements,
   bringPageToFront,
 } from "./browser-session.mjs";
 import { connect } from "node:net";
@@ -1644,7 +1644,15 @@ async function readWithRetry({ steps, navStrategy, deadline, diag, title, silent
 async function navigateByStructureThenAudit(options) {
   const result = await navigateByStructure(options);
   const census = await structuralCensus();
+  // BESIDE the tree census, never instead of it. The two answer different questions — what Chromium
+  // EXPOSES versus what the markup CONTAINS — and it is their disagreement that is informative:
+  // `dom.heading 40, census.heading 0` is a finding about the page, `0 and 0` is a finding about us.
+  // Recorded as a diagnostic so it reaches the rules without ever reaching the model.
+  const dom = await domCensus();
   options.diag.mark("structureCensus", census);
+  // Marked even when NULL, because "the DOM was not counted" and "the DOM has none of these" must never
+  // be the same silence — the rule `refreshBrowseBuffer` cost this project a whole corpus by breaking.
+  options.diag.mark("domCensus", dom ?? { error: "not counted" });
   // 1.4.2 Audio Control, from the DOM. `autoplay` and `muted` have no accessibility-tree equivalent, so
   // this is the one field here that no screen reader could have produced. Null means the probe did not
   // run, and the rule reading it makes no claim on null — a probe failure must never become a silent pass.
