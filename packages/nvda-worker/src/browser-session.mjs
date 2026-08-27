@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Keep one Edge alive across captures and re-point it, instead of cold-starting Chromium every time.
  *
@@ -59,7 +60,7 @@ const CDP_READY_TIMEOUT_MS = 60_000;
 const CDP_POLL_MS = 200;
 const NAVIGATE_TIMEOUT_MS = 30_000;
 
-const endpoint = (path) => `http://${CDP_HOST}:${CDP_PORT}${path}`;
+const endpoint = (/** @type {string} */ path) => `http://${CDP_HOST}:${CDP_PORT}${path}`;
 
 /**
  * Arguments for a reusable Edge.
@@ -93,10 +94,22 @@ export async function browserAlive() {
  *
  * @param {Array<{type?: string, url?: string, webSocketDebuggerUrl?: string}>} targets
  */
+/**
+ * @typedef {{ type?: string, url?: string, webSocketDebuggerUrl?: string }} CdpTarget
+ * @typedef {CdpTarget & { webSocketDebuggerUrl: string }} UsablePageTarget
+ *
+ * The `find` below already REQUIRES `typeof webSocketDebuggerUrl === "string"`, so a returned target
+ * always has one -- but a predicate inside `find` cannot narrow the result, and every caller then reads a
+ * possibly-undefined URL straight into `new WebSocket`. The second typedef states what the filter has
+ * already established rather than re-checking it at four call sites.
+ *
+ * @param {CdpTarget[] | null | undefined} targets
+ * @returns {UsablePageTarget | null}
+ */
 export function choosePageTarget(targets) {
-  return (targets ?? []).find((t) =>
+  return /** @type {UsablePageTarget | undefined} */ ((targets ?? []).find((t) =>
     t.type === "page" && typeof t.webSocketDebuggerUrl === "string" && !t.url?.startsWith("devtools://")
-  ) ?? null;
+  )) ?? null;
 }
 
 /**
@@ -115,6 +128,7 @@ const CDP_LIST_TIMEOUT_MS = 15_000;
 const CDP_LIST_ATTEMPTS = 3;
 const CDP_LIST_RETRY_MS = 750;
 
+/** @returns {Promise<UsablePageTarget>} */
 async function pageTarget() {
   let last;
   for (let attempt = 1; attempt <= CDP_LIST_ATTEMPTS; attempt += 1) {
@@ -142,6 +156,7 @@ async function pageTarget() {
  * caller's next move is to ask NVDA to read the document, and reading a page that has not finished
  * loading is precisely the "blank, blank" transcript this pipeline already learned to avoid.
  */
+/** @param {string} url */
 export async function navigateExisting(url) {
   const target = await pageTarget();
   const socket = new WebSocket(target.webSocketDebuggerUrl);
@@ -170,10 +185,11 @@ const LANDMARK_ROLES = ["main", "navigation", "banner", "contentinfo", "compleme
  * Role -> which sweep it belongs to. A lookup rather than a branch chain: the chain put this function
  * over the complexity gate, and naming the mapping once is clearer than restating it in `else if`s.
  */
+/** @type {Map<string, string>} */
 const ROLE_BUCKET = new Map([
   ["heading", "heading"], ["link", "link"],
   ["image", "graphic"], ["img", "graphic"], ["graphics-document", "graphic"],
-  ...LANDMARK_ROLES.map((role) => [role, "landmark"]),
+  .../** @type {[string, string][]} */ (LANDMARK_ROLES.map((role) => [role, "landmark"])),
 ]);
 
 /**
@@ -210,10 +226,12 @@ const ROLE_BUCKET = new Map([
  * Named because the absent field is a CDP implementation detail and "generated content" is the thing being
  * decided; `classifyAXNode` explains WHY it must not be counted.
  */
+/** @param {Record<string, any>} node */
 function isGeneratedContent(node) {
   return node.backendDOMNodeId == null;
 }
 
+/** @param {Record<string, any> | null} node */
 function classifyAXNode(node) {
   // Ignored nodes are not in the tree a screen reader walks, so counting them would make the oracle demand
   // elements NVDA could never announce -- a guard that cries wolf gets removed, not heeded.
@@ -291,6 +309,12 @@ export async function bringPageToFront() {
   }
 }
 
+/**
+ * @param {(Record<string, any> | null)[] | null | undefined} nodes
+ *   NULL ENTRIES ARE EXPECTED. `ax-census.test.ts` passes `[null, {}]` deliberately -- 'the oracle must
+ *   never be the reason a capture fails' -- so a type refusing them would describe a stricter function
+ *   than the one that exists, and than the one the pipeline needs.
+ */
 export function censusFromAXTree(nodes) {
   // `graphicUnnamed` is the count of images the page exposes with NO accessible name, and it is a finding
   // the announcements cannot reach on their own. Quick navigation skips a wholly nameless graphic: on
@@ -305,6 +329,11 @@ export function censusFromAXTree(nodes) {
   // found by this counter reporting two unnamed graphics on a page W3C publishes as fully AA conformant.
   // What is left is a non-ignored graphic on the page with no name: an image a screen-reader user meets and
   // cannot identify.
+  // TYPED, because `names: []` infers `never[]` and every push of a real name is then an error -- and
+  // the bucket increment below indexes this object by a role string. The names array is the truncation
+  // detector's input, so an empty inferred type would have made the one field added for that unusable.
+  /** @type {{ landmark: number, heading: number, link: number, graphic: number,
+   *           graphicUnnamed: number, names: string[] } & Record<string, any>} */
   const census = { landmark: 0, heading: 0, link: 0, graphic: 0, graphicUnnamed: 0, names: [] };
   for (const node of nodes ?? []) {
     const classified = classifyAXNode(node);
@@ -330,6 +359,10 @@ export function censusFromAXTree(nodes) {
  * rather than any substring keeps this from firing on the ordinary case where NVDA announces a shortened
  * or differently-punctuated form -- it only fires when what we heard is the START of a real name and
  * stops short, which is exactly what a partial phrase looks like.
+ */
+/**
+ * @param {string[]} spoken
+ * @param {string[] | null | undefined} names
  */
 export function truncatedAnnouncements(spoken, names) {
   const real = (names ?? []).map((n) => n.toLowerCase());
@@ -366,7 +399,7 @@ export async function structuralCensus() {
       try { socket.close(); } catch (error) { void error; }
     }
   } catch (error) {
-    return { error: error.message };
+    return { error: /** @type {Error} */ (error).message };
   }
 }
 
@@ -508,6 +541,10 @@ export async function currentPageUrl() {
 }
 
 /** Resolve the reply whose `id` matches, as opposed to waitForMethod which waits for an EVENT. */
+/**
+ * @param {WebSocket} socket @param {number} id @param {number} timeoutMs
+ * @returns {Promise<any>}
+ */
 function waitForResult(socket, id, timeoutMs) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`CDP: no reply to ${id} within ${timeoutMs}ms`)), timeoutMs);
@@ -521,6 +558,10 @@ function waitForResult(socket, id, timeoutMs) {
   });
 }
 
+/**
+ * @param {WebSocket} socket @param {string} event @param {number} timeoutMs
+ * @returns {Promise<void>}  the hint `new Promise()` needs for a `resolve()` taking no argument
+ */
 function once(socket, event, timeoutMs) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`CDP: no '${event}' within ${timeoutMs}ms`)), timeoutMs);
@@ -529,6 +570,10 @@ function once(socket, event, timeoutMs) {
   });
 }
 
+/**
+ * @param {WebSocket} socket @param {string} method @param {number} timeoutMs
+ * @returns {Promise<void>}
+ */
 function waitForMethod(socket, method, timeoutMs) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`CDP: no ${method} within ${timeoutMs}ms`)), timeoutMs);

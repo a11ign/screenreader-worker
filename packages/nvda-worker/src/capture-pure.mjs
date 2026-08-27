@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * The pure half of the capture path: no guidepup, no NVDA, no browser — just the functions that turn what a
  * screen reader SAID into structure, and the constants they judge it against.
@@ -45,6 +46,7 @@ const CONTROL_WORDS = new Set([
  * The guard that stops a task-driven activation from pressing an arbitrary button: role and state words
  * are excluded, so only a real label can match.
  */
+/** @param {string} phrase @param {string} task */
 function taskNamesControl(phrase, task) {
   if (!task) return false;
   const taskWords = new Set(task.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
@@ -92,6 +94,16 @@ export const DEDUPE_KEY_LEN = 80; // prefix length used to dedupe announcements
  * project has been bitten by. When NVDA spoke at startup, the silence branch is unreachable and a
  * read-through behaves precisely as it did before.
  */
+/**
+ * @param {string} phrase
+ * @param {number} heard  how many SUBSTANTIVE phrases the read has produced so far, not a set of them
+ * @param {{ silentRun: number, silentAtStart: boolean, previous: string | null,
+ *           repeated: number, seen: Set<string>, wrapRun: number }} tracker
+ *
+ * READ off the body rather than guessed from the call sites. The first attempt at this described a
+ * two-field bag and made `heard` a Set, which is the mistake `host-metrics` produced an hour earlier:
+ * a shape inferred from how a value is USED describes the uses, not the value.
+ */
 export function phraseAction(phrase, heard, tracker) {
   if (!phrase) {
     tracker.silentRun += 1;
@@ -130,6 +142,21 @@ export function phraseAction(phrase, heard, tracker) {
 // Exported so the gate itself can be tested. It is a pure function of (transcript, diagnostics), and
 // the fault code it throws is what the worker's retry keys on — a coupling worth a test rather than a
 // comment, because when it breaks nothing fails loudly: the worker just quietly stops recovering.
+/**
+ * @typedef {{ entries: { event: string, [key: string]: any }[] }} MarkLog
+ *   What a READER of the diagnostics needs. Split from the writer below because most helpers here only
+ *   read, and `capture-pure.corpus.test.ts` drives them with a bare `{ entries }` -- correctly, since a
+ *   test that had to supply a `mark` it never calls would be describing a dependency that is not there.
+ *
+ * @typedef {MarkLog & { mark: (event: string, detail?: Record<string, unknown>) => void }} CaptureDiagnostics
+ *   The log plus its writer, for the one helper that records a finding as well as deciding one.
+ *
+ *   Named once because five helpers here take it, and this file is where "did not need to act" and
+ *   "never ran" are told apart -- a shape restated five times is how those two become one.
+ *
+ * @param {string[]} transcript
+ * @param {CaptureDiagnostics} diag
+ */
 export function failIfScreenReaderIsMute(transcript, diag) {
   if (transcript.length > 1) return;
   if (!screenReaderWasSilentAtStart(diag)) return; // absent or non-empty: something else is wrong
@@ -141,6 +168,7 @@ export function failIfScreenReaderIsMute(transcript, diag) {
 }
 
 /** The most recent diagnostic for an event, or undefined. */
+/** @param {MarkLog} diag @param {string} event */
 export function lastMark(diag, event) {
   return diag.entries.filter((entry) => entry.event === event).at(-1);
 }
@@ -151,6 +179,7 @@ export function lastMark(diag, event) {
  * On its own this is NOT proof of a mute screen reader -- see the warning at the top of this file --
  * which is why both callers pair it with "and the read-through heard nothing either".
  */
+/** @param {MarkLog} diag */
 export function screenReaderWasSilentAtStart(diag) {
   return lastMark(diag, "afterStart")?.lastSpoken === "";
 }
@@ -180,7 +209,7 @@ export function screenReaderWasSilentAtStart(diag) {
 // kind of miscount that is invisible without an independent count to compare against.
 export const CONTAINER_PREFIX = /^(?:\w[\w\s'-]*[,\s]\s*)?(?:landmark|region|banner|navigation|main|complementary|content info|form|article),\s*/i;
 
-export const dedupeKey = (phrase) => phrase.replace(CONTAINER_PREFIX, "").slice(0, DEDUPE_KEY_LEN);
+export const dedupeKey = (/** @type {string} */ phrase) => phrase.replace(CONTAINER_PREFIX, "").slice(0, DEDUPE_KEY_LEN);
 
 /**
  * Given the speech log and how much of it we had already read, did the last quick-nav jump MOVE, and
@@ -212,6 +241,9 @@ export const dedupeKey = (phrase) => phrase.replace(CONTAINER_PREFIX, "").slice(
  */
 export const MAX_CONSECUTIVE_REPEATS = 25;
 
+/**
+ * @param {{ log: string[], seen: number, prev?: string, repeats?: number }} state
+ */
 export function sweepStepFromSpeech({ log, seen, prev, repeats = 0 }) {
   const entries = log ?? [];
   // Shorter than what we already consumed means the log was cleared under us: a speech-channel
@@ -264,6 +296,11 @@ export const TREE_ROW_RE = /\btree view item\b/i;
  * suffix as a total, and it is WRONG: the list is HIERARCHICAL (a `<main>` containing a `<form>` reads
  * "level 0 ... 1 of 1" with the form as a child), so that number counts siblings at one level, not
  * elements in the document. Reading it as a total silently undercounts every nested structure.
+ */
+/**
+ * @param {string | undefined} phrase
+ *   UNDEFINED IS A TESTED INPUT (`cross-check.test.ts`), and the body coerces before touching it. A
+ *   stricter type would describe a function the callers do not have.
  */
 export function elementsListRowName(phrase) {
   const text = String(phrase ?? "").trim();
@@ -351,7 +388,7 @@ export function probeKindFor(phrase, { probeForms, task }) {
   if (/\bcollapsed\b/i.test(announced)) return "disclosure";
   if (!probeForms || !/\bbutton\b/i.test(announced)) return null;
   if (SUBMIT_RE.test(announced)) return "submit";
-  if (taskNamesControl(announced, task)) return "task";
+  if (taskNamesControl(announced, task ?? "")) return "task";
   return null;
 }
 
@@ -408,6 +445,7 @@ export const WORST_CASE_STARTUP_MS = 50_000;
  * Scales down rather than going negative: a caller passing a small `maxMs` (the tests do) would otherwise
  * get a deadline in the past and read nothing at all. With little left, the read-through still gets half.
  */
+/** @param {number} captureDeadline @param {number} [now] */
 export function readThroughDeadline(captureDeadline, now = Date.now()) {
   const remaining = captureDeadline - now;
   if (remaining <= 0) return captureDeadline;
@@ -416,6 +454,9 @@ export function readThroughDeadline(captureDeadline, now = Date.now()) {
 }
 
 /** Is the ladder ordered? Exported so a test can assert it rather than a comment claiming it. */
+/**
+ * @param {{ budgetMs: number, hardTimeoutMs: number, hostTimeoutMs: number, startupMs: number }} ladder
+ */
 export function budgetLadderIsSound({ budgetMs, hardTimeoutMs, hostTimeoutMs, startupMs }) {
   return POST_READ_RESERVE_MS < budgetMs
     && budgetMs + startupMs < hardTimeoutMs

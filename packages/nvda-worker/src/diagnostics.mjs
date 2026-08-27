@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Guest facts, over HTTP, because the guest agent cannot be relied on.
  *
@@ -39,7 +40,7 @@ const BYTES_PER_MB = 1024 * 1024;
  */
 export function treeSize(root) {
   let bytes = 0, files = 0, truncated = false;
-  const walk = (dir, depth) => {
+  const walk = (/** @type {string} */ dir, /** @type {number} */ depth) => {
     if (depth > MAX_WALK_DEPTH || files >= MAX_WALK_ENTRIES) {
       truncated = true;
       return;
@@ -73,6 +74,7 @@ export function treeSize(root) {
 }
 
 /** Free and total space on the volume holding `path`, in MB, or null if unreadable. */
+/** @param {string} path */
 export function diskSpace(path) {
   try {
     const fs = statfsSync(path);
@@ -100,6 +102,7 @@ export function processCounts(names) {
     const csv = execFileSync("tasklist", ["/fo", "csv", "/nh"], {
       encoding: "utf8", timeout: 15_000, maxBuffer: 1 << 24,
     });
+    /** @type {Record<string, number>} */
     const counts = {};
     for (const name of names) counts[name] = 0;
     for (const line of csv.split("\n")) {
@@ -229,7 +232,7 @@ export function committedMemory() {
 export function parseCommittedMemory(output) {
   const [committed, limit] = String(output).trim().split(/\s+/).map(Number);
   if (!Number.isFinite(committed) || !Number.isFinite(limit) || limit <= 0) return null;
-  const toMb = (bytes) => Math.round(bytes / (1024 * 1024));
+  const toMb = (/** @type {number} */ bytes) => Math.round(bytes / (1024 * 1024));
   return {
     committedMb: toMb(committed),
     commitLimitMb: toMb(limit),
@@ -270,15 +273,21 @@ export function windowsTrimReport(markerPath = resolve(process.cwd(), ".windows-
  * dropping it turns "Get-Service could not find X" into an unhelpful "Command failed". Learned by
  * losing a cycle to exactly that.
  */
+/**
+ * @param {unknown} error  whatever a failed `execFileSync` threw: an Error, carrying the child's captured
+ *   streams and exit status, none of which node's types describe
+ */
 export function probeError(error) {
-  const stderr = String(error?.stderr ?? "").trim().split(/\r?\n/).filter(Boolean).slice(0, 4);
+  const failed = /** @type {{ stderr?: string, message?: string, status?: number }} */ (error);
+  const stderr = String(failed?.stderr ?? "").trim().split(/\r?\n/).filter(Boolean).slice(0, 4);
   return {
-    error: String(error?.message ?? "").split("\n")[0].slice(0, 200),
+    error: String(failed?.message ?? "").split("\n")[0].slice(0, 200),
     stderr: stderr.length ? stderr : undefined,
-    status: error?.status,
+    status: failed?.status,
   };
 }
 
+/** @param {string} raw */
 export function parsePowerShellJson(raw) {
   const text = String(raw).trim();
   if (!text) return [];
@@ -342,11 +351,12 @@ export function serviceStates(names = TRIMMED_SERVICES) {
  * here too. `serverLog` already reported the file's SIZE, which answers "is it growing" and not "what
  * does it say" -- and the second question is the one you have when something did not happen.
  */
+/** @param {string} logPath @param {number} [lines] */
 export function serverLogTail(logPath, lines = 40) {
   try {
     return readFileSync(logPath, "utf8").split(/\r?\n/).filter(Boolean).slice(-lines);
   } catch (error) {
-    return { error: error.message.split("\n")[0].slice(0, 200) };
+    return { error: /** @type {Error} */ (error).message.split("\n")[0].slice(0, 200) };
   }
 }
 
@@ -388,6 +398,7 @@ export function privilegeState() {
   }
 }
 
+/** @param {string} root @param {number} [limit] */
 export function largestSubtrees(root, limit = 8) {
   let entries;
   try {
@@ -412,7 +423,7 @@ export function largestSubtrees(root, limit = 8) {
 /** The Edge policy values the worker depends on, read back so drift is visible over HTTP. */
 export function edgePolicy() {
   if (process.platform !== "win32") return null;
-  const read = (name) => {
+  const read = (/** @type {string} */ name) => {
     try {
       const out = execFileSync("reg",
         ["query", "HKLM\\SOFTWARE\\Policies\\Microsoft\\Edge", "/v", name],
@@ -427,6 +438,7 @@ export function edgePolicy() {
 }
 
 /** Tail of a text file, or null. Reading a log must never be able to break the endpoint. */
+/** @param {string} path @param {number} lines */
 function tail(path, lines) {
   try {
     const all = readFileSync(path, "utf8").split(/\r?\n/);
@@ -437,6 +449,7 @@ function tail(path, lines) {
 }
 
 /** The settings that decide whether NVDA can speak at all. Null when the file cannot be read. */
+/** @param {string} path */
 function readNvdaConfig(path) {
   try {
     const body = readFileSync(path, "utf8");
@@ -465,14 +478,19 @@ function readNvdaConfig(path) {
  * `synth` is the first thing to compare between a healthy guest and a mute one: NVDA with a broken or
  * silenced synthesiser runs perfectly, answers every keystroke, and says nothing.
  */
+/** @param {{ nvdaRoot: string | null, tempDir: string, tailLines?: number }} where */
 export function screenReaderState({ nvdaRoot, tempDir, tailLines = 80 }) {
   const log = tail(join(tempDir, "nvda.log"), tailLines);
   // NVDA rotates its log on every start, so the CURRENT one is always the healthy instance that
   // replaced the broken one. The session that actually went mute is in `nvda-old.log`, and that is the
   // only place its dying words exist.
   const previous = tail(join(tempDir, "nvda-old.log"), tailLines);
+  // `ReturnType<typeof readNvdaConfig>` rather than a hand-written shape. The first attempt here called
+  // it `string[]` from a glance at the loop that fills it -- and what it collects is the PARSED config,
+  // which is the third time today a shape guessed from a use described the use instead of the value.
+  /** @type {NonNullable<ReturnType<typeof readNvdaConfig>>[]} */
   const configs = [];
-  const findIni = (dir, depth) => {
+  const findIni = (/** @type {string} */ dir, /** @type {number} */ depth) => {
     if (depth > 6) return;
     let entries;
     try {
@@ -562,6 +580,7 @@ export function edgeUpdaterState() {
   }
 }
 
+/** @param {{ edgeProfile: string, logPath: string }} where */
 export function guestDiagnostics({ edgeProfile, logPath }) {
   return {
     measuredAt: new Date().toISOString(),
