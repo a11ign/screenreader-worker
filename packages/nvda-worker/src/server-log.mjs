@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * The worker's log: the console AND a file, bounded within a SINGLE process lifetime.
  *
@@ -47,6 +48,16 @@ export const MAX_LOG_BYTES = 16 * 1024 * 1024;
  * Each returns void deliberately. `process.stdout.write` answers a boolean about backpressure that nothing
  * here acts on, and letting it into the inferred type makes `typeof REAL_IO` demand that same boolean from
  * every fake -- a test double failing to typecheck over a value the writer never reads.
+ *
+ * @typedef {{ append: (path: string, text: string) => void,
+ *             rename: (from: string, to: string) => void,
+ *             size: (path: string) => number,
+ *             writeConsole: (text: string) => void }} LogIO
+ *
+ * DECLARED, so the docstring above is enforced rather than merely asserted. It says each member returns
+ * void deliberately, and until this file entered `tsc` nothing held it to that.
+ *
+ * @type {LogIO}
  */
 const REAL_IO = {
   append: (path, text) => {
@@ -87,6 +98,7 @@ export function createLogWriter({ path, maxBytes = MAX_LOG_BYTES, io = REAL_IO }
   // because logging is on the request path.
   let loggedBytes = io.size(path);
 
+  /** @param {string} stamped */
   function writeToConsole(stamped) {
     try {
       io.writeConsole(stamped);
@@ -103,10 +115,11 @@ export function createLogWriter({ path, maxBytes = MAX_LOG_BYTES, io = REAL_IO }
     } catch (error) {
       // A worker that cannot rotate its log must still serve. Reported on the console only: the file is the
       // thing that is failing, and see the header for why this must never call the logger.
-      writeToConsole(`could not rotate ${path}: ${error.message}\n`);
+      writeToConsole(`could not rotate ${path}: ${/** @type {Error} */ (error).message}\n`);
     }
   }
 
+  /** @param {string} stamped */
   function appendToFile(stamped) {
     try {
       // Checked BEFORE the append, so the first line after a rotation lands in the fresh file rather than in
