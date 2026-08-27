@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * One bounded, asynchronous PowerShell runner, shared by everything on the guest that needs Windows APIs.
  *
@@ -18,6 +19,7 @@
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { errorText } from "./error-text.mjs";
 
 const run = promisify(execFile);
 
@@ -42,10 +44,13 @@ export async function powershell(command, { timeoutMs = DEFAULT_PS_TIMEOUT_MS } 
     // reports its own source and nothing about what went wrong — the first version of this pasted 40 lines of
     // C# into a diagnostic mark and said nothing. `diagnostics.mjs` documents this same trap; I walked into it
     // anyway, one module later. Truncated because a mark is read by a human.
-    const stderr = String(error?.stderr ?? "").replace(/\s+/g, " ").trim();
-    const killed = error?.killed || error?.signal ? `timed out after ${timeoutMs}ms` : "";
+    // `execFile` rejects with an Error CARRYING extra fields, which `unknown` cannot express — so the
+    // shape is named here rather than reached for blindly. `errorText` handles the message half.
+    const failure = /** @type {{stderr?: unknown, killed?: unknown, signal?: unknown}} */ (error ?? {});
+    const stderr = String(failure.stderr ?? "").replace(/\s+/g, " ").trim();
+    const killed = failure.killed || failure.signal ? `timed out after ${timeoutMs}ms` : "";
     const reason = [killed, stderr].filter(Boolean).join(": ").slice(0, 400)
-      || String(error?.message ?? error).slice(0, 200);
+      || errorText(error).slice(0, 200);
     return { ok: false, reason, stdout: "" };
   }
 }

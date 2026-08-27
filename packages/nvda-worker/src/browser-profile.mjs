@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Keep the durable Edge profile durable *and* bounded, and clear strays left by a previous worker.
  *
@@ -30,6 +31,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import { errorText } from "./error-text.mjs";
 
 /**
  * Regenerable subtrees. Every one of these is a cache or a session record that Chromium rebuilds on
@@ -126,7 +128,7 @@ const PRUNE_ABOVE_MB = 800;
  * @returns {string[]} absolute paths to remove; empty when the profile is small enough to leave alone
  */
 export function prunablePaths({ megabytes, root, exists }) {
-  const absolute = (relative) => join(root, ...relative.split("/"));
+  const absolute = (/** @type {string} */ relative) => join(root, ...relative.split("/"));
   const always = [...ALWAYS_REGENERABLE, ...FORM_DATA_STORES].map(absolute).filter(exists);
   // The cache list is size-gated because a warm cache genuinely speeds Edge up; the always-list is not,
   // because none of it helps and BrowserMetrics actively hurts.
@@ -158,7 +160,7 @@ export async function pruneEdgeProfile(root, megabytes, log) {
     } catch (error) {
       // Locked by something, or already gone. Pruning is best-effort by design: a profile we could not
       // shrink is slow, but a worker that refuses to start because of it is worse.
-      log(`  could not remove ${path}: ${error.message}`);
+      log(`  could not remove ${path}: ${errorText(error)}`);
     }
   }
   return removed;
@@ -200,16 +202,25 @@ const REQUIRED_EDGE_POLICY = {
  * @param {(line: string) => void} log
  * @returns {string[]} names of the settings that have drifted
  */
+/**
+ * @param {Record<string, unknown> | null | undefined} actual
+ * @param {(message: string) => void} log
+ * @returns {string[]}
+ */
 export function reportBrowserPolicyDrift(actual, log) {
   if (!actual) return [];
+  // Carry the WANTED value alongside the name rather than re-indexing by it. Re-indexing needs a `keyof`
+  // cast that `.map` over a `string[]` cannot supply, and the entries already hold both halves.
   const drifted = Object.entries(REQUIRED_EDGE_POLICY)
-    .filter(([name, want]) => actual[name] !== null && actual[name] !== want)
-    .map(([name]) => name);
+    .filter(([name, want]) => actual[name] !== null && actual[name] !== want);
   if (drifted.length) {
-    log(`Edge policy drift: ${drifted.map((n) => `${n}=${actual[n]} (want ${REQUIRED_EDGE_POLICY[n]})`).join(", ")}` +
+    log(`Edge policy drift: ${drifted.map(([name, want]) =>
+      `${name}=${actual[name]} (want ${want})`).join(", ")}` +
       " — re-run scripts/provision-nvda-worker.ps1 on this guest to correct it (needs elevation).");
   }
-  return drifted;
+  // The NAMES, which is what every caller uses — `drifted` carries the wanted values only so the message
+  // above can print them without re-indexing.
+  return drifted.map(([name]) => name);
 }
 
 /**

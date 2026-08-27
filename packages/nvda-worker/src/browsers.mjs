@@ -1,3 +1,6 @@
+// @ts-check
+import { errorText } from "./error-text.mjs";
+
 /**
  * Which browser a capture drives — as DATA, in one place.
  *
@@ -126,6 +129,16 @@ export function browserProfileDir(browser) {
  *
  * Chromium honours only the **last** `--disable-features`, so every feature name must go in this one list;
  * a second flag silently disables only half of what you asked for.
+ */
+/**
+ * `BrowserPreset`, not a hand-written subset. The preset is declared once above and a second, narrower
+ * spelling here failed immediately on `suppressedFeatures` and `extraArgs` — the same defect as the
+ * wrapper in `everything-pipeline.mjs` an hour earlier: a type that restates its subject has two copies
+ * of it, and one of them will be wrong.
+ *
+ * @param {BrowserPreset} browser
+ * @param {string} url
+ * @param {string} profileDir
  */
 function chromiumArgs(browser, url, profileDir) {
   return [
@@ -258,7 +271,7 @@ export function configuredBrowser() {
   try {
     return { app: resolveBrowser(configured), error: null };
   } catch (error) {
-    return { app: BROWSERS[DEFAULT_BROWSER], error: `A11Y_BROWSER: ${error.message}` };
+    return { app: BROWSERS[DEFAULT_BROWSER], error: `A11Y_BROWSER: ${errorText(error)}` };
   }
 }
 
