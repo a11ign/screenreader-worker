@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Recent capture outcomes, so a lost RESPONSE does not destroy a finished capture.
  *
@@ -51,6 +52,10 @@ export const RESULT_HISTORY = 8;
 /** Ids reach us over the wire and go into a URL path, so the shape is checked at the boundary. */
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
+/**
+ * @param {unknown} id
+ * @returns {id is string}
+ */
 export function isValidCaptureId(id) {
   return typeof id === "string" && ID_PATTERN.test(id);
 }
@@ -83,10 +88,23 @@ export function storedResultResponse(entry, id) {
  * @param {{ limit?: number }} [options]
  */
 export function createResultStore({ limit = RESULT_HISTORY } = {}) {
-  /** @type {Map<string, { state: "running" | "done", status?: number, body?: unknown }>} */
+  /**
+   * DISCRIMINATED, not a loose bag with optional fields.
+   *
+   * It was `{ state: "running" | "done", status?: number, body?: unknown }`, which permits
+   * `{ state: "done" }` carrying no status at all -- and the whole point of this store is that a replay
+   * is byte-identical to the original response, `fault` code and status included. The looser type could
+   * not express that, so it could not protect it. `recall` already DOCUMENTED the union below; the map
+   * simply disagreed, which nothing could see while this file was outside `tsc`.
+   *
+   * @type {Map<string, { state: "running" } | { state: "done", status: number, body: unknown }>}
+   */
   const entries = new Map();
 
-  /** Note that a capture with this id has started, so a caller asking early is told "running", not "unknown". */
+  /**
+   * Note that a capture with this id has started, so a caller asking early is told "running", not "unknown".
+   * @param {unknown} id
+   */
   function begin(id) {
     if (!isValidCaptureId(id)) return;
     // Insertion order is eviction order, and a retry reusing an id should be treated as the newest thing
@@ -96,7 +114,11 @@ export function createResultStore({ limit = RESULT_HISTORY } = {}) {
     evictOldestDone();
   }
 
-  /** Record the response the caller is about to be sent -- status included, so a replay is identical. */
+  /**
+   * Record the response the caller is about to be sent -- status included, so a replay is identical.
+   * @param {unknown} id
+   * @param {{ status: number, body: unknown }} response
+   */
   function finish(id, { status, body }) {
     if (!isValidCaptureId(id)) return;
     entries.set(id, { state: "done", status, body });
@@ -107,8 +129,15 @@ export function createResultStore({ limit = RESULT_HISTORY } = {}) {
    * @returns {{ state: "running" } | { state: "done", status: number, body: unknown } | undefined}
    *   undefined means we have never heard of this capture, which is a different answer from "not finished"
    *   and must stay that way: one says re-issue the case, the other says wait.
+   * @param {unknown} id
    */
   function recall(id) {
+    // The same boundary check `begin` and `finish` make, which this one silently did not. It cannot
+    // change an answer -- an id those two rejected was never stored, so the lookup already missed -- but
+    // "unknown id" and "malformed id" reaching the same line by different routes is how a validated
+    // boundary quietly becomes an unvalidated one. `isValidCaptureId` is a type predicate, so it also
+    // says out loud that only a checked string ever indexes this map.
+    if (!isValidCaptureId(id)) return undefined;
     return entries.get(id);
   }
 

@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Rebuild NVDA's speech channel without restarting NVDA.
  *
@@ -48,6 +49,14 @@ export const NVDA_REMOTE_PORT = 6837;
  * of a connection that otherwise fails silently.
  *
  * @typedef {{ type: string, [key: string]: unknown }} SpeechChannelEvent
+ *
+ * @typedef {{ socket: import("node:net").Socket | null, connects: number, resets: number,
+ *             errors: number, closes: number, keepAliveFailed: boolean }} SpeechChannelState
+ *
+ * The state shape was spelled inline twice and the two had already DRIFTED -- `adoptSocket` declared it
+ * without `resets`, which `resetSpeechSocket` increments. Nothing could see that while this file was
+ * outside `tsc`; the moment it entered, the two spellings stopped agreeing out loud. One typedef, used
+ * everywhere, is the remedy this repo reaches for first: delete a copy.
  */
 
 /**
@@ -63,7 +72,7 @@ const INSTALLED = Symbol.for("a11y-witness.speechChannelShim");
  * Start tracking a socket, and give it the keepalive guidepup never sets.
  *
  * @param {import("node:net").Socket} socket
- * @param {{ socket: unknown, connects: number, errors: number, closes: number, keepAliveFailed: boolean }} state
+ * @param {SpeechChannelState} state
  * @param {(event: SpeechChannelEvent) => void} onEvent
  */
 function adoptSocket(socket, state, onEvent) {
@@ -75,7 +84,7 @@ function adoptSocket(socket, state, onEvent) {
     // Recorded rather than swallowed: a socket we could not configure still works, but the keepalive
     // half of this module is then not doing anything and that should be visible, not assumed.
     state.keepAliveFailed = true;
-    onEvent({ type: "keepalive-failed", detail: error?.message });
+    onEvent({ type: "keepalive-failed", detail: /** @type {Error} */ (error)?.message });
   }
   socket.on("error", () => {
     state.errors += 1;
@@ -95,6 +104,10 @@ function adoptSocket(socket, state, onEvent) {
  * which guidepup does not listen for, so the channel would stay down. With an error it emits `'error'`,
  * and NVDAClient's handler disconnects, reconnects and re-joins the channel on its own.
  *
+ * @param {SpeechChannelState} state
+ * @param {string} reason
+ * @param {(event: SpeechChannelEvent) => void} [onEvent]  a bare `() => {}` default infers a ZERO-ARG
+ *        function, so without this annotation every call below is a type error while the runtime is fine
  * @returns {boolean} false when there was nothing to reset — no socket yet, or already destroyed
  */
 export function resetSpeechSocket(state, reason, onEvent = () => {}) {
@@ -122,7 +135,7 @@ export function installSpeechChannelShim({ tls, port = NVDA_REMOTE_PORT, onEvent
   const originalConnect = tlsModule.connect;
   const state = { socket: null, connects: 0, resets: 0, errors: 0, closes: 0, keepAliveFailed: false };
 
-  tlsModule.connect = function connect(...args) {
+  tlsModule.connect = /** @param {unknown[]} args */ function connect(...args) {
     const socket = originalConnect.apply(this, args);
     // Only NVDA's channel. Anything else this process opens over TLS is none of our business.
     if (args[0] === port) adoptSocket(socket, state, onEvent);
@@ -131,7 +144,7 @@ export function installSpeechChannelShim({ tls, port = NVDA_REMOTE_PORT, onEvent
 
   const handle = {
     state,
-    reset: (reason) => resetSpeechSocket(state, reason, onEvent),
+    reset: (/** @type {string} */ reason) => resetSpeechSocket(state, reason, onEvent),
     uninstall() {
       tlsModule.connect = originalConnect;
       delete tlsModule[INSTALLED];
