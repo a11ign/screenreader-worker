@@ -1,3 +1,4 @@
+// @ts-check
 // Which capture faults can the worker clear by itself, rather than failing the caller's case?
 //
 // Both faults below are the same underlying condition: a guest that has not finished settling, or an
@@ -31,5 +32,8 @@ const RECOVERABLE = new Set([FAULT.SCREEN_READER_MUTE, FAULT.SCREEN_READER_START
  * @returns {boolean}
  */
 export function isLocallyRecoverable(error) {
-  return RECOVERABLE.has(faultCode(error));
+  // `faultCode` returns null for an error carrying none, and `Set.has(null)` is false — correct, but
+  // saying so is clearer than relying on it, and it is what the types were objecting to.
+  const code = faultCode(error);
+  return code !== null && RECOVERABLE.has(code);
 }

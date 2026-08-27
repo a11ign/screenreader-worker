@@ -1,3 +1,4 @@
+// @ts-check
 // The faults a capture can end with, as CODES rather than as prose to be pattern-matched.
 //
 // Recovery used to be decided by running a regex over `error.message` -- on the guest in
@@ -73,9 +74,9 @@ export function captureFault(code, message, options) {
     throw new TypeError(`captureFault(code, message): first argument must be a FAULT code, got `
       + `${typeof code === "object" ? "an Error — the arguments are swapped" : JSON.stringify(code)}`);
   }
-  const fault = new Error(message, options);
-  fault.code = code;
-  return fault;
+  // Built with the property rather than assigned after, because `code` IS this helper's purpose — its
+  // absence from the constructed type is what let the swapped-argument call typecheck for so long.
+  return Object.assign(new Error(message, options), { code });
 }
 
 /** Every declared code, so an argument swap or a typo is refused at the throw site rather than shipped. */

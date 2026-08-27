@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Turn NVDA's own logging up, on demand, so a mute screen reader can be explained.
  *
@@ -62,7 +63,7 @@ export function applyRequestedLogLevel(configPaths, log) {
       writeFileSync(path, updated, "utf8");
       changed.push(path);
     } catch (error) {
-      log(`could not set NVDA logLevel in ${path}: ${error.message}`);
+      log(`could not set NVDA logLevel in ${path}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   if (changed.length) log(`NVDA logLevel set to ${level} in ${changed.length} config(s); restart NVDA to apply`);
