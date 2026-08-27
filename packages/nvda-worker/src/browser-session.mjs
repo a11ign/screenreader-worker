@@ -412,10 +412,34 @@ export async function domCensus() {
     // the AX census does not count it, so counting it here would invent a disagreement on a correct page.
     const graphics = all("img, svg[role='img'], [role='img']")
       .filter((el) => el.getAttribute("alt") !== "");
+    // WHICH graphics carry no accessible name, not just how many.
+    //
+    // \`graphicUnnamed\` was a COUNT, and this repo's own rule is that a count is where an investigation
+    // stops rather than starts. Settling whether cqc.org.uk's two unnamed graphics were real meant
+    // fetching the page by hand and counting <svg> elements without a <title> — the exact step this
+    // removes. Identified DOM-side because an unnamed node has, by definition, no name to identify it by.
+    //
+    // Presence, not resolution: an element with \`aria-labelledby\` is treated as named without following
+    // the reference. Resolving it correctly is the accessibility tree's job and Chromium already did it —
+    // this list exists to point a human at an element, not to second-guess the tree.
+    const named = (el) => (el.getAttribute("alt") || "").trim()
+      || (el.getAttribute("aria-label") || "").trim()
+      || el.getAttribute("aria-labelledby")
+      || (el.getAttribute("title") || "").trim()
+      || (el.querySelector(":scope > title")?.textContent || "").trim();
+    const describe = (el) => {
+      const src = el.getAttribute("src") || "";
+      const file = src ? src.split("?")[0].split("/").pop() : "";
+      const cls = (el.getAttribute("class") || "").trim().split(/\s+/)[0];
+      return [el.tagName.toLowerCase(), file, cls && \`.\${cls}\`].filter(Boolean).join(" ").slice(0, 80);
+    };
     return {
       heading: all("h1, h2, h3, h4, h5, h6, [role='heading']").length,
       link: all("a[href], [role='link']").length,
       graphic: graphics.length,
+      // Capped, and the cap SAYS so — a truncated list that reads as complete is the defect one layer on.
+      unnamedGraphics: graphics.filter((el) => !named(el)).slice(0, 5).map(describe),
+      unnamedGraphicCount: graphics.filter((el) => !named(el)).length,
       landmark: all("main, nav, aside, header, footer, [role='main'], [role='navigation'], "
         + "[role='banner'], [role='contentinfo'], [role='complementary']").length,
       formField: all("input:not([type='hidden']), select, textarea, [role='textbox'], "
