@@ -20,6 +20,7 @@ import { focusExistingBrowserWindow } from "./window-focus.mjs";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { captureFault, FAULT } from "./capture-faults.mjs";
+import { errorText } from "./error-text.mjs";
 // The pure half of this module. Moved to `capture-pure.mjs` so tests can reach it without importing
 // guidepup, which THROWS at import time where no screen reader exists — that is why CI was red on six
 // files. Imported and re-exported here, so every existing caller of `capture-core` is unchanged and
@@ -248,7 +249,10 @@ const MAX_SWEEP_STEPS = 250;
  */
 const SWEEP_SILENT_RETRIES = 3;
 
-const errMsg = (e) => (e && e.message) || String(e);
+// `errorText` lives in `error-text.mjs` now, reachable by subpath so portable modules can use it without
+// pulling this file — and therefore guidepup — in with it. This was a private one-liner with 35 call
+// sites that nothing else could reach, so every other module narrowed a caught value by hand or not at all.
+const errMsg = errorText;
 
 // Reject if `promise` has not settled within `ms`, naming the step so a timeout
 // is self-describing in the diagnostics.

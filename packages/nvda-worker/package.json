@@ -9,7 +9,8 @@
     "./code-version": "./src/code-version.mjs",
     "./worker-files": "./src/worker-files.mjs",
     "./capture-pure": "./src/capture-pure.mjs",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./error-text": "./src/error-text.mjs"
   },
   "bin": {
     "a11y-nvda-worker": "./src/server.mjs"

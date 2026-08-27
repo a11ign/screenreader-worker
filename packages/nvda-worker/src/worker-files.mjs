@@ -20,6 +20,7 @@ export const WORKER_FILES = [
   "server-log.mjs",
   "worker-recovery.mjs",
   "capture-faults.mjs",
+  "error-text.mjs",
   "capture-results.mjs",
   "diagnostics.mjs",
   "browser-profile.mjs",
