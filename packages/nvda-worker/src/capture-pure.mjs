@@ -242,7 +242,37 @@ export const dedupeKey = (/** @type {string} */ phrase) => phrase.replace(CONTAI
 export const MAX_CONSECUTIVE_REPEATS = 25;
 
 /**
+ * @typedef {"cap"|"channelReset"|"deadline"|"error"|"exhausted"|"focusModeStuck"|"repeat"|"silent"} SweepStop
+ *   Every reason a sweep can end, enumerated. Not decoration: as a bare `string` this does not narrow at
+ *   all, because `""` is a valid string and falsy, so `if (step.stop)` cannot rule the stopped branch out
+ *   of the `else`. Written down, the eight reasons are also the answer to "why did this sweep find
+ *   nothing?", which is the question `stopPhrase` was added for.
+ *
+ * @typedef {{ seen: number, stop: SweepStop, phrase?: undefined, repeats?: number, silentRetries?: number }} SweepStopped
+ * @typedef {{ seen: number, stop?: undefined, phrase: string, repeats?: number }} SweepAdvanced
+ * @typedef {SweepStopped | SweepAdvanced} SweepStep
+ *
+ *   DISCRIMINATED, because the invariant is real and the caller depends on it: every return below carries
+ *   EITHER a `stop` or a `phrase`, and the sweep does `if (step.stop) return ...` and then reads
+ *   `phrase.length`. A flat optional-everything shape says that read might be undefined, which is both
+ *   untrue and unfixable without a guard for a case that cannot arise.
+ *
+ *   NARROWING WAS ESTABLISHED BY COMPILING A THREE-LINE PROBE, twice, and the first answer was wrong.
+ *   Splitting the union across two named halves changed nothing, because the discriminant was `string`
+ *   and `""` is a falsy string -- so the `else` could still be the stopped branch. Only enumerating the
+ *   stop reasons made it decide. Reading the type would never have told me either of those things; this
+ *   repo's rule that escaping is settled by RUNNING it applies to type expressions exactly as it does to
+ *   Jinja, and for the same reason: what fails is silent.
+ *
+ *   ONE shape for what a sweep step reports, because three places produce one and they were producing
+ *   three different object literals. TypeScript unions them into something on which no field is safely
+ *   readable -- and the caller reads `.phrase` and `.repeats` off whatever came back. `stopPhrase` exists
+ *   because a sweep reporting `found=0 stop=repeat` says only "nothing" while `stopPhrase: "k"` says NVDA
+ *   was in focus mode and this pipeline typed its own quick-nav key into the page, which went unnoticed
+ *   for 2,122 captures. A shape that cannot carry the field is how that happens again.
+ *
  * @param {{ log: string[], seen: number, prev?: string, repeats?: number }} state
+ * @returns {SweepStep}
  */
 export function sweepStepFromSpeech({ log, seen, prev, repeats = 0 }) {
   const entries = log ?? [];
@@ -461,4 +491,32 @@ export function budgetLadderIsSound({ budgetMs, hardTimeoutMs, hostTimeoutMs, st
   return POST_READ_RESERVE_MS < budgetMs
     && budgetMs + startupMs < hardTimeoutMs
     && hardTimeoutMs < hostTimeoutMs;
+}
+
+/**
+ * The comparable SHAPE of a structural census, or null when there is nothing to compare.
+ *
+ * Pulled out of `waitForPageToSettle` because it was wrong there and the wrongness was invisible.
+ * `structuralCensus()` answers `{ error }` when CDP does not reply -- truthy, so a guard testing only for
+ * a missing value let it through, and reading four absent counts off it produced the literal string
+ * `"undefined/undefined/undefined/undefined"`. Two failures in a row therefore compared EQUAL, and the
+ * settle wait returned "settled" having learnt nothing about the page.
+ *
+ * That matters more than it looks. This is the only non-speech wait in the capture path, and it exists
+ * because speech settles just as happily on a shell as on a rendered page: the Met Office warnings page
+ * captured as `"blank"` with a census of heading=0 against forty headings in its published HTML, and
+ * produced two WCAG findings against a page that has neither fault. A census that cannot answer skipping
+ * the wait puts that back.
+ *
+ * Null for "no reading", never a string, so a caller comparing consecutive shapes cannot accidentally
+ * match two non-answers -- the distinction this repo keeps having to make between an empty result and an
+ * absent one.
+ *
+ * @param {{ heading?: number, link?: number, graphic?: number, landmark?: number, error?: string }
+ *         | null | undefined} census
+ * @returns {string | null}
+ */
+export function censusShape(census) {
+  if (!census || "error" in census) return null;
+  return `${census.heading}/${census.link}/${census.graphic}/${census.landmark}`;
 }

@@ -1,3 +1,4 @@
+// @ts-check
 // capture-core.mjs — drive NVDA through a page and return what it announced.
 // Shared by the standalone CLI (capture.mjs) and the HTTP worker (server.mjs).
 // MUST run in an interactive desktop session.
@@ -27,6 +28,7 @@ import { errorText } from "./error-text.mjs";
 // there is still exactly one definition of each.
 import { browserArgs, browserFor } from "./browsers.mjs";
 import {
+  censusShape,
   crossCheckStructure,
   dedupeKey,
   elementsListRowName,
@@ -41,6 +43,29 @@ import {
   sweepStepFromSpeech,
 } from "./capture-pure.mjs";
 import { installSpeechChannelShim } from "./speech-channel.mjs";
+
+/**
+ * @typedef {import("./capture-pure.mjs").CaptureDiagnostics} Diag
+ *   The mark log, threaded through almost every function here. Aliased rather than re-described: this
+ *   file passes it to forty of them, and forty inline shapes is forty chances to disagree.
+ *
+ * @typedef {{ id: string, name: string, image: string, windowTitle: string, profileName: string,
+ *             suppressedFeatures: string[], extraArgs: string[], exes: () => string[] }} BrowserPreset
+ *   One entry from `browsers.mjs`, READ off that file rather than guessed -- the first version of this
+ *   typedef invented `processImage`, `args` and `profileDir`, none of which exist, and omitted `image`,
+ *   which two functions here call. `browsers.mjs` exists because the browser was spread across EIGHT
+ *   sites and a change applied at seven of them launches Chrome and kills Edge; a shared type is the same
+ *   argument, and a shared type describing the wrong fields is that defect wearing the remedy's clothes.
+ *
+ * @typedef {{ out: string[], seenKeys: Set<string>,
+ *             onItem?: ((phrase: string) => Promise<unknown> | unknown) | null,
+ *             deadline: number, diag: Diag, label: string, trips: { count: number },
+ *             trace?: string[] }} SweepContext
+ *   What a sweep carries. `trips` is REQUIRED and that is the point: adding it to `collectByType` and
+ *   spelling the context out at one call site instead of spreading it threw on the function's first line,
+ *   before any sweep ran, and returned `postSubmitFields: []` on all 2,122 captures with every check
+ *   green. A declared shape makes that a compile error rather than an empty field.
+ */
 import { parkPointer } from "./pointer.mjs";
 import { browserAlive, currentPageUrl, launchReusable, navigateExisting, reusableArgs,
   mediaCensus, structuralCensus, domCensus, truncatedAnnouncements,
@@ -256,7 +281,7 @@ const errMsg = errorText;
 
 // Reject if `promise` has not settled within `ms`, naming the step so a timeout
 // is self-describing in the diagnostics.
-const withTimeout = (promise, ms, label) =>
+const withTimeout = (/** @type {Promise<any>} */ promise, /** @type {number} */ ms, /** @type {string} */ label) =>
   Promise.race([
     promise,
     new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
@@ -264,6 +289,7 @@ const withTimeout = (promise, ms, label) =>
 
 // A diagnostics recorder: every phase appends a timestamped entry rather than
 // swallowing errors, so an empty capture can be explained after the fact.
+/** @param {{ event: string, [key: string]: any }[]} [sink] @returns {Diag} */
 function createDiagnostics(sink) {
   // `sink` lets the CALLER own the array. A capture abandoned by the hard timeout never returns, so every
   // phase mark it recorded died with it — which is why "the capture hung" could not be narrowed to a phase
@@ -271,20 +297,46 @@ function createDiagnostics(sink) {
   // report how far the capture got even when the capture itself never comes back.
   const entries = sink ?? [];
   const startedAt = Date.now();
-  const mark = (event, info = {}) => entries.push({ event, atMs: Date.now() - startedAt, ...info });
+  const mark = (/** @type {string} */ event, /** @type {Record<string, unknown>} */ info = {}) => entries.push({ event, atMs: Date.now() - startedAt, ...info });
   return { entries, mark };
 }
 
 /**
- * @returns {Promise<{url:string,screenReader:string,capturedAt:string,
- *   transcript:string[], structure:{headings:string[],landmarks:string[],formFields:string[],
- *     graphics:string[],links:string[],lists:string[],tableCells:string[]},
- *   interaction:{controls:string[],stateChanges:{control:string,after:string}[],
- *     formChanges:{control:string,after:string}[], postSubmitFields:string[],focusOrder:string[]},
- *   diagnostics:object[]}>}
+ * @typedef {{ headings: string[], landmarks: string[], formFields: string[], graphics: string[], links: string[], lists: string[], tableCells: string[] }} CapturedStructure
+ * @typedef {{ control: string, after: string }} AnnouncedChange
+ * @typedef {{ controls: string[], stateChanges: AnnouncedChange[], formChanges: AnnouncedChange[], postSubmitFields: string[], focusOrder: string[], routeChange?: unknown, navigatedOnSubmit?: unknown, postSubmitNames?: string[] }} CapturedInteraction
+ * @typedef {{ url: string, screenReader: string, capturedAt: string, transcript: string[], structure: CapturedStructure, interaction: CapturedInteraction, media?: Record<string, unknown>[] | null, diagnostics: object[] }} Capture
+ *
+ * THE EVIDENCE SHAPE, named once. It was written out inline in this `@returns` and then built by three
+ * separate object literals whose inferred types disagreed with it and with each other -- so the one
+ * description that was accurate was the one nothing checked. The three optional fields are optional on
+ * purpose and each has a recorded reason: absent and "we looked and found nothing" must stay
+ * distinguishable, because the second IS the finding for 2.4.2, 3.3.1 and 1.4.2 respectively.
+ *
+ * @returns {Promise<Capture>}
+ *
+ * @param {string} url
+ * @param {{
+ *   task?: string, steps?: number, maxMs?: number, nav?: string,
+ *   probeForms?: boolean, probeTables?: boolean, probeFocus?: boolean,
+ *   probeNavigation?: boolean, probeElementsList?: boolean,
+ *   reuseBrowser?: boolean, reuseScreenReader?: boolean,
+ *   browserWaitMs?: number, diagnosticsSink?: object[],
+ *   browser?: string,
+ * }} [opts]
+ *
+ * `browser` is on that list and is NOT read as `opts.browser` anywhere here -- it goes to `browserFor(opts)`
+ * whole. So a list derived by grepping `opts.` missed the one option CLAUDE.md documents as arriving per
+ * REQUEST (`{"url": "...", "browser": "chrome"}`), and typechecking is what noticed. Deriving a contract
+ * from how it is READ finds the fields that are read.
+ *
+ * DERIVED from every `opts.` this file reads, not from memory. `captureOptions` in `server.mjs` reads
+ * KNOWN FIELDS ONLY -- which is what lets an older worker ignore a `captureId` it has never heard of --
+ * so this list and that one are the same contract stated in two places, and the wire is the thing that
+ * has to keep working across a deploy.
  */
 export async function captureWithNvda(url, opts = {}) {
-  const diag = createDiagnostics(opts.diagnosticsSink);
+  const diag = createDiagnostics(/** @type {{ event: string }[] | undefined} */ (opts.diagnosticsSink));
   const reuseBrowser = reuseBrowserFor(opts);
   // Which browser this capture drives. Resolved from an allow-list, so an unknown name fails the request
   // here rather than reaching a shell; and recorded on the result, because the browser is evidence — the
@@ -303,7 +355,7 @@ export async function captureWithNvda(url, opts = {}) {
     // title verifier will reject the result, but cleanup must make the worker recoverable
     // before that verifier gets a chance to retry.
     const documentReady = (result.diagnostics || []).some(
-      (event) => event.event === "documentReady" && event.ok === true,
+      (/** @type {Record<string, unknown>} */ event) => event.event === "documentReady" && event.ok === true,
     );
     succeeded = documentReady && Array.isArray(result.transcript) && result.transcript.length > 0;
     return result;
@@ -329,6 +381,7 @@ export async function captureWithNvda(url, opts = {}) {
 
 // The capture proper. Split out so captureWithNvda is nothing but "launch, run, always clean
 // up" -- the guarantee is the point, and it should be readable at a glance.
+/** @param {string} url @param {Record<string, any>} opts @param {Diag} diag */
 async function runCapturePhases(url, opts, diag) {
   const steps = Number(opts.steps || DEFAULT_STEPS);
   const browserWaitMs = Number(opts.browserWaitMs || DEFAULT_BROWSER_WAIT_MS);
@@ -339,7 +392,7 @@ async function runCapturePhases(url, opts, diag) {
   // Own the pointer before anything sends a keystroke. It is a capture INPUT, not a bystander: it holds
   // hover state over whatever it rests on, and guidepup prefixes every captured action with Ctrl, which
   // Edge turns into a magnifier overlay when an image is underneath. See pointer.mjs.
-  await parkPointer(diag);
+  await parkPointer(/** @type {any} */ (diag));
   const coldStart = await startScreenReader(diag, { reuse: !!opts.reuseScreenReader });
   // Wait for NVDA to answer, rather than for a fixed three seconds.
   //
@@ -425,8 +478,9 @@ async function runCapturePhases(url, opts, diag) {
  * Resolved so we can spawn it directly and OWN the process: launching via `cmd /c start` returns no
  * handle, which means teardown can only be guessed at. See `closeBrowser`.
  */
+/** @param {BrowserPreset} app */
 function resolveExe(app) {
-  return app.exes().find((path) => existsSync(path)) ?? null;
+  return app.exes().find((/** @type {string} */ path) => existsSync(path)) ?? null;
 }
 
 /**
@@ -465,7 +519,7 @@ const REUSE_BROWSER = process.env.A11Y_REUSE_BROWSER !== "0";
  *
  * The env variable remains the fleet-wide default; the option overrides it for one capture only.
  */
-const reuseBrowserFor = (opts) =>
+const reuseBrowserFor = (/** @type {{ reuseBrowser?: boolean }} */ opts) =>
   typeof opts?.reuseBrowser === "boolean" ? opts.reuseBrowser : REUSE_BROWSER;
 
 /**
@@ -484,6 +538,7 @@ const reuseBrowserFor = (opts) =>
 const MAX_CAPTURES_PER_BROWSER = 25;
 
 /** The live reusable browser, if we started one. Null when reuse is off or it has gone. */
+/** @type {any} */
 let reusableBrowser = null;
 let browserCaptures = 0;
 
@@ -495,6 +550,7 @@ let browserCaptures = 0;
  * request that asked for Chrome while Edge is still up would otherwise pass "chrome" into a taskkill aimed
  * at an Edge process. The worker serves one capture at a time (`busy`), so there is exactly one of these.
  */
+/** @type {BrowserPreset | null} */
 let activeApp = null;
 
 /**
@@ -534,6 +590,7 @@ let navigatedExistingWindow = false;
  * different browser — and each of them previously repeated the same three lines. Repeating them is how one
  * of them comes to forget `browserCaptures = 0` and recycle every capture thereafter.
  */
+/** @param {Diag} diag @param {string} mark @param {Record<string, unknown>} [detail] */
 async function discardReusable(diag, mark, detail) {
   diag.mark(mark, detail);
   await closeBrowser(diag, reusableBrowser);
@@ -543,6 +600,10 @@ async function discardReusable(diag, mark, detail) {
 
 // `app` defaults rather than being required: every caller passes one, and a future caller that forgets
 // should get the guest's configured browser rather than a TypeError inside the capture path.
+/**
+ * @param {string} url @param {Diag} diag
+ * @param {{ reuse?: boolean, app?: BrowserPreset }} [options]
+ */
 async function openPage(url, diag, { reuse = REUSE_BROWSER, app = browserFor() } = {}) {
   navigatedExistingWindow = false;
   if (!reuse) return launchBrowser(url, diag, app);
@@ -579,7 +640,10 @@ async function openPage(url, diag, { reuse = REUSE_BROWSER, app = browserFor() }
   if (!exe) return launchBrowser(url, diag, app);
   try {
     reusableBrowser = await launchReusable({
-      exe, args: reusableArgs(url, browserArgs(app, url)), onEvent: (e) => diag.mark(e.type, e),
+      exe, args: reusableArgs(url, browserArgs(app, url)),
+      // `launchReusable` declares `onEvent: (e: object) => void`, so the parameter is typed to match and
+      // the shape is read inside. A narrower parameter is not a compatible handler.
+      onEvent: (e) => { const event = /** @type {{ type: string }} */ (e); diag.mark(event.type, event); },
     });
     activeApp = app;
     browserCaptures = 1;
@@ -610,6 +674,7 @@ async function openPage(url, diag, { reuse = REUSE_BROWSER, app = browserFor() }
  * Costs nothing to add. Chromium opens the port and ignores it if nobody connects, and this path only runs
  * when there is no reusable browser holding the port already.
  */
+/** @param {string} url @param {Diag} diag @param {BrowserPreset} app */
 function launchBrowser(url, diag, app) {
   const exe = resolveExe(app);
   const args = reusableArgs(url, browserArgs(app, url));
@@ -673,6 +738,7 @@ const FAST_FOCUS_MS = 15_000;
  *
  * @returns {Promise<{ok: boolean, via: string, error: string, fastReason: string}>}
  */
+/** @param {number} deadline */
 async function activateBrowserWithinDeadline(deadline) {
   const remaining = () => deadline - Date.now();
   if (remaining() <= 0) return { ok: false, via: "none", error: "no time left to activate", fastReason: "" };
@@ -717,6 +783,7 @@ async function activateBrowserWithinDeadline(deadline) {
  * empty one. guidepup's `windowsActivate` remains the fallback because it can LAUNCH Edge, which our path
  * deliberately cannot; see `window-focus.mjs` for why that launching is exactly what made it slow.
  */
+/** @param {number} maxWaitMs @param {Diag} diag */
 async function focusBrowserWindow(maxWaitMs, diag) {
   const deadline = Date.now() + maxWaitMs;
   const startedAt = Date.now();
@@ -771,6 +838,7 @@ async function focusBrowserWindow(maxWaitMs, diag) {
  * remedy, because this command needs the NVDA modifier and only `perform` can send it. A failure is recorded
  * rather than thrown: a refresh that did not happen must not fail a capture that may be perfectly fine.
  */
+/** @param {Diag} diag */
 async function refreshBrowseBuffer(diag) {
   // Always mark, even when there is nothing to do. A silent skip and a silent success are the same
   // absence in the evidence, and that is how this remedy sat here as dead code: the mark was inside the
@@ -805,6 +873,7 @@ async function refreshBrowseBuffer(diag) {
  * internal to NVDA and there is no command that reports it. Returns what it observed rather than a boolean, so
  * "it was never loading" and "it loaded and we saw it finish" stay distinguishable from "we gave up waiting".
  */
+/** @param {Diag} diag @param {number} [budgetMs] */
 async function waitForBufferReady(diag, budgetMs = BUFFER_READY_BUDGET_MS) {
   const startedAt = Date.now();
   const deadline = startedAt + budgetMs;
@@ -863,12 +932,14 @@ async function waitForBufferReady(diag, budgetMs = BUFFER_READY_BUDGET_MS) {
  * here keeps it able to see a redirect to a different host or a different document, which is what it is
  * for, and blind to a rewrite that changes neither.
  */
+/** @param {string} a @param {string} b */
 function samePath(a, b) {
-  const normalise = (path) => path.replace(/\/$/, "").replace(/\.html?$/i, "").replace(/\/index$/i, "");
+  const normalise = (/** @type {string} */ path) => path.replace(/\/$/, "").replace(/\.html?$/i, "").replace(/\/index$/i, "");
   return normalise(a) === normalise(b);
 }
 
 /** Does what the browser is showing address the same document we asked for? PURE. */
+/** @param {string} actual @param {string} url */
 function addressesSamePage(actual, url) {
   let got;
   try {
@@ -914,7 +985,15 @@ function addressesSamePage(actual, url) {
  *
  * @returns {Promise<{ok: boolean, actual: string|null, attempts: number, waitedMs: number}>}
  */
-export async function landedVerdict(url, options = {}) {
+/**
+ * @param {string} url
+ * @param {{ read: () => Promise<string|null>, budgetMs?: number, pollMs?: number,
+ *           now?: () => number, wait?: (ms: number) => Promise<void> }} options
+ */
+// NO `= {}` DEFAULT: `read` has none either, so an omitted options object gives `read === undefined` and
+// the loop below calls it. Every one of the four call sites passes `{ read: ... }`. Same contradiction as
+// `refuseUnknownFlags` had -- a default that makes a required argument optional.
+export async function landedVerdict(url, options) {
   const {
     read, budgetMs = LANDED_BUDGET_MS, pollMs = LANDED_POLL_MS,
     now = () => Date.now(), wait = sleep,
@@ -959,6 +1038,7 @@ const SETTLE_BUDGET_MS = 6000;
  * It costs nothing where nothing was wrong: a server-rendered page is already settled, so the first two
  * reads agree and this returns after one interval.
  */
+/** @param {Diag} diag */
 async function waitForPageToSettle(diag) {
   const startedAt = Date.now();
   let previous = null;
@@ -966,9 +1046,18 @@ async function waitForPageToSettle(diag) {
   while (Date.now() - startedAt < SETTLE_BUDGET_MS) {
     const census = await structuralCensus();
     reads += 1;
-    const shape = census
-      ? `${census.heading}/${census.link}/${census.graphic}/${census.landmark}`
-      : null;
+    // A FAILED CENSUS IS NOT A READING, and it used to be treated as one. `structuralCensus` answers
+    // `{ error }` when CDP does not reply -- truthy, so the guard below let it through, and reading four
+    // absent fields off it produced the string `"undefined/undefined/undefined/undefined"`. Two failures
+    // in a row therefore compared EQUAL and this returned "settled" having learnt nothing.
+    //
+    // The cost is exactly what this function exists to prevent: it is the only non-speech wait in the
+    // file, added because speech settles just as happily on a shell as on a page -- the Met Office
+    // warnings page captured as `"blank"` with a census of heading=0 against forty in its HTML, and two
+    // WCAG findings against a page that has neither. A census that cannot answer skipping the wait puts
+    // that back. Found by typechecking this file, not by a failing capture: the outcome of the bug is
+    // "we stopped waiting", which looks like success.
+    const shape = censusShape(census);
     if (shape !== null && shape === previous) {
       // MARKED whether or not it had to wait, so "settled immediately" and "never ran" can never be the
       // same silence — the `refreshBrowseBuffer` rule, which sat inert while green results vouched for it.
@@ -980,9 +1069,13 @@ async function waitForPageToSettle(diag) {
   }
   // Still moving. Captured as it stands rather than failed: a page that never settles is a real thing
   // (a ticker, a live feed), and refusing it would reject evidence rather than describe it.
-  diag.mark("pageSettled", { reads, waitedMs: Date.now() - startedAt, settled: false });
+  // `settled: false` covers two different things and now says which. A page still moving is a real thing
+  // (a ticker, a live feed) and is captured as it stands; a census that never answered means nobody
+  // asked, and reading the second as the first is how "we could not tell" becomes "it kept changing".
+  diag.mark("pageSettled", { reads, waitedMs: Date.now() - startedAt, settled: false, sawCensus: previous !== null });
 }
 
+/** @param {string} url @param {Diag} diag */
 async function assertLandedOnRequestedPage(url, diag) {
   const verdict = await landedVerdict(url, { read: currentPageUrl });
   // Marked whether or not it had to wait, so "matched immediately" and "matched after 4 s" are
@@ -1008,11 +1101,12 @@ async function assertLandedOnRequestedPage(url, diag) {
  * happens to mention connectivity. Chromium's error titles are stable and short.
  */
 /** Exported so the guard can be shown to FAIL — a check never seen to reject anything is untested. */
-const isBrowserErrorTitle = (title) => BROWSER_ERROR_TITLE_RE.test(String(title ?? ""));
+const isBrowserErrorTitle = (/** @type {unknown} */ title) => BROWSER_ERROR_TITLE_RE.test(String(title ?? ""));
 
 const BROWSER_ERROR_TITLE_RE =
   /can.t reach this page|no internet|site can.t be reached|refused to connect|ERR_[A-Z_]+/i;
 
+/** @param {Diag} diag */
 async function waitForDocument(diag) {
   // ONE budget for all the buffer waiting this document gets, not one per attempt. Three attempts at 90 s is
   // 270 s inside a 280 s capture, so the retry loop could exhaust the whole capture before reading a word —
@@ -1069,6 +1163,7 @@ async function waitForDocument(diag) {
 // request/response (start, next, act, lastSpokenPhrase, spokenPhraseLog -- no emitter, no
 // async iterator), so there is no "NVDA is ready" event to await. Asking costs one round
 // trip and normally answers on the first attempt.
+/** @param {Diag} diag */
 async function reportedTitle(diag) {
   try {
     await withTimeout(nvda.perform(nvda.keyboardCommands.reportTitle), NAV_TIMEOUT_MS, "reportTitle");
@@ -1113,7 +1208,7 @@ let screenReader = { running: false, captures: 0 };
 function screenReaderResponds() {
   return new Promise((resolve) => {
     const socket = connect(NVDA_REMOTE_PORT, "127.0.0.1");
-    const settle = (alive) => { socket.destroy(); resolve(alive); };
+    const settle = (/** @type {boolean} */ alive) => { socket.destroy(); resolve(alive); };
     socket.setTimeout(REUSE_PROBE_MS, () => settle(false));
     socket.on("connect", () => settle(true));
     socket.on("error", () => settle(false));
@@ -1126,6 +1221,7 @@ function screenReaderResponds() {
  * Same probe `startScreenReader` uses to decide whether a reused NVDA is still alive, so this adds no
  * new failure mode -- it just stops guessing how long a cold start takes.
  */
+/** @param {number} deadlineMs @param {Diag} diag */
 async function waitForScreenReader(deadlineMs, diag) {
   const deadline = Date.now() + deadlineMs;
   const startedAt = Date.now();
@@ -1142,6 +1238,7 @@ async function waitForScreenReader(deadlineMs, diag) {
   return false;
 }
 
+/** @param {Diag} diag @param {{ reuse?: boolean }} options */
 async function startScreenReader(diag, { reuse }) {
   if (reuse && screenReader.running && screenReader.captures < MAX_CAPTURES_PER_NVDA) {
     if (await screenReaderResponds()) {
@@ -1201,6 +1298,7 @@ async function startScreenReader(diag, { reuse }) {
 const NVDA_START_ATTEMPTS = 2;
 const NVDA_RETRY_DELAY_MS = 8_000;
 
+/** @param {Diag} diag */
 async function startFreshWithRetry(diag) {
   let lastError;
   for (let attempt = 1; attempt <= NVDA_START_ATTEMPTS; attempt += 1) {
@@ -1242,6 +1340,7 @@ async function startFreshWithRetry(diag) {
 // truncated announcement instead. Detect cheaply, do not prevent expensively.
 const CAPTURE_OPTIONS = undefined;
 
+/** @param {Diag} diag */
 async function startFreshScreenReader(diag) {
   try {
     await withTimeout(nvda.start(CAPTURE_OPTIONS), NVDA_START_TIMEOUT_MS, "nvda.start");
@@ -1290,6 +1389,7 @@ async function startFreshScreenReader(diag) {
  * Hence probing, cheaply, BEFORE committing a capture to it. One round trip against ~86 s for a capture
  * that was never going to produce evidence.
  */
+/** @param {Diag} diag */
 async function screenReaderIsSpeaking(diag) {
   try {
     await withTimeout(nvda.clearSpokenPhraseLog(), QUERY_TIMEOUT_MS, "livenessClear");
@@ -1315,6 +1415,7 @@ async function screenReaderIsSpeaking(diag) {
  * wrong. This restarts it only when the channel has been *measured* dead, during a capture, which
  * capture-core already treats as its own business.
  */
+/** @param {Diag} diag */
 async function ensureSpeechChannel(diag) {
   if (await screenReaderIsSpeaking(diag)) return;
 
@@ -1373,6 +1474,7 @@ async function ensureSpeechChannel(diag) {
     "an empty page.");
 }
 
+/** @param {Diag} diag */
 async function resetSpeechLogs(diag) {
   try {
     await withTimeout(nvda.clearSpokenPhraseLog(), QUERY_TIMEOUT_MS, "clearSpeechLog");
@@ -1393,6 +1495,7 @@ async function resetSpeechLogs(diag) {
 // restarts it, but it cost a capture and a restart every time.
 //
 // Same probe as the reuse check, inverted: ask the socket rather than guess a duration.
+/** @param {Diag} diag */
 async function waitForScreenReaderGone(diag) {
   const deadline = Date.now() + NVDA_EXIT_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -1402,6 +1505,7 @@ async function waitForScreenReaderGone(diag) {
   diag.mark("nvdaStillListening", { afterMs: NVDA_EXIT_TIMEOUT_MS });
 }
 
+/** @param {Diag} diag */
 async function stopScreenReader(diag) {
   if (!screenReader.running) return;
   try { await withTimeout(nvda.stop(), NVDA_STOP_TIMEOUT_MS, "nvda.stop"); }
@@ -1487,7 +1591,7 @@ export function screenReaderSettings() {
     return typeof nvda.getSettings === "function" ? nvda.getSettings() : null;
   } catch (error) {
     // Reading configuration must never be able to fail a capture or the diagnostics endpoint.
-    return { error: String(error?.message ?? error).split("\n")[0].slice(0, 200) };
+    return { error: String(/** @type {Error} */ (error)?.message ?? error).split("\n")[0].slice(0, 200) };
   }
 }
 
@@ -1504,6 +1608,7 @@ export async function shutdownScreenReader() {
 // What does NVDA announce right after starting? Empty here means it is not
 // reading the page, and the whole capture will be empty — this field is the
 // first thing to check when a result comes back blank.
+/** @param {Diag} diag */
 async function recordStartupHealth(diag) {
   try {
     const spoken = await withTimeout(nvda.lastSpokenPhrase(), QUERY_TIMEOUT_MS, "afterStart");
@@ -1513,6 +1618,10 @@ async function recordStartupHealth(diag) {
   }
 }
 
+/**
+ * @param {{ steps: number, navStrategy: string, deadline: number, diag: Diag,
+ *           silentAtStart?: boolean }} request
+ */
 async function readPageInOrder({ steps, navStrategy, deadline, diag, silentAtStart = false }) {
   const transcript = [];
   const firstItem = await readFirstItem(diag);
@@ -1540,6 +1649,7 @@ async function readPageInOrder({ steps, navStrategy, deadline, diag, silentAtSta
 
 // `nvda.next()` moves then reads, so the very first item must be read in place
 // or the top line (often the first heading) is skipped.
+/** @param {Diag} diag */
 async function readFirstItem(diag) {
   try {
     const item = ((await withTimeout(nvda.itemText(), QUERY_TIMEOUT_MS, "itemText")
@@ -1563,6 +1673,7 @@ async function readFirstItem(diag) {
 }
 
 // Advance one step (line or object) and return what was announced.
+/** @param {string} navStrategy */
 async function advanceAndRead(navStrategy) {
   if (navStrategy === "object") await withTimeout(nvda.perform(nvda.keyboardCommands.moveToNextObject), ADVANCE_TIMEOUT_MS, "advance");
   else await withTimeout(nvda.next(), ADVANCE_TIMEOUT_MS, "advance");
@@ -1581,6 +1692,10 @@ async function advanceAndRead(navStrategy) {
 // capture. A second anchor is ~3 s and usually recovers it, so it is worth trying before giving up.
 // Only ONE retry: if re-anchoring did not put the caret in the document, something else is wrong and
 // the capture should fail honestly rather than loop.
+/**
+ * @param {{ steps: number, navStrategy: string, deadline: number, diag: Diag, title: string,
+ *           silentAtStart?: boolean }} request
+ */
 async function readWithRetry({ steps, navStrategy, deadline, diag, title, silentAtStart = false }) {
   // The read-through stops EARLY, holding back `POST_READ_RESERVE_MS` for the phases after it.
   //
@@ -1641,7 +1756,12 @@ async function readWithRetry({ steps, navStrategy, deadline, diag, title, silent
  * ~11s, which is why that stays opt-in. It only ever adds a diagnostic, so no cached capture is
  * invalidated and no evidence field moves.
  */
+/** @param {Record<string, any> & { diag: Diag, deadline: number }} options */
 async function navigateByStructureThenAudit(options) {
+  // The audit ADDS to what the structural pass produced -- `media` here, and the cross-check marks
+  // below -- so the accumulator is declared rather than inferred, for the same reason as the two inside
+  // `navigateByStructure`: an inferred type makes adding evidence the error and dropping it the default.
+  /** @type {{ structure: CapturedStructure, interaction: CapturedInteraction, media?: Record<string, unknown>[] | null }} */
   const result = await navigateByStructure(options);
   const census = await structuralCensus();
   // BESIDE the tree census, never instead of it. The two answer different questions — what Chromium
@@ -1659,7 +1779,11 @@ async function navigateByStructureThenAudit(options) {
   // Assigned onto `result` rather than a new top-level field so it travels with the rest of the evidence.
   result.media = await mediaCensus();
   options.diag.mark("mediaCensus", { count: result.media?.length ?? null });
-  if (census && !census.error) {
+  // `"error" in census` rather than `!census.error`. Both are true at runtime, but only the first NARROWS
+  // -- the success branch carries an index signature, so reading `.error` off it is legal and tells the
+  // compiler nothing. This check is the one place that already handled the error branch correctly;
+  // `waitForPageToSettle` did not, and read four absent counts as a settled page.
+  if (census && !("error" in census)) {
     // A truncated announcement is not a count problem, so the count cross-check cannot see it: the sweep
     // finds the right NUMBER of controls and one of them is named "o". Only the page's real accessible
     // names can distinguish that from a control genuinely named "o".
@@ -1687,13 +1811,25 @@ async function navigateByStructureThenAudit(options) {
  * Reads as the order the phases must run in, and that order is load-bearing rather than incidental — each
  * phase below says which cursor state it leaves behind and therefore why it cannot move.
  */
+/**
+ * @param {{ deadline: number, diag: Diag, probeForms?: boolean, probeFocus?: boolean, probeTables?: boolean,
+ *           probeNavigation?: boolean, probeElementsList?: boolean, task?: string }} ctx
+ */
 async function navigateByStructure({ deadline, diag, probeForms, probeFocus, probeTables, probeNavigation, probeElementsList, task }) {
+  // BOTH ACCUMULATORS ARE DECLARED, because both are filled in by probes that run later and elsewhere.
+  // An inferred type here describes only the fields present at construction -- `never[]` for each array,
+  // and no `navigatedOnSubmit`, `postSubmitNames` or `media` at all -- so every probe that adds evidence
+  // reads as an error while the one that drops evidence reads as fine. That is backwards for a file whose
+  // recorded defects are `postSubmitFields` empty on all 2,122 captures and a `media` field a rule reads.
+  /** @type {{ stateChanges: AnnouncedChange[], formChanges: AnnouncedChange[], sweepLog: string[],
+   *           navigatedOnSubmit?: unknown, postSubmitNames?: string[], postSubmitFields?: string[] }} */
   const interaction = { stateChanges: [], formChanges: [], sweepLog: [] };
   const trips = { count: 0 };
+  /** @type {CapturedStructure} */
   const structure = {
     headings: [], landmarks: [], formFields: [], graphics: [], links: [], lists: [], tableCells: [],
   };
-  const onFormField = (phrase) => operateControl(phrase, { probeForms, deadline, interaction, task });
+  const onFormField = (/** @type {string} */ phrase) => operateControl(phrase, { probeForms, deadline, interaction, task });
 
   await sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips });
   if (probeForms) diag.mark("formProbe", { activated: interaction.formChanges.length });
@@ -1746,6 +1882,10 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
  * and records the fault beside them. An empty field is legitimate evidence here — a page may genuinely have no
  * landmarks — so discarding the sweeps that DID work would lose real evidence to report a partial fault.
  */
+/**
+ * @param {{ structure: CapturedStructure, onFormField: (phrase: string) => Promise<unknown>,
+ *           probeTables?: boolean, deadline: number, diag: Diag, trips: { count: number } }} ctx
+ */
 async function sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips }) {
   const K = nvda.keyboardCommands;
   // No anchor here, deliberately. Measured: anchorToTop costs ~3s -- two nvda.press calls at
@@ -1783,7 +1923,7 @@ async function sweepEveryStructuralType({ structure, onFormField, probeTables, d
     diag.mark("structural", { headings: structure.headings.length, landmarks: structure.landmarks.length, formFields: structure.formFields.length, roundTrips: trips.count });
     // Additive: graphics, links and lists by quick-nav, then a table walked cell by cell.
     // These fields are new, so no existing signal reads them and none can be broken by them.
-    Object.assign(structure, await sweepExtraTypes({ deadline, diag, trips }));
+    Object.assign(structure, await sweepExtraTypes({ deadline, diag, trips, label: "extra" }));
     // Table cells are OPT-IN, unlike the sweeps above, because they are not yet deterministic.
     //
     // Measured over 18 captures of one unchanged page across three workers: 4, 2, 4, 4, 1, 4, 4
@@ -1809,6 +1949,10 @@ async function sweepEveryStructuralType({ structure, onFormField, probeTables, d
  * has post-submit state to judge, and `check-signals` is what decides which cases may legitimately be empty —
  * that decision needs the case definition, which this layer does not have.
  */
+/**
+ * @param {{ interaction: Record<string, any>, probeForms?: boolean, deadline: number,
+ *           diag: Diag, trips: { count: number } }} ctx
+ */
 async function rescanFormFieldsAfterSubmit({ interaction, probeForms, deadline, diag, trips }) {
   const K = nvda.keyboardCommands;
   // After a form was submitted in place during the sweep above, re-scan the
@@ -1817,6 +1961,7 @@ async function rescanFormFieldsAfterSubmit({ interaction, probeForms, deadline, 
   // "invalid entry"/the error whenever the cursor lands on it; an inaccessible
   // one leaves the field unchanged. This is version-robust, unlike the transient
   // live-region text in formChanges.after (which some NVDA builds don't emit).
+  /** @type {string[]} */
   let postSubmitFields = [];
   if (probeForms && interaction.formChanges.length > 0) {
     try {
@@ -1858,6 +2003,7 @@ async function rescanFormFieldsAfterSubmit({ interaction, probeForms, deadline, 
  * comparison is evidence *about* them, because "quick navigation could not reach it" and "the page does not
  * have it" are different findings and correcting one with the other would erase the distinction.
  */
+/** @param {{ structure: CapturedStructure, deadline: number, diag: Diag }} ctx */
 async function crossCheckAgainstElementsList({ structure, deadline, diag }) {
   const authoritative = await probeElementsListCounts({ deadline, diag });
   if (!authoritative) return;
@@ -1928,6 +2074,7 @@ const BASELINE_QUIET_BUDGET_MS = 20_000;
  * @returns {Promise<{quiet: boolean, waitedMs: number, reads: number}>} `quiet: false` means the budget
  *   ran out with NVDA still talking -- recorded, never silently treated as settled.
  */
+/** @param {string} label @param {number} [budgetMs] */
 async function waitForSpeechQuiet(label, budgetMs = SPEECH_QUIET_BUDGET_MS) {
   const startedAt = Date.now();
   const deadline = startedAt + budgetMs;
@@ -1957,8 +2104,15 @@ async function anchorToTop() {
 // "move to top") so every element is reached regardless of cursor position. An
 // empty list means the page exposes none of that type, even if it looks like it
 // does. `onItem` fires when the cursor lands on a new element.
+/**
+ * @param {{ prev: object, next: object }} commands
+ * @param {Omit<SweepContext, "out" | "seenKeys">} ctx
+ */
 async function collectByType(commands, ctx) {
-  const out = [], seenKeys = new Set();
+  /** @type {string[]} */
+  const out = [];
+  /** @type {Set<string>} */
+  const seenKeys = new Set();
   const sweepCtx = { ...ctx, out, seenKeys };
   // Per-sweep timing and round-trip counts. `structural` is the largest remaining phase and
   // the aggregate hides which of the six sweeps costs what -- a page with one heading and no
@@ -2023,6 +2177,10 @@ const BROWSE_MODE_REMEDIES = [
  * right behaviour for evidence — the same phrase twice is not two findings — but it means the collected COUNT
  * is distinct announcements rather than elements reached, which is why the coverage report says so explicitly.
  */
+/**
+ * @param {string} phrase
+ * @param {Pick<SweepContext, "out" | "seenKeys" | "onItem">} ctx
+ */
 async function collectPhrase(phrase, { out, seenKeys, onItem }) {
   const key = dedupeKey(phrase);
   if (seenKeys.has(key)) return;
@@ -2039,6 +2197,7 @@ async function collectPhrase(phrase, { out, seenKeys, onItem }) {
  * wrong", which is a different level of abstraction from walking the page. The reasoning stays at the call site
  * where the symptom is visible.
  */
+/** @param {number} attempt */
 async function applyBrowseModeRemedy(attempt) {
   if (attempt > BROWSE_MODE_REMEDIES.length) return false;
   await BROWSE_MODE_REMEDIES[attempt - 1]().catch(() => undefined);
@@ -2063,7 +2222,14 @@ async function applyBrowseModeRemedy(attempt) {
  * cursor, so a step whose speech was merely late would SKIP an element — a hole in the middle of a sweep, which
  * is worse than a short one because nothing reports it.
  *
- * @returns the recovered step, or a step carrying a `stop` if speech never arrived.
+ * ONE JSDoc BLOCK. This was briefly two adjacent ones, and only the last attaches -- so the `@returns`
+ * silently did not apply and the caller went back to reading an inferred union on which no field was safe.
+ * A second block is not an error anywhere; it is simply ignored.
+ *
+ * @param {{ step: import("./capture-pure.mjs").SweepStep, prev: string, repeats: number,
+ *           label: string, trips: { count: number } }} state
+ * @returns {Promise<import("./capture-pure.mjs").SweepStep>}
+ *   the recovered step, or a step carrying a `stop` if speech never arrived
  */
 async function awaitLateSpeech({ step, prev, repeats, label, trips }) {
   for (let retry = 0; retry < SWEEP_SILENT_RETRIES; retry += 1) {
@@ -2078,6 +2244,10 @@ async function awaitLateSpeech({ step, prev, repeats, label, trips }) {
   return { stop: "silent", seen: step.seen, silentRetries: SWEEP_SILENT_RETRIES };
 }
 
+/**
+ * @param {object} cmd
+ * @param {SweepContext} ctx
+ */
 async function sweepInDirection(cmd, { label, out, seenKeys, onItem, deadline, trips }) {
   // Movement is decided by "did NVDA say anything NEW?", never by "did lastSpokenPhrase change?".
   //
@@ -2112,15 +2282,18 @@ async function sweepInDirection(cmd, { label, out, seenKeys, onItem, deadline, t
     // worker faults. A `lists: 0` that actually means "the budget was already spent by the links
     // sweep" is the conflation this project forbids -- absence must never be reported as a finding.
     if (Date.now() > deadline) return { stop: "deadline", steps: i, stopPhrase: prev };
+    // Declared: written in a `try` and again in a conditional, so inference gives up across both.
+    /** @type {import("./capture-pure.mjs").SweepStep} */
     let step;
     try {
       trips.count += 2;
-      await withTimeout(nvda.perform(cmd), NAV_TIMEOUT_MS, label);
+      await withTimeout(nvda.perform(/** @type {any} */ (cmd)), NAV_TIMEOUT_MS, label);
       const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label)) || [];
       step = sweepStepFromSpeech({ log, seen, prev, repeats });
     } catch (error) {
       // Same asymmetry: a round trip that threw is not evidence the page ran out of elements.
-      return { stop: "error", steps: i, stopPhrase: prev, error: String(error?.message ?? error) };
+      return { stop: "error", steps: i, stopPhrase: prev,
+        error: String(/** @type {Error} */ (error)?.message ?? error) };
     }
     seen = step.seen;
     repeats = step.repeats ?? 0;
@@ -2136,8 +2309,10 @@ async function sweepInDirection(cmd, { label, out, seenKeys, onItem, deadline, t
     // reporting `found=0 stop=repeat` says only "nothing"; the same sweep reporting `stopPhrase: "k"` says
     // NVDA was in focus mode and this pipeline typed its own quick-navigation key into the page. That
     // distinction went unmade for 2,122 captures.
-    if (step.stop) return { stop: step.stop, steps: i, stopPhrase: prev };
-    const phrase = step.phrase;
+    // A `const` alias so `SweepStep`'s discrimination survives the reassignments above.
+    const settledStep = step;
+    if (settledStep.stop) return { stop: settledStep.stop, steps: i, stopPhrase: prev };
+    const phrase = settledStep.phrase;
     prev = phrase;
     // A one- or two-character phrase is NVDA echoing the key we just sent, which is proof that the key
     // went to the page instead of to NVDA -- focus mode. This used to `continue` past it in silence, and
@@ -2189,8 +2364,12 @@ const EXTRA_SWEEPS = [
   { key: "lists", label: "list", prev: "moveToPreviousList", next: "moveToNextList", anchorFirst: true },
 ];
 
+/** @param {Omit<SweepContext, "out" | "seenKeys">} ctx */
 async function sweepExtraTypes(ctx) {
-  const K = nvda.keyboardCommands;
+  // Indexed by the sweep's own key names, which is what `EXTRA_SWEEPS` holds -- guidepup types
+  // `keyboardCommands` as a 160-key literal, so a dynamic lookup needs to say it is one.
+  const K = /** @type {Record<string, any>} */ (nvda.keyboardCommands);
+  /** @type {Record<string, string[]>} */
   const found = {};
   for (const { key, label, prev, next, anchorFirst } of EXTRA_SWEEPS) {
     // See EXTRA_SWEEPS: only a sweep whose elements can CONTAIN an earlier sweep's pays for the anchor.
@@ -2240,6 +2419,7 @@ const MAX_TABLE_MISSES = 3;
 // an empty delta means NVDA genuinely said nothing. Same idiom as activateAndCaptureDelta, which
 // exists because a live-region status can be followed by a focus move that overwrites
 // lastSpokenPhrase.
+/** @param {() => Promise<unknown>} step @param {string} label */
 async function speechDelta(step, label) {
   const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label).catch(() => [])) || []).length;
   await withTimeout(step(), NAV_TIMEOUT_MS, label);
@@ -2256,10 +2436,14 @@ async function speechDelta(step, label) {
   const log = await waitForAnnouncement(before, label);
   // Joined rather than reduced to one entry: a cell whose announcement arrives as two utterances
   // is still one cell, and dropping either half would be losing evidence.
-  return log.slice(before).map((phrase) => String(phrase).trim()).filter(Boolean).join(", ");
+  return log.slice(before).map((/** @type {unknown} */ phrase) => String(phrase).trim()).filter(Boolean).join(", ");
 }
 
 // Walk one direction inside a table, appending each newly announced cell.
+/**
+ * @param {() => Promise<unknown>} step
+ * @param {{ out: string[], deadline: number, label: string, trace: string[] }} ctx
+ */
 async function walkTable(step, { out, deadline, label, trace }) {
   let misses = 0;
   for (let i = 0; i < MAX_TABLE_STEPS; i += 1) {
@@ -2295,9 +2479,11 @@ async function walkTable(step, { out, deadline, label, trace }) {
 // Both directions are tried before giving up, because the cursor sits at the END of the
 // document after the structural sweeps -- "next table" from there finds nothing on a page
 // whose only table is above. Cheaper than a ~3s anchorToTop.
+/** @param {{ deadline: number, diag: Diag }} ctx */
 async function probeTableCells({ deadline, diag }) {
   const K = nvda.keyboardCommands;
   const cells = [];
+  /** @type {string[]} */
   const trace = [];
   let note = null;
   try {
@@ -2333,6 +2519,7 @@ async function probeTableCells({ deadline, diag }) {
 // press("Control+Alt+ArrowDown") returned the same message, so delivery was never the problem.
 const MAX_CELL_PRIMES = 3;
 
+/** @param {Record<string, any>} K @param {{ trace: string[] }} ctx */
 async function enterFirstCell(K, { trace }) {
   for (let i = 0; i < MAX_CELL_PRIMES; i += 1) {
     const phrase = await speechDelta(() => nvda.perform(K.moveToNextRow), "prime").catch(() => "");
@@ -2346,6 +2533,7 @@ async function enterFirstCell(K, { trace }) {
 }
 
 // Land on a table in either direction; "" when the page has none.
+/** @param {Record<string, any>} K */
 async function enterFirstTable(K) {
   for (const cmd of [K.moveToNextTable, K.moveToPreviousTable]) {
     await withTimeout(nvda.perform(cmd), NAV_TIMEOUT_MS, "table").catch(() => undefined);
@@ -2394,12 +2582,14 @@ const FOCUS_CYCLE_CONFIRM = 3;
 const FOCUS_PROBE_BUDGET_MS = 120_000;
 
 /** Have we returned to where we started? See `FOCUS_CYCLE_CONFIRM` for why this is not one comparison. */
+/** @param {string[]} stops */
 function focusOrderCycled(stops) {
   if (stops.length < FOCUS_CYCLE_CONFIRM * 2) return false;
   return stops.slice(-FOCUS_CYCLE_CONFIRM)
     .every((phrase, i) => phrase === stops[i]);
 }
 
+/** @param {{ deadline: number, diag: Diag }} ctx */
 async function probeFocusOrder({ deadline, diag }) {
   await anchorToTop();
   const stops = [];
@@ -2487,6 +2677,10 @@ const LANDMARKS_ONLY = ELEMENTS_LIST_TYPES.filter(({ type }) => type === LANDMAR
  * three different facts, and collapsing them into "0 rows" is what makes an unread probe look like a
  * confident zero.
  */
+/**
+ * @param {{ type: string, readAfter: (label: string, action: () => Promise<unknown>) => Promise<string[]>,
+ *           deadline: number, notes: string[] }} ctx
+ */
 async function readTreeRows({ type, readAfter, deadline, notes }) {
   const rows = [];
   let previous = null;
@@ -2520,22 +2714,27 @@ async function readTreeRows({ type, readAfter, deadline, notes }) {
  * because the dialog itself was confirmed to speak ("Elements List, dialog" -> "tree view") before
  * this was written; if the dialog were silent, zero and unread would be the same observation.
  */
+/** @param {{ deadline: number, diag: Diag, types?: { type: string, accelerator: string }[] }} ctx */
 async function probeElementsListCounts({ deadline, diag, types = LANDMARKS_ONLY }) {
   const K = nvda.keyboardCommands;
+  /** @type {Record<string, number>} */
   const counts = {};
+  /** @type {Record<string, string[]>} */
   const items = {};
+  /** @type {string[]} */
   const notes = [];
+  /** @type {{ step: string, spoken: string[], channelReset?: boolean }[]} */
   const trace = [];
   // The offset advances instead of being re-read before every keystroke. Reading it twice per keystroke
   // doubled the round trips, and round trips are the entire cost here: all five types measured 39s on
   // top of a 20s capture, which is unaffordable for a 2,122-capture corpus.
   let seen = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "elementsListSeed").catch(() => [])) || []).length;
-  const readAfter = async (label, action) => {
+  const readAfter = async (/** @type {string} */ label, /** @type {() => Promise<unknown>} */ action) => {
     await withTimeout(action(), NAV_TIMEOUT_MS, label).catch(() => undefined);
     const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label).catch(() => [])) || [];
     // A shrunken log means the speech channel was rebuilt; resynchronise rather than mis-slice.
     if (log.length < seen) { seen = log.length; trace.push({ step: label, spoken: [], channelReset: true }); return []; }
-    const spoken = log.slice(seen).map((phrase) => String(phrase).trim()).filter(Boolean);
+    const spoken = log.slice(seen).map((/** @type {unknown} */ phrase) => String(phrase).trim()).filter(Boolean);
     seen = log.length;
     // Every keystroke's speech, because this dialog's focus behaviour has now been guessed wrong twice:
     // arrowing without tabbing cycled the radio GROUP, and tabbing on every type walked focus OUT of
@@ -2548,7 +2747,7 @@ async function probeElementsListCounts({ deadline, diag, types = LANDMARKS_ONLY 
     const opened = await readAfter("elementsListOpen", () => nvda.perform(K.browseModeElementsList));
     // If the dialog did not announce itself it may not have opened, and arrowing blind inside the
     // DOCUMENT instead would move the caret and corrupt everything measured after this.
-    if (!opened.some((phrase) => /elements list/i.test(phrase))) {
+    if (!opened.some((/** @type {string} */ phrase) => /elements list/i.test(phrase))) {
       diag.mark("elementsList", { opened: false, spoken: opened });
       return null;
     }
@@ -2591,6 +2790,7 @@ async function probeElementsListCounts({ deadline, diag, types = LANDMARKS_ONLY 
  * be answerable by a test. It could not be before: `capture-core` imports guidepup, which throws at
  * module load where no screen reader exists, so no test can import this file (see `pure-graph.test.ts`).
  */
+/** @param {string} phrase @param {Record<string, any>} ctx */
 function chooseProbe(phrase, ctx) {
   switch (probeKindFor(phrase, ctx)) {
     case "disclosure": return () => probeDisclosure(phrase, ctx);
@@ -2650,6 +2850,7 @@ function chooseProbe(phrase, ctx) {
  * of the document mid-sweep would make the sweep re-walk ground it has covered and stop early on its own
  * duplicates.
  */
+/** @param {string} phrase @param {Record<string, any>} ctx */
 async function operateControl(phrase, ctx) {
   const probe = chooseProbe(phrase, ctx);
   if (!probe) return undefined;
@@ -2682,6 +2883,7 @@ async function operateControl(phrase, ctx) {
 // Re-reading asks the accessibility tree instead: has the control's state actually
 // changed? That is precisely what 4.1.2 requires, and it is deterministic. The
 // spontaneous announcement is still recorded in the sweep log as evidence.
+/** @param {string} phrase @param {Record<string, any>} ctx */
 async function probeDisclosure(phrase, { interaction }) {
   try {
     const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "disclosure")) || []).length;
@@ -2690,7 +2892,7 @@ async function probeDisclosure(phrase, { interaction }) {
     // probes: a fixed sleep is too long when the page answers immediately and too short in the tail,
     // and here the tail is what matters -- this is the probe whose timeout got recorded as silence.
     const log = await waitForAnnouncement(before, "disclosure");
-    const announced = log.slice(before).map((s) => String(s).trim()).filter(Boolean).join(" | ");
+    const announced = log.slice(before).map((/** @type {unknown} */ s) => String(s).trim()).filter(Boolean).join(" | ");
     const after = await reportFocusedControlWithRetry(interaction);
     interaction.sweepLog.push(
       `disclosure ${JSON.stringify(phrase.slice(0, 40))} announced=${JSON.stringify(announced)} state=${JSON.stringify(after)}`
@@ -2721,6 +2923,7 @@ async function probeDisclosure(phrase, { interaction }) {
  * and a timeout here is the difference between recording a state change and recording nothing at all.
  * Measured failure rate before this: 1 in 20.
  */
+/** @param {Record<string, any>} interaction @param {number} [attempts] */
 async function reportFocusedControlWithRetry(interaction, attempts = 3) {
   for (let attempt = 1; ; attempt++) {
     try {
@@ -2774,6 +2977,7 @@ async function reportFocusedControl() {
  *
  * @returns {Promise<string[]>} the full spoken log, for the caller to slice from `before`
  */
+/** @param {number} before @param {string} kind */
 async function waitForAnnouncement(before, kind) {
   const deadline = Date.now() + STATE_WAIT_MS;
   let log = [];
@@ -2794,6 +2998,7 @@ async function waitForAnnouncement(before, kind) {
   return log;
 }
 
+/** @param {string} phrase @param {Record<string, any>} interaction @param {string} kind */
 async function activateAndCaptureDelta(phrase, interaction, kind) {
   try {
     // Settle BEFORE reading the baseline, or something already in flight is attributed to this
@@ -2829,7 +3034,7 @@ async function activateAndCaptureDelta(phrase, interaction, kind) {
     const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, kind)) || []).length;
     await withTimeout(nvda.act(), ACT_TIMEOUT_MS, kind); // Enter on the control under the cursor
     const log = await waitForAnnouncement(before, kind);
-    const after = log.slice(before).map((s) => String(s).trim()).filter(Boolean).join(" | ");
+    const after = log.slice(before).map((/** @type {unknown} */ s) => String(s).trim()).filter(Boolean).join(" | ");
     interaction.sweepLog.push(`${kind} ${JSON.stringify(phrase.slice(0, 40))} -> ${JSON.stringify(after)}`);
     // `kind` travels with the evidence, because criteria mean different things per activation.
     // 3.3.1 is about a SUBMIT that was rejected silently; it was previously satisfied by any non-empty
@@ -2888,6 +3093,7 @@ async function activateAndCaptureDelta(phrase, interaction, kind) {
  * route, is the obvious next step and is deliberately not guessed at here.
  */
 /** One Tab from wherever activation left us, and what it announced. */
+/** @param {string} kind */
 async function focusedAfterTab(kind) {
   try {
     await withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, kind).catch(() => undefined);
@@ -2899,13 +3105,14 @@ async function focusedAfterTab(kind) {
   }
 }
 
+/** @param {string} kind */
 async function firstHeadingFromTop(kind) {
   await anchorToTop();
   const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, kind)) || []).length;
   await withTimeout(nvda.perform(nvda.keyboardCommands.moveToNextHeading), NAV_TIMEOUT_MS, kind)
     .catch(() => undefined);
   const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, kind)) || [];
-  return log.slice(before).map((x) => String(x).trim()).filter(Boolean).join(" | ");
+  return log.slice(before).map((/** @type {unknown} */ x) => String(x).trim()).filter(Boolean).join(" | ");
 }
 
 /**
@@ -2920,6 +3127,7 @@ async function firstHeadingFromTop(kind) {
  * `sweepInDirection`'s own lesson, reaching the one probe that never learned it: prefer the screen
  * reader's answer over an inference about its behaviour, and `exhausted` is the sound terminus.
  */
+/** @param {string} control */
 function noLinkReached(control) {
   if (!control) return "no-link";
   return NOTHING_FURTHER_RE.test(control) ? "exhausted" : "";
@@ -2934,8 +3142,9 @@ function noLinkReached(control) {
  */
 const NOTHING_FURTHER_RE = /\bno (next|previous) \w+/i;
 
+/** @param {{ interaction: Record<string, any>, deadline: number, diag: Diag }} ctx */
 async function probeRouteChange({ interaction, deadline, diag }) {
-  const mark = (fields) => diag.mark("routeChange", fields);
+  const mark = (/** @type {Record<string, unknown>} */ fields) => diag.mark("routeChange", fields);
   try {
     if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
     const headingBefore = await firstHeadingFromTop("routeChangeHeadingBefore");
@@ -2949,7 +3158,7 @@ async function probeRouteChange({ interaction, deadline, diag }) {
     await withTimeout(nvda.perform(nvda.keyboardCommands.moveToNextLink), NAV_TIMEOUT_MS, "routeChange")
       .catch(() => undefined);
     const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "routeChange")) || [];
-    const control = log.slice(before).map((x) => String(x).trim()).filter(Boolean).join(" | ");
+    const control = log.slice(before).map((/** @type {unknown} */ x) => String(x).trim()).filter(Boolean).join(" | ");
     const reachedNothing = noLinkReached(control);
     if (reachedNothing) {
       mark({ found: false, reason: reachedNothing });
@@ -3019,6 +3228,7 @@ async function probeRouteChange({ interaction, deadline, diag }) {
 // Submit the form with no valid input to test error handling. An accessible form
 // announces the error (3.3.1) via a status message (4.1.3); an inaccessible one
 // shows it visually and the screen reader hears nothing.
+/** @param {string} phrase @param {Record<string, any>} ctx */
 async function probeFormSubmit(phrase, { interaction }) {
   // Record whether submitting NAVIGATED, because that changes what the absence of an error means.
   //
@@ -3047,7 +3257,13 @@ async function probeFormSubmit(phrase, { interaction }) {
   //
   // Names only, never counts, and it stays a diagnostic-grade oracle rather than evidence, exactly as
   // `structureCensus` does — `docs/local-model.md` bars the accessibility tree as a model feature.
-  interaction.postSubmitNames = (await structuralCensus())?.names ?? [];
+  // The census can answer `{ error }`, which carries no names. `censusShape`'s lesson one field along:
+  // an errored census is not a reading, and `?? []` on a missing property would silently agree with a
+  // page that genuinely announced nothing.
+  const postSubmitCensus = await structuralCensus();
+  interaction.postSubmitNames = postSubmitCensus && !("error" in postSubmitCensus)
+    ? postSubmitCensus.names
+    : [];
   return result;
 }
 
@@ -3055,6 +3271,7 @@ async function probeFormSubmit(phrase, { interaction }) {
 // for the task "show only bags") and capture what is announced. A page that
 // updates results in a live region announces the new state (4.1.3); one that
 // updates silently announces nothing.
+/** @param {string} phrase @param {Record<string, any>} ctx */
 async function probeTaskButton(phrase, { interaction }) {
   return activateAndCaptureDelta(phrase, interaction, "taskButton");
 }
@@ -3062,6 +3279,10 @@ async function probeTaskButton(phrase, { interaction }) {
 // --- Teardown phase -------------------------------------------------------
 
 // Stop NVDA and close the browser so the next capture starts fresh.
+/**
+ * @param {Diag} diag @param {any} browser
+ * @param {{ keepScreenReader?: boolean, reuseBrowser?: boolean }} options
+ */
 async function stopAndCleanup(diag, browser, { keepScreenReader, reuseBrowser = REUSE_BROWSER }) {
   if (!keepScreenReader) await stopScreenReader(diag);
   // Leaving Edge up is the entire point of reuse: closing it here would put the cold start back on
@@ -3083,6 +3304,7 @@ async function stopAndCleanup(diag, browser, { keepScreenReader, reuseBrowser = 
 //
 // When we own the process this is an event, not a poll: await its "exit". The taskkill is
 // the escalation for a browser that ignores the request, and the unowned fallback path.
+/** @param {Diag} diag @param {any} browser */
 async function closeBrowser(diag, browser) {
   // Whatever `openPage` actually launched, which is not necessarily what this request asked for.
   const app = runningApp();
