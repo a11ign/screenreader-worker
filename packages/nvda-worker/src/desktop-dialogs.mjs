@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * A modal dialog on the guest desktop blocks input, and therefore blocks every capture.
  *
@@ -83,6 +84,7 @@ $out -join "\`n"
 `;
 
 /** WM_CLOSE to each handle. Equivalent to clicking the dialog's X or its default OK button. */
+/** @param {string[]} handles */
 const closeScript = (handles) => `
 ${USER32}
 $closed = 0
@@ -130,6 +132,7 @@ export function parseDialogList(stdout) {
  * the same defect `/diagnostics` has, reproduced faithfully, one endpoint later. Nothing on a polled path may
  * ever block the loop.
  */
+/** @param {string} script @param {((reason: string) => void) | undefined} [onError] */
 async function powershell(script, onError) {
   const result = await runPowershell(script, { timeoutMs: PS_TIMEOUT_MS });
   if (result.ok) return result.stdout;
@@ -143,7 +146,7 @@ async function powershell(script, onError) {
  * Visible modal dialogs on the guest desktop, if any.
  *
  * @param {(reason: string) => void} [onError]
- * @returns {{handle:string,title:string,message:string}[]}
+ * @returns {Promise<{handle:string,title:string,message:string}[]>}
  */
 export async function listBlockingDialogs(onError) {
   return parseDialogList(await powershell(LIST_SCRIPT, onError));
@@ -157,7 +160,7 @@ export async function listBlockingDialogs(onError) {
  * why the guest was stuck, and this project has been bitten by remedies that left no trace.
  *
  * @param {(reason: string) => void} [onError]
- * @returns {{dismissed:{handle:string,title:string,message:string}[]}}
+ * @returns {Promise<{dismissed:{handle:string,title:string,message:string}[]}>}
  */
 export async function dismissBlockingDialogs(onError) {
   const dialogs = await listBlockingDialogs(onError);

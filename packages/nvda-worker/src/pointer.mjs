@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Put the mouse pointer somewhere it cannot change what the page renders.
  *
@@ -43,6 +44,7 @@
  * quick-nav does constantly.
  */
 import { execFile } from "node:child_process";
+import { errorText } from "./error-text.mjs";
 
 /** Top-left of the primary display. See the header for why this point and not a corner near the taskbar. */
 const PARK_AT = { x: 0, y: 0 };
@@ -77,10 +79,15 @@ function requestedParkPoint() {
 /** Exported for `pointer.test.ts`: the shell-out cannot run on a Mac, but this decision can. */
 export const parkPointForTest = requestedParkPoint;
 
+/** @param {number} x @param {number} y @returns {Promise<void>} */
 function setCursorPosition(x, y) {
   const script = "Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
     + `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x}, ${y})`;
-  return new Promise((resolve, reject) => {
+  // Typed at the binding rather than inline: `new Promise(...)` with a zero-argument `resolve()` needs a
+  // hint (TS2810), and an inline cast on the executor needs a second closing paren that is easy to
+  // lose — which is exactly what happened on the first attempt.
+  /** @type {Promise<void>} */
+  const moved = new Promise((resolve, reject) => {
     execFile(
       "powershell",
       ["-NoProfile", "-NonInteractive", "-Command", script],
@@ -91,6 +98,7 @@ function setCursorPosition(x, y) {
       },
     );
   });
+  return moved;
 }
 
 /**
@@ -100,6 +108,7 @@ function setCursorPosition(x, y) {
  * whatever hover state it happened to have, which is exactly what every capture carried before this
  * existed. Turning that into a failed capture would trade a quiet risk for a loud outage.
  */
+/** @param {{mark: (event: string, detail: object) => void} | undefined} [diag] */
 export async function parkPointer(diag) {
   const { x, y } = requestedParkPoint();
   const startedAt = Date.now();
@@ -107,6 +116,6 @@ export async function parkPointer(diag) {
     await setCursorPosition(x, y);
     diag?.mark("pointerParked", { x, y, ms: Date.now() - startedAt });
   } catch (error) {
-    diag?.mark("pointerParkFailed", { x, y, error: error.message, ms: Date.now() - startedAt });
+    diag?.mark("pointerParkFailed", { x, y, error: errorText(error), ms: Date.now() - startedAt });
   }
 }
