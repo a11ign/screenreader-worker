@@ -493,6 +493,29 @@ const DOM_CENSUS_EXPRESSION = `(() => {
         + "[role='banner'], [role='contentinfo'], [role='complementary']").length,
       formField: all("input:not([type='hidden']), select, textarea, [role='textbox'], "
         + "[role='combobox']").length,
+      // HOW MANY TAB STOPS THE PAGE HAS, which is the only truthful denominator for "did focus reach
+      // everything". 2.1.2 corroborates a trap by comparing the tab cycle against the page's controls,
+      // and it had only \`structure.formFields\` to compare with — so a dialog holding every FORM FIELD
+      // while links sit outside it reads as "focus reached everything" and no trap is reported.
+      //
+      // Counted here rather than from the sweep because the sweep announces things Tab cannot reach:
+      // \`vague-link-inert\` is an anchor with \`tabindex="-1"\`, present in the corpus and walked by NVDA's
+      // link quick-nav, so counting swept links would fire this rule on every page carrying one. The DOM
+      // knows the difference and the sweep cannot.
+      //
+      // THE EXCLUSIONS ARE IN JS, NOT IN THE SELECTOR, and that is what makes them checkable. They were
+      // \`:not(:disabled)\` and \`:not([tabindex='-1'])\` inside the query, which
+      // \`dom-census-expression.test.ts\` cannot evaluate — its harness stubs \`querySelectorAll\` and
+      // returns whatever it is handed, so the assertion about an inert anchor passed on a stub that had
+      // never applied the filter. Page-side code nothing can execute is the defect that test exists for.
+      //
+      // \`[tabindex]\` is deliberately broad here and narrowed below: it catches a positive or zero
+      // tabindex on anything, and \`-1\` is then removed. Disabled and hidden controls take no focus, and
+      // reporting a control the browser skips as one focus failed to reach would be this project's oldest
+      // defect — a limit of the page read as a finding about it.
+      tabbable: all("a[href], button, input:not([type='hidden']), select, textarea, [tabindex]")
+        .filter((el) => el.getAttribute("tabindex") !== "-1"
+          && !el.hasAttribute("hidden") && !el.hasAttribute("disabled")).length,
     };
 })()`;
 

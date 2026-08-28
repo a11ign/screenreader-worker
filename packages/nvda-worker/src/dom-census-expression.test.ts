@@ -40,13 +40,26 @@ function element(tag: string, attrs: Record<string, string>, titleText?: string)
     tagName: tag.toUpperCase(),
     getAttribute: (k: string) => attrs[k] ?? null,
     closest: () => null,
+    hasAttribute: (k: string) => k in attrs,
     querySelector: () => (titleText ? { textContent: titleText } : null),
   };
 }
 
-function runAgainst(graphics: El[]): Record<string, unknown> {
+/**
+ * @param graphics what an `img, svg…` selector returns
+ * @param tabbable what the `a[href], button…` selector returns — the tab-stop census
+ *
+ * Two selectors, because the expression asks two questions of the page and a harness serving only one
+ * lets the other return `[]` and assert nothing. That is how `tabbable` could have been added, tested,
+ * and never once executed.
+ */
+function runAgainst(graphics: El[], tabbable: El[] = []): Record<string, unknown> {
   const document = {
-    querySelectorAll: (selector: string) => (selector.startsWith("img") ? graphics : []),
+    querySelectorAll: (selector: string) => {
+      if (selector.startsWith("img")) return graphics;
+      if (selector.startsWith("a[href]")) return tabbable;
+      return [];
+    },
   };
   return new Function("document", `return ${pageExpression()}`)(document);
 }
@@ -100,4 +113,33 @@ test("the list is CAPPED and the count is not", () => {
   assert.equal((out.unnamedGraphics as string[]).length, 5);
   assert.equal(out.unnamedGraphicCount, 9,
     "the count must survive the cap, or a page with 200 unnamed images reports 5");
+});
+
+test("tabbable counts what TAB can reach, which is why it is asked of the DOM and not the sweep", () => {
+  // THE CASE THIS COUNT EXISTS FOR. `vague-link-inert` is an anchor with `tabindex="-1"` — a real corpus
+  // defect, walked by NVDA's link quick-nav and therefore present in `structure.links`, and NOT a tab
+  // stop. Counting swept links as the denominator for "did focus reach everything" would fire 2.1.2 on
+  // every page carrying one. The DOM knows the difference and the sweep cannot.
+  const out = runAgainst([], [
+    element("a", { href: "/news" }),
+    element("a", { href: "#detail-note", tabindex: "-1" }),
+    element("input", { name: "q" }),
+  ]);
+  assert.equal(out.tabbable, 2, "the inert anchor is announced but is not a tab stop");
+});
+
+test("a hidden control is not a tab stop", () => {
+  // Reporting a control the browser skips as one focus failed to reach is this project's oldest defect:
+  // a limit of the page read as a finding about it.
+  const out = runAgainst([], [
+    element("a", { href: "/news" }),
+    element("button", { hidden: "" }),
+  ]);
+  assert.equal(out.tabbable, 1);
+});
+
+test("a page with no tab stops reports 0, which is a reading and not a silence", () => {
+  // 0 and absent must stay distinguishable: a capture predating this field reports `undefined`, which the
+  // rule reads as "cannot say". A page that genuinely has no controls reports 0.
+  assert.equal(runAgainst([], []).tabbable, 0);
 });
