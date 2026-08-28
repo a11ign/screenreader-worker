@@ -438,6 +438,70 @@ export async function structuralCensus() {
  * unavailable. Null reads as "not checked", never as "nothing there".
  */
 /**
+ * WHAT THE SERVER ACTUALLY ANSWERED -- determinism-plan D6.
+ *
+ * The browser's own error page is not the page under test, and this project has recorded it as evidence
+ * about a site FOUR times: a gate before it shipped, two ad-hoc diagnostics, and `stability-gate`. Each
+ * time the page server was not running, Edge served `ERR_CONNECTION_REFUSED`, and the capture came back
+ * looking valid -- a title, a document, a readable transcript.
+ *
+ * A GUARD FOR THIS ALREADY EXISTED AND COULD NOT SEE IT. `BROWSER_ERROR_TITLE_RE` matches Chromium's error
+ * PHRASES ("can't reach this page", "refused to connect"), but Chromium titles a network-error page with
+ * the HOST -- so an unserved `http://REDACTED-INTERNAL-ADDRESS:3000/x` is titled `REDACTED-INTERNAL-ADDRESS` and matched nothing. The
+ * capture read `"REDACTED-INTERNAL-ADDRESS, document, read only"` and passed. That is this repo's oldest lesson in a new
+ * place: prefer the authoritative answer over an inference about behaviour. The title is a proxy for the
+ * status; the status is the status.
+ *
+ * `responseStatus` on PerformanceNavigationTiming is the HTTP status of the MAIN document, and it is 0 when
+ * there was no HTTP response at all -- which is exactly the connection-refused case. Read after the fact
+ * from the page itself, so it works identically on both navigation paths: a reused window re-pointed with
+ * `Page.navigate`, and a freshly launched browser given the URL on its command line. A remedy that reached
+ * only the reuse path would be the shape this codebase pays for most often.
+ *
+ * @returns {Promise<{status: number|null, type: string|null, url: string|null, unavailable?: string}|null>}
+ *   A null `status` means CDP could not answer, which is NOT a refusal -- see `assertPageWasServed`.
+ *   `null` itself means the page has no navigation entry at all (`about:blank`), same treatment.
+ */
+export async function navigationOutcome() {
+  try {
+    const target = await pageTarget();
+    const socket = new WebSocket(target.webSocketDebuggerUrl);
+    try {
+      await once(socket, "open", CDP_READY_TIMEOUT_MS);
+      const result = waitForResult(socket, 1, AX_TREE_TIMEOUT_MS);
+      socket.send(JSON.stringify({
+        id: 1,
+        method: "Runtime.evaluate",
+        params: { expression: NAVIGATION_OUTCOME_EXPRESSION, returnByValue: true },
+      }));
+      const value = (await result)?.result?.value;
+      return value && typeof value === "object" ? value : null;
+    } finally {
+      try { socket.close(); } catch (error) { void error; }
+    }
+  } catch (error) {
+    // CDP being unreachable is a different fault, reported elsewhere. Returning a status of null rather
+    // than throwing keeps "the server said 404" and "we could not ask" distinguishable, which is the whole
+    // point of the check -- but it must SAY which, or an unanswerable check and a clean one leave the same
+    // silence. `unavailable` carries the reason into the capture's diagnostic, because a guard that stops
+    // and explains nothing gets distrusted and then bypassed.
+    return { status: null, type: null, url: null,
+      unavailable: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * `responseStatus` is Chromium 109+; `?? null` rather than a version check, so an older build reports
+ * UNKNOWN instead of a misleading 0. Absence and zero are different answers here: 0 means the browser
+ * tried and got no HTTP response, absence means this browser cannot say.
+ */
+const NAVIGATION_OUTCOME_EXPRESSION = `(() => {
+    const nav = performance.getEntriesByType("navigation")[0];
+    if (!nav) return null;
+    return { status: nav.responseStatus ?? null, type: nav.type ?? null, url: location.href };
+  })()`;
+
+/**
  * The census PROGRAM, as the page will run it.
  *
  * Module-level rather than inside `domCensus` for two reasons. It is the only part of this file that

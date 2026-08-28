@@ -67,7 +67,7 @@ import { installSpeechChannelShim } from "./speech-channel.mjs";
  *   green. A declared shape makes that a compile error rather than an empty field.
  */
 import { parkPointer } from "./pointer.mjs";
-import { browserAlive, currentPageUrl, launchReusable, navigateExisting, reusableArgs,
+import { browserAlive, currentPageUrl, launchReusable, navigateExisting, navigationOutcome, reusableArgs,
   mediaCensus, structuralCensus, domCensus, truncatedAnnouncements,
   bringPageToFront,
 } from "./browser-session.mjs";
@@ -345,6 +345,7 @@ export async function captureWithNvda(url, opts = {}) {
   diag.mark("browserSelected", { id: app.id, name: app.name });
   const browser = await openPage(url, diag, { reuse: reuseBrowser, app });
   await assertLandedOnRequestedPage(url, diag);
+  await assertPageWasServed(url, diag);
   await waitForPageToSettle(diag);
   let succeeded = false;
   try {
@@ -1092,6 +1093,75 @@ async function assertLandedOnRequestedPage(url, diag) {
     `the browser is showing ${JSON.stringify(verdict.actual)}, not the page requested `
       + `(${JSON.stringify(url)}), after waiting ${LANDED_BUDGET_MS} ms for it to navigate`,
   );
+}
+
+/**
+ * THE URL IS RIGHT AND THE PAGE BEHIND IT IS MISSING -- determinism-plan D6.
+ *
+ * `assertLandedOnRequestedPage` proves the browser is showing the address we asked for. It cannot see an
+ * unserved page, because the address of an error page IS the address requested. That gap has cost this
+ * project four captures-that-looked-valid, all of them a page server nobody leased.
+ *
+ * IT IS DELIBERATELY NOT A DISCIPLINE. The plan's own words: the guarded path is always the ceremonial
+ * one, so a five-line diagnostic skips the lease -- and a diagnostic is exactly when you are moving fast
+ * and least inclined to doubt the answer. Put here, every ad-hoc script gets the property for free, which
+ * is the only way it survives a hurry. The evidence for that framing is that the person who had just
+ * fixed it in one script reproduced it in the next two.
+ *
+ * THREE OUTCOMES, KEPT DISTINCT, because collapsing two of them is how this repo's faults hide:
+ *   a status outside 2xx   the server answered and did not serve this page -- REFUSED
+ *   status 0               there was no HTTP response at all (connection refused) -- REFUSED
+ *   null                   we could not ask -- MARKED, never refused. "Unchecked" is not "clean", and it
+ *                          is not "broken" either.
+ *
+ * @param {string} url @param {Diag} diag
+ */
+async function assertPageWasServed(url, diag) {
+  // Only HTTP(S) has a status to read. A `file://` capture would report 0 and be refused for having done
+  // nothing wrong -- a guard that fires on correct usage is one that gets switched off.
+  if (!/^https?:$/i.test(safeProtocol(url))) return;
+  const outcome = await navigationOutcome();
+  // Marked whether or not it refused, so "checked, 200" and "never ran" can never be the same silence.
+  // `refreshBrowseBuffer` was inert through three green `capture:check` runs for want of exactly this.
+  diag.mark("pageServed", { requested: url,
+    ...(outcome ?? { status: null, unavailable: "no navigation entry — nothing was loaded here" }) });
+  const refusal = pageServedRefusal(url, outcome);
+  if (refusal) throw captureFault(FAULT.PAGE_UNREACHABLE, refusal);
+}
+
+/**
+ * The decision alone, EXPORTED so it can be shown to refuse.
+ *
+ * Separated from the CDP call for the reason `failIfScreenReaderIsMute` is: a guard that has never been
+ * seen to reject anything is untested, and the integration path needs a Windows guest and a dead port to
+ * exercise. This is a pure function of the status, so the three outcomes are provable in milliseconds and
+ * the remaining risk is confined to whether `navigationOutcome` reads the right number.
+ *
+ * @param {string} url
+ * @param {{status: number|null} | null} outcome
+ * @returns {string|null} the refusal message, or null to proceed
+ */
+export function pageServedRefusal(url, outcome) {
+  // "We could not ask" is not a refusal, and it is not a pass either -- the caller MARKS it. Conflating
+  // absence with zero would turn a browser too old to report the status into a permanently broken worker.
+  if (!outcome || outcome.status === null) return null;
+  if (outcome.status >= 200 && outcome.status < 300) return null;
+  if (outcome.status === 0) {
+    return `nothing is serving ${JSON.stringify(url)} — the browser got no HTTP response at all, so what `
+      + "it displayed is its own error page, not the site";
+  }
+  return `the server answered HTTP ${outcome.status} for ${JSON.stringify(url)}, so the document captured `
+    + "is an error page rather than the page requested";
+}
+
+/** A malformed URL is a different fault, reported by the caller; here it simply means "not HTTP". */
+function safeProtocol(/** @type {string} */ url) {
+  try {
+    return new URL(url).protocol;
+  } catch (error) {
+    void error;
+    return "";
+  }
 }
 
 /**

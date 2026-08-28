@@ -14,7 +14,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 // capture-core is plain .mjs; it runs under bare node on the worker.
-import { isBrowserErrorTitle, samePath } from "./capture-core.mjs";
+import { isBrowserErrorTitle, pageServedRefusal, samePath } from "./capture-core.mjs";
 
 test("Edge's unreachable-page titles are refused", () => {
   for (const title of [
@@ -68,4 +68,49 @@ test("a genuinely different document is still caught", () => {
   assert.equal(samePath("/search", "/route-title-stale/bad.html"), false);
   assert.equal(samePath("/skip-link-broken/good", "/skip-link-broken/bad"), false);
   assert.equal(samePath("/a/b", "/a/c"), false);
+});
+
+/**
+ * THE STATUS CHECK IS THE TITLE CHECK'S SUCCESSOR, AND THE FIRST TEST BELOW IS WHY IT EXISTS.
+ *
+ * The guard above matches Chromium's error PHRASES. Chromium titles a network-error page with the HOST,
+ * so an unserved `http://REDACTED-INTERNAL-ADDRESS:3000/x` is titled `REDACTED-INTERNAL-ADDRESS`, matches nothing, and the capture
+ * comes back reading `"REDACTED-INTERNAL-ADDRESS, document, read only"` — a valid-looking document. That happened four
+ * times in one session, twice AFTER the person hitting it had fixed it somewhere else.
+ *
+ * Both guards are kept. The title check fails fast on a phrase NVDA announces before anything else; the
+ * status check is the authoritative answer and needs no phrase list to stay current. A guard built on a
+ * proxy for the thing is exactly what this repo's oldest lesson warns about — but a proxy that costs
+ * nothing and catches a case the direct measurement might miss is worth keeping beside it.
+ */
+test("the title guard CANNOT see the fault the status guard exists for", () => {
+  // Not an invented example: this is the title of the page a real unserved capture returned.
+  assert.equal(isBrowserErrorTitle("REDACTED-INTERNAL-ADDRESS"), false);
+  assert.equal(isBrowserErrorTitle("localhost"), false);
+  // And the status guard does see it.
+  assert.match(String(pageServedRefusal("http://REDACTED-INTERNAL-ADDRESS:3000/x", { status: 0 })), /nothing is serving/);
+});
+
+test("a status outside 2xx is refused, and the message says which kind", () => {
+  assert.match(String(pageServedRefusal("http://x/y", { status: 0 })), /no HTTP response at all/);
+  assert.match(String(pageServedRefusal("http://x/y", { status: 404 })), /answered HTTP 404/);
+  assert.match(String(pageServedRefusal("http://x/y", { status: 500 })), /answered HTTP 500/);
+  // 0 and 404 are DIFFERENT answers and must not collapse: one means nothing is listening, the other
+  // means something is and it does not have this page. The remedies are not the same.
+  assert.notEqual(pageServedRefusal("http://x/y", { status: 0 }),
+    pageServedRefusal("http://x/y", { status: 404 }));
+});
+
+test("every 2xx proceeds, including the ones nobody thinks about", () => {
+  for (const status of [200, 201, 203, 204, 226, 299]) {
+    assert.equal(pageServedRefusal("http://x/y", { status }), null, `HTTP ${status}`);
+  }
+});
+
+test("UNCHECKED IS NOT BROKEN — an unanswerable status proceeds, and the caller marks it", () => {
+  // A browser too old to report `responseStatus` must not become a permanently failing worker. This is
+  // the same distinction `landedVerdict` draws for a null URL: silence from CDP is a different fault,
+  // not a claim about the page.
+  assert.equal(pageServedRefusal("http://x/y", null), null);
+  assert.equal(pageServedRefusal("http://x/y", { status: null }), null);
 });
