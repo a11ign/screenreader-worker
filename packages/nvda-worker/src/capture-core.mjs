@@ -1858,9 +1858,8 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
       ? await probeFocusOrder({ deadline, diag, controlsOnPage: structure.formFields.length })
       : [];
   };
-  const sequence = probeSequence(probeOrder);
-  diag.mark("probeOrder", { order: sequence.join(","), requested: probeOrder ?? "default" });
-  for (const step of sequence) await (step === "sweep" ? runSweep() : runFocus());
+  await runProbeSequence({ probeOrder, diag, runSweep, runFocus });
+
   // LAST of the three, because it is the only probe that can leave the page under measurement: it activates
   // a link. Everything position-dependent has finished by here, so navigating away costs nothing.
   const routeChange = probeNavigation
@@ -2192,6 +2191,64 @@ const BROWSE_MODE_REMEDIES = [
   () => withTimeout(
     nvda.perform(nvda.keyboardCommands.moveToContainingBrowseModeDocument), NAV_TIMEOUT_MS, "leaveEmbedded"),
 ];
+
+/**
+ * Run the two position-dependent probes, each from a KNOWN-GOOD STARTING POINT — determinism-plan D3.
+ *
+ * *Continuous Delivery*'s remedy for order-dependence, which `capture-core.mjs` used to declare as a
+ * constraint to respect: steps whose order does not matter, each begun from a defined state.
+ *
+ * THE STATE IS ESTABLISHED BETWEEN PROBES, NOT BEFORE THE FIRST. That is why this costs nothing on the
+ * default path and invalidates no cached capture: nothing runs before the first step, so there is no state
+ * to restore, and the work is paid only where a probe genuinely follows another.
+ *
+ * Measured by `gate:probe-order` before this existed, capturing `image-missing-alt-behind-consent/good`
+ * with the focus walk first:
+ *
+ *     headings 5 -> 0    landmarks 2 -> 0    links 6 -> 1    graphics 1 -> 0    formFields 4 -> 1
+ *
+ * The sweep saw ONLY the consent banner. The page — and the 1.1.1 defect that case exists to demonstrate —
+ * vanished, because the focus walk left NVDA confined and in focus mode and the sweep could no longer
+ * navigate. Three of three pages differed; the property this plan is built on was simply not true.
+ *
+ * @param {{ probeOrder: string | undefined, diag: Diag,
+ *           runSweep: () => Promise<void>, runFocus: () => Promise<void> }} ctx
+ */
+async function runProbeSequence({ probeOrder, diag, runSweep, runFocus }) {
+  const sequence = probeSequence(probeOrder);
+  diag.mark("probeOrder", { order: sequence.join(","), requested: probeOrder ?? "default" });
+  for (const [i, step] of sequence.entries()) {
+    if (i > 0) await establishBrowseMode(diag);
+    await (step === "sweep" ? runSweep() : runFocus());
+  }
+}
+
+/**
+ * Put NVDA back in browse mode before the next probe reads the page — a PRECONDITION, not a recovery.
+ *
+ * `BROWSE_MODE_REMEDIES` already existed and is reused rather than respelled, but it was applied REACTIVELY:
+ * "tried in order when a sweep hears its own keystroke". That needs the sweep to hear something it can
+ * recognise as an echo, and `gate:probe-order` measured the case where it hears nothing at all — headings
+ * 5 -> 0, links 6 -> 0, graphics 1 -> 0. A sweep that finds NOTHING has no phrase to detect an echo from,
+ * and "this page has no headings" and "we could not ask" become the same evidence, which is the one thing
+ * this project's capture layer may never allow.
+ *
+ * BOTH RUNGS, unconditionally, because neither is trusted and there is nothing to test them against here.
+ * Escape is NVDA's own route out; `moveToContainingBrowseModeDocument` is the remedy for a caret sitting in
+ * a separate tree interceptor, which is what a dialog produces. The reactive path tests each by whether the
+ * next step still echoes; a precondition has no next step yet, so it applies the ladder and MARKS it.
+ *
+ * Marked whether or not it changed anything, because "did not need to" and "never ran" are otherwise the
+ * same silence — `refreshBrowseBuffer` guarded on a flag nothing ever set and returned early on every
+ * capture ever taken, while three `capture:check` runs passed and would have vouched for it.
+ *
+ * @param {Diag} diag
+ */
+async function establishBrowseMode(diag) {
+  for (const remedy of BROWSE_MODE_REMEDIES) await remedy().catch(() => undefined);
+  await waitForSpeechQuiet("browseModeSettle");
+  diag.mark("establishBrowseMode", { applied: BROWSE_MODE_REMEDIES.length });
+}
 
 /**
  * Record one announcement, unless this sweep has already seen it.
