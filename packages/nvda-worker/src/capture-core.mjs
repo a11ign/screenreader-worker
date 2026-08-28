@@ -2193,6 +2193,34 @@ const BROWSE_MODE_REMEDIES = [
 ];
 
 /**
+ * A cheap fingerprint of THE PAGE, taken before each probe — determinism-plan D7.
+ *
+ * `domCensus` is sampled ONCE per capture, before every probe, so nothing can see the page move underneath
+ * them. It does move: the sweep's disclosure probe ACTIVATES a control, and `gate:probe-order` measured what
+ * that costs on `nls.uk/join/`:
+ *
+ *     default      focusOrder 10 stops   "close search, button, expanded"     <- the sweep opened it
+ *     focus-first  focusOrder 150 stops  "skip to main content, link"         <- nothing had touched it
+ *
+ * The sweep changed the page for the next probe, and no amount of restoring NVDA's state undoes a click.
+ * CLAUDE.md already knew this as an anecdote — "sportengland's search panel was expanded for the sweep and
+ * collapsed for the focus probe… A capture is not an instant" — and this is what makes it checkable.
+ *
+ * COUNTS ONLY, and cheap on purpose: one `Runtime.evaluate` that is already written. The question is not
+ * "what is on the page" but "is this the same page the last probe saw", and a changed tab-stop or control
+ * count answers it. A fingerprint expensive enough to skip is one that gets skipped.
+ *
+ * @param {string} beforeProbe which probe is about to run
+ * @param {Diag} diag
+ */
+async function markPageState(beforeProbe, diag) {
+  const dom = await domCensus().catch(() => null);
+  // Marked even when NULL. "The page was not counted" and "the page has none of these" must never be the
+  // same silence — the rule that cost this project a whole corpus.
+  diag.mark("pageState", { beforeProbe, ...(dom ?? { error: "not counted" }) });
+}
+
+/**
  * Run the two position-dependent probes, each from a KNOWN-GOOD STARTING POINT — determinism-plan D3.
  *
  * *Continuous Delivery*'s remedy for order-dependence, which `capture-core.mjs` used to declare as a
@@ -2219,6 +2247,10 @@ async function runProbeSequence({ probeOrder, diag, runSweep, runFocus }) {
   diag.mark("probeOrder", { order: sequence.join(","), requested: probeOrder ?? "default" });
   for (const [i, step] of sequence.entries()) {
     if (i > 0) await establishBrowseMode(diag);
+    // BEFORE each probe, so two probes' evidence can be told apart from two probes' PAGES. D3 restores what
+    // the screen reader carries between probes; this records what the PAGE carried, which D3 cannot fix
+    // because a disclosure the sweep opened cannot be un-opened.
+    await markPageState(step, diag);
     await (step === "sweep" ? runSweep() : runFocus());
   }
 }
