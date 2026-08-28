@@ -513,9 +513,20 @@ const DOM_CENSUS_EXPRESSION = `(() => {
       // tabindex on anything, and \`-1\` is then removed. Disabled and hidden controls take no focus, and
       // reporting a control the browser skips as one focus failed to reach would be this project's oldest
       // defect — a limit of the page read as a finding about it.
+      // RENDERED, not merely present. A closed mega-menu is markup a page HAS and Tab cannot reach, and a
+      // denominator counting it would report a conformant page as having left most of itself unvisited —
+      // the shape of every false positive this project has recorded: a limit of the measurement read as a
+      // finding about the page. \`checkVisibility\` is the browser's own answer (Chromium 105+; the fleet
+      // pins Edge 151), which beats reimplementing cascade rules here.
+      //
+      // \`inert\` is checked separately because \`checkVisibility\` does not consider it: an inert subtree
+      // renders normally and takes no focus. It is exactly the modal-dialog pattern, so a 2.1.2
+      // denominator that ignored it would count the very background a conformant dialog is meant to seal.
       tabbable: all("a[href], button, input:not([type='hidden']), select, textarea, [tabindex]")
         .filter((el) => el.getAttribute("tabindex") !== "-1"
-          && !el.hasAttribute("hidden") && !el.hasAttribute("disabled")).length,
+          && !el.hasAttribute("hidden") && !el.hasAttribute("disabled")
+          && (typeof el.checkVisibility !== "function" || el.checkVisibility())
+          && (typeof el.closest !== "function" || !el.closest("[inert]"))).length,
     };
 })()`;
 

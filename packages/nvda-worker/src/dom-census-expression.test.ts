@@ -35,14 +35,30 @@ function pageExpression(): string {
 
 type El = Record<string, unknown>;
 
-function element(tag: string, attrs: Record<string, string>, titleText?: string): El {
+/**
+ * @param opts `rendered: false` makes `checkVisibility()` say no — a closed mega-menu, markup the page
+ *   HAS that Tab cannot reach. `inert: true` puts the element inside an `[inert]` subtree, which renders
+ *   normally and takes no focus: the modal-dialog pattern, and the one `checkVisibility` cannot answer.
+ */
+function element(
+  tag: string, attrs: Record<string, string>, titleText?: string,
+  opts: { rendered?: boolean; inert?: boolean } = {},
+): El {
   return {
     tagName: tag.toUpperCase(),
     getAttribute: (k: string) => attrs[k] ?? null,
-    closest: () => null,
+    closest: (selector: string) => (opts.inert && selector === "[inert]" ? {} : null),
     hasAttribute: (k: string) => k in attrs,
+    checkVisibility: () => opts.rendered !== false,
     querySelector: () => (titleText ? { textContent: titleText } : null),
   };
+}
+
+/** An element from a browser too old to have `checkVisibility` — the expression must still count it. */
+function elementWithoutVisibilityApi(tag: string, attrs: Record<string, string>): El {
+  const el = element(tag, attrs);
+  delete el.checkVisibility;
+  return el;
 }
 
 /**
@@ -142,4 +158,39 @@ test("a page with no tab stops reports 0, which is a reading and not a silence",
   // 0 and absent must stay distinguishable: a capture predating this field reports `undefined`, which the
   // rule reads as "cannot say". A page that genuinely has no controls reports 0.
   assert.equal(runAgainst([], []).tabbable, 0);
+});
+
+test("a control in a CLOSED mega-menu is not a tab stop, so it is not in the denominator", () => {
+  // The false positive this filter exists to prevent. Without it a conformant page whose nav is collapsed
+  // reports a tab ring far smaller than its markup, and 2.1.2 reads that as focus never escaping — a
+  // limit of the measurement reported as a finding about the page, this project's oldest defect.
+  const census = runAgainst([], [
+    element("a", { href: "/orders" }),
+    element("a", { href: "/hidden-1" }, undefined, { rendered: false }),
+    element("a", { href: "/hidden-2" }, undefined, { rendered: false }),
+  ]);
+  assert.equal(census.tabbable, 1);
+});
+
+test("a control sealed behind an [inert] dialog is not a tab stop", () => {
+  // `checkVisibility` returns TRUE for an inert subtree — it renders, it just takes no focus. So this is
+  // a separate check, and it is the modal pattern exactly: a 2.1.2 denominator that ignored `inert` would
+  // count the very background a conformant dialog seals off, and then blame the dialog for sealing it.
+  const census = runAgainst([], [
+    element("button", {}, undefined, { inert: true }),
+    element("input", {}, undefined, { inert: true }),
+    element("button", {}),
+  ]);
+  assert.equal(census.tabbable, 1);
+});
+
+test("a browser without checkVisibility still counts its controls, rather than reporting none", () => {
+  // The guard is `typeof !== "function"`, so an older engine degrades to the previous behaviour. Treating
+  // a missing API as "nothing is visible" would make `tabbable` zero and silently retire the rule reading
+  // it — the difference between "cannot say" and "none", which the whole census exists to preserve.
+  const census = runAgainst([], [
+    elementWithoutVisibilityApi("a", { href: "/a" }),
+    elementWithoutVisibilityApi("button", {}),
+  ]);
+  assert.equal(census.tabbable, 2);
 });
