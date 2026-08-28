@@ -2246,22 +2246,25 @@ async function runProbeSequence({ probeOrder, diag, runSweep, runFocus }) {
  */
 async function establishBrowseMode(diag) {
   for (const remedy of BROWSE_MODE_REMEDIES) await remedy().catch(() => undefined);
-  // AND THE CARET, because a known state is a MODE AND A POSITION, and restoring only the mode left this
-  // gate failing on exactly one heading per page. Measured on `image-missing-alt-behind-consent/good`:
+  // AND THE CARET, because a known state is a MODE AND A POSITION — but the position has to be the one the
+  // PIPELINE ALREADY ESTABLISHES, not one chosen by intuition. `Control+Home` was tried first and made
+  // things WORSE, which is what identified the real rule.
   //
-  //   default      [note04, note03, note02, note01, "main landmark, Project update, heading, level 1"]
-  //   focus-first  [note01, note02, note03, note04]          <- the h1 absent, and the order REVERSED
+  // QUICK NAVIGATION CAN NEVER REACH THE ELEMENT THE CARET OCCUPIES, in either direction. So every caret
+  // position costs exactly one element of whatever type sits under it, and the only safe position is one
+  // that is not an element of any swept type. Measured:
   //
-  // The reversed order is the tell. Under `default` the caret sits at the bottom after the read-through, so
-  // the BACKWARD sweep runs first and reaches the h1. Under `focus-first` the backward sweep found nothing
-  // and the forward sweep began at note01 — so the caret was ON the h1, and quick navigation cannot reach
-  // the element the cursor is already on. `moveToContainingBrowseModeDocument` had put it there.
+  //   Control+Home   caret lands on the h1 (document start IS the h1) -> h1 lost on ALL THREE pages,
+  //                  including one that had been agreeing
+  //   default order  caret sits at the BOTTOM after the read-through -> the backward sweep reaches the h1
+  //                  from below, and nothing is lost
   //
-  // This is `anchorToTop`'s second press, and the sweep's own comment dropped it as "redundant by
-  // construction: collectByType sweeps BOTH directions precisely so it reaches every element regardless of
-  // where the cursor starts". True of REACHABILITY and false of the element the caret occupies — one helper
-  // doing two jobs under one name, with the reasoning covering one of them.
-  await withTimeout(nvda.press("Control+Home"), NAV_TIMEOUT_MS, "anchorCaret").catch(() => undefined);
+  // The default order does not work by design here; it works because the read-through leaves the caret past
+  // the last heading. `readWithRetry` runs before every probe, and the sweep's own comment states the
+  // convention: "The read-through leaves the cursor at the bottom, and the backward sweep starts from there
+  // and walks up." So the known-good position is THE END, and restoring it makes both orders converge on
+  // the state the pipeline already had rather than on a new one.
+  await withTimeout(nvda.press("Control+End"), NAV_TIMEOUT_MS, "anchorCaret").catch(() => undefined);
   await waitForSpeechQuiet("browseModeSettle");
   diag.mark("establishBrowseMode", { applied: BROWSE_MODE_REMEDIES.length + 1, caretAnchored: true });
 }
