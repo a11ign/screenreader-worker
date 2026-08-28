@@ -319,7 +319,7 @@ function createDiagnostics(sink) {
  * @param {{
  *   task?: string, steps?: number, maxMs?: number, nav?: string,
  *   probeForms?: boolean, probeTables?: boolean, probeFocus?: boolean,
- *   probeNavigation?: boolean, probeElementsList?: boolean,
+ *   probeNavigation?: boolean, probeElementsList?: boolean, probeOrder?: string,
  *   reuseBrowser?: boolean, reuseScreenReader?: boolean,
  *   browserWaitMs?: number, diagnosticsSink?: object[],
  *   browser?: string,
@@ -452,6 +452,7 @@ async function runCapturePhases(url, opts, diag) {
     probeForms: !!opts.probeForms, probeFocus: !!opts.probeFocus, probeTables: !!opts.probeTables,
     probeNavigation: !!opts.probeNavigation,
     probeElementsList: !!opts.probeElementsList,
+    probeOrder: opts.probeOrder === "focus-first" ? "focus-first" : undefined,
     task: opts.task,
   });
 
@@ -1813,9 +1814,11 @@ async function navigateByStructureThenAudit(options) {
  */
 /**
  * @param {{ deadline: number, diag: Diag, probeForms?: boolean, probeFocus?: boolean, probeTables?: boolean,
- *           probeNavigation?: boolean, probeElementsList?: boolean, task?: string }} ctx
+ *           probeNavigation?: boolean, probeElementsList?: boolean, probeOrder?: string,
+ *           task?: string }} ctx
  */
-async function navigateByStructure({ deadline, diag, probeForms, probeFocus, probeTables, probeNavigation, probeElementsList, task }) {
+async function navigateByStructure({ deadline, diag, probeForms, probeFocus, probeTables, probeNavigation,
+  probeElementsList, probeOrder, task }) {
   // BOTH ACCUMULATORS ARE DECLARED, because both are filled in by probes that run later and elsewhere.
   // An inferred type here describes only the fields present at construction -- `never[]` for each array,
   // and no `navigatedOnSubmit`, `postSubmitNames` or `media` at all -- so every probe that adds evidence
@@ -1831,18 +1834,33 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   };
   const onFormField = (/** @type {string} */ phrase) => operateControl(phrase, { probeForms, deadline, interaction, task });
 
-  await sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips });
-  if (probeForms) diag.mark("formProbe", { activated: interaction.formChanges.length });
-  const postSubmitFields = await rescanFormFieldsAfterSubmit({ interaction, probeForms, deadline, diag, trips });
-  // ORDER IS LOAD-BEARING from here down. `probeFocusOrder` re-anchors and leaves the cursor in focus mode,
-  // and the Elements List opens a modal dialog leaving the caret somewhere arbitrary — so everything
-  // position-dependent has already run, and these two cannot swap.
-  // `controlsOnPage` is the sweep's own count, and it gates the Escape probe rather than the walk: only a
-  // ring SMALLER than what the page has is a confinement worth asking about. A conformant page that simply
-  // wraps its whole tab order neither pays for the probe nor has Escape pressed on it.
-  const focusOrder = probeFocus
-    ? await probeFocusOrder({ deadline, diag, controlsOnPage: structure.formFields.length })
-    : [];
+  // THE TWO POSITION-DEPENDENT PROBES, SEQUENCED RATHER THAN HARD-CODED — see `probeSequence`.
+  //
+  // This is the pair whose order was declared LOAD-BEARING here, and `probeOrder` exists so a gate can
+  // permute them and find out what that costs. `default` runs exactly what ran before, in the same order,
+  // so no cached capture is affected.
+  //
+  // `controlsOnPage` is the sweep's own count, and it gates the confinement mark rather than the walk. Note
+  // what permuting exposes: under `focus-first` the sweep has not run, so that count is 0 and the mark can
+  // never say `confined`. That is temporal coupling between two probes that are supposed to be independent
+  // observations, and making it visible is the point of the option.
+  /** @type {string[]} */
+  let postSubmitFields = [];
+  /** @type {string[]} */
+  let focusOrder = [];
+  const runSweep = async () => {
+    await sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips });
+    if (probeForms) diag.mark("formProbe", { activated: interaction.formChanges.length });
+    postSubmitFields = await rescanFormFieldsAfterSubmit({ interaction, probeForms, deadline, diag, trips });
+  };
+  const runFocus = async () => {
+    focusOrder = probeFocus
+      ? await probeFocusOrder({ deadline, diag, controlsOnPage: structure.formFields.length })
+      : [];
+  };
+  const sequence = probeSequence(probeOrder);
+  diag.mark("probeOrder", { order: sequence.join(","), requested: probeOrder ?? "default" });
+  for (const step of sequence) await (step === "sweep" ? runSweep() : runFocus());
   // LAST of the three, because it is the only probe that can leave the page under measurement: it activates
   // a link. Everything position-dependent has finished by here, so navigating away costs nothing.
   const routeChange = probeNavigation
@@ -2592,6 +2610,33 @@ function focusOrderCycled(stops) {
   if (stops.length < FOCUS_CYCLE_CONFIRM * 2) return false;
   return stops.slice(-FOCUS_CYCLE_CONFIRM)
     .every((phrase, i) => phrase === stops[i]);
+}
+
+/**
+ * The order the two position-dependent probes run in, so a gate can permute them.
+ *
+ * `capture-core.mjs` carried "ORDER IS LOAD-BEARING from here down" as a constraint to respect. Continuous
+ * Delivery names order-dependence as "a major cause of hard-to-track bugs" and prescribes the opposite —
+ * atomic steps whose order does not matter, from a known starting point. This option is how that claim gets
+ * TESTED rather than asserted: `gate:probe-order` captures a page under two orders and requires the evidence
+ * to match.
+ *
+ * It is expected to FAIL when first run. The sweep walks the document with quick-nav; the focus walk
+ * re-anchors and leaves NVDA in focus mode. Whether one disturbs the other has never been measured, and four
+ * withdrawn 2.1.2 rules plus a 2.1.1 false positive all came from comparing measurements taken in different
+ * states of the page.
+ *
+ * `default` is the sequence that has always run, so every cached capture stays valid and this ships without
+ * a recapture.
+ *
+ * @param {string | undefined} requested
+ * @returns {("sweep" | "focus")[]}
+ */
+function probeSequence(requested) {
+  // A NAME from a fixed set, never a caller-supplied list: an arbitrary sequence could run a probe twice or
+  // omit one, and the evidence would then differ for a reason that is not the thing under test.
+  if (requested === "focus-first") return ["focus", "sweep"];
+  return ["sweep", "focus"];
 }
 
 /** @param {{ deadline: number, diag: Diag, controlsOnPage: number }} ctx */
