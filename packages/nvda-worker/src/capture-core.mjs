@@ -2246,8 +2246,24 @@ async function runProbeSequence({ probeOrder, diag, runSweep, runFocus }) {
  */
 async function establishBrowseMode(diag) {
   for (const remedy of BROWSE_MODE_REMEDIES) await remedy().catch(() => undefined);
+  // AND THE CARET, because a known state is a MODE AND A POSITION, and restoring only the mode left this
+  // gate failing on exactly one heading per page. Measured on `image-missing-alt-behind-consent/good`:
+  //
+  //   default      [note04, note03, note02, note01, "main landmark, Project update, heading, level 1"]
+  //   focus-first  [note01, note02, note03, note04]          <- the h1 absent, and the order REVERSED
+  //
+  // The reversed order is the tell. Under `default` the caret sits at the bottom after the read-through, so
+  // the BACKWARD sweep runs first and reaches the h1. Under `focus-first` the backward sweep found nothing
+  // and the forward sweep began at note01 — so the caret was ON the h1, and quick navigation cannot reach
+  // the element the cursor is already on. `moveToContainingBrowseModeDocument` had put it there.
+  //
+  // This is `anchorToTop`'s second press, and the sweep's own comment dropped it as "redundant by
+  // construction: collectByType sweeps BOTH directions precisely so it reaches every element regardless of
+  // where the cursor starts". True of REACHABILITY and false of the element the caret occupies — one helper
+  // doing two jobs under one name, with the reasoning covering one of them.
+  await withTimeout(nvda.press("Control+Home"), NAV_TIMEOUT_MS, "anchorCaret").catch(() => undefined);
   await waitForSpeechQuiet("browseModeSettle");
-  diag.mark("establishBrowseMode", { applied: BROWSE_MODE_REMEDIES.length });
+  diag.mark("establishBrowseMode", { applied: BROWSE_MODE_REMEDIES.length + 1, caretAnchored: true });
 }
 
 /**
