@@ -304,7 +304,7 @@ function createDiagnostics(sink) {
 /**
  * @typedef {{ headings: string[], landmarks: string[], formFields: string[], graphics: string[], links: string[], lists: string[], tableCells: string[] }} CapturedStructure
  * @typedef {{ control: string, after: string }} AnnouncedChange
- * @typedef {{ controls: string[], stateChanges: AnnouncedChange[], formChanges: AnnouncedChange[], postSubmitFields: string[], focusOrder: string[], routeChange?: unknown, navigatedOnSubmit?: unknown, postSubmitNames?: string[] }} CapturedInteraction
+ * @typedef {{ controls: string[], stateChanges: AnnouncedChange[], formChanges: AnnouncedChange[], postSubmitFields: string[], focusOrder: string[], focusAfterEscape?: string[], routeChange?: unknown, navigatedOnSubmit?: unknown, postSubmitNames?: string[] }} CapturedInteraction
  * @typedef {{ url: string, screenReader: string, capturedAt: string, transcript: string[], structure: CapturedStructure, interaction: CapturedInteraction, media?: Record<string, unknown>[] | null, diagnostics: object[] }} Capture
  *
  * THE EVIDENCE SHAPE, named once. It was written out inline in this `@returns` and then built by three
@@ -1837,7 +1837,13 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   // ORDER IS LOAD-BEARING from here down. `probeFocusOrder` re-anchors and leaves the cursor in focus mode,
   // and the Elements List opens a modal dialog leaving the caret somewhere arbitrary — so everything
   // position-dependent has already run, and these two cannot swap.
-  const focusOrder = probeFocus ? await probeFocusOrder({ deadline, diag }) : [];
+  // `controlsOnPage` is the sweep's own count, and it gates the Escape probe rather than the walk: only a
+  // ring SMALLER than what the page has is a confinement worth asking about. A conformant page that simply
+  // wraps its whole tab order neither pays for the probe nor has Escape pressed on it.
+  const focus = probeFocus
+    ? await probeFocusOrder({ deadline, diag, controlsOnPage: structure.formFields.length })
+    : { stops: [], afterEscape: undefined };
+  const focusOrder = focus.stops;
   // LAST of the three, because it is the only probe that can leave the page under measurement: it activates
   // a link. Everything position-dependent has finished by here, so navigating away costs nothing.
   const routeChange = probeNavigation
@@ -1851,6 +1857,10 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
     formChanges: interaction.formChanges,
     postSubmitFields,
     focusOrder,
+    // The stops taken after Escape when focus was found CONFINED — the only evidence that separates a trap
+    // from a modal doing its job. `undefined` when nothing was asked, which is every capture taken before
+    // 2026-08-28 and every page with no confinement; a rule must make NO claim from its absence.
+    focusAfterEscape: focus.afterEscape,
     // Absent unless asked for, exactly like the other opt-in evidence. Absent and "we navigated and nothing
     // was announced" must stay distinguishable: the second IS the 2.4.2 finding, and a field that is `null`
     // in both cases would make a page nobody probed look like a page that failed.
@@ -2581,6 +2591,15 @@ const FOCUS_CYCLE_CONFIRM = 3;
 // pages at any cap and the honest move is to bound the spend and REPORT the shortfall.
 const FOCUS_PROBE_BUDGET_MS = 120_000;
 
+/**
+ * How many stops to take after Escape when focus was found CONFINED to a ring.
+ *
+ * Four, because the question is binary — did anything outside the ring become reachable — and the first
+ * stop outside answers it. More would only cost time on a page that is genuinely trapped, which is the
+ * case where the budget matters least and the evidence is already complete.
+ */
+const ESCAPE_PROBE_STOPS = 4;
+
 /** Have we returned to where we started? See `FOCUS_CYCLE_CONFIRM` for why this is not one comparison. */
 /** @param {string[]} stops */
 function focusOrderCycled(stops) {
@@ -2589,8 +2608,8 @@ function focusOrderCycled(stops) {
     .every((phrase, i) => phrase === stops[i]);
 }
 
-/** @param {{ deadline: number, diag: Diag }} ctx */
-async function probeFocusOrder({ deadline, diag }) {
+/** @param {{ deadline: number, diag: Diag, controlsOnPage: number }} ctx */
+async function probeFocusOrder({ deadline, diag, controlsOnPage }) {
   await anchorToTop();
   const stops = [];
   const budget = Math.min(deadline, Date.now() + FOCUS_PROBE_BUDGET_MS);
@@ -2609,6 +2628,7 @@ async function probeFocusOrder({ deadline, diag }) {
     if (repeats >= TRAP_REPEATS) break;
     if (focusOrderCycled(stops)) { cycled = true; break; }
   }
+  const afterEscape = await probeEscapeReleasesRing({ stops, cycled, controlsOnPage, deadline, diag });
   // Never a silent cap: a truncated focus order looks identical to a short one.
   //
   // `truncated` now means GENUINELY INCOMPLETE -- neither wrapped nor stalled -- rather than "hit the
@@ -2621,7 +2641,66 @@ async function probeFocusOrder({ deadline, diag }) {
     stalled: repeats >= TRAP_REPEATS,
     truncated: !cycled && repeats < TRAP_REPEATS && stops.length > 0,
   });
-  return stops;
+  return { stops, afterEscape };
+}
+
+/**
+ * When focus is CONFINED to a ring, does Escape let a keyboard user out of it?
+ *
+ * THE ONLY EVIDENCE THAT SEPARATES A TRAP FROM A MODAL DOING ITS JOB, and this project shipped two rules
+ * without it and withdrew both on 2026-08-28. They compared the ring against the page — swept form fields,
+ * then rendered tab stops — and each was exact on the corpus and wrong on the web: 7 and 9 new 2.1.2
+ * findings on 86 conformant real pages. Measured on tfl.gov.uk, ring 5 against 28 swept controls, three of
+ * them "Accept all cookies". A consent banner confines Tab BY DESIGN, and under 2.1.2 it conforms whenever
+ * the user can leave by a documented means. The corpus trap and a cookie wall are the same evidence, and no
+ * threshold can separate them, because the difference is not how MUCH of the page the ring covers.
+ *
+ * RECORDED, NOT DECIDED. This returns the stops taken after Escape and nothing else — the same rule the
+ * walk above already follows ("Which one it is, is the judge's call"). Whether a phrase outside the ring
+ * means focus escaped is a judgement about announcements, and it belongs where the announcement grammar
+ * lives, not here.
+ *
+ * ONLY ON A DETECTED CONFINEMENT, and that gate is doing two jobs. It keeps a conformant page that simply
+ * wraps its whole tab order from paying for the probe — and, more importantly, from having Escape PRESSED
+ * on it, which is a state change on somebody's live site. A full wrap is `cycled` too; what marks a
+ * confinement is a ring smaller than the controls the sweep found.
+ *
+ * ESCAPE IS AMBIGUOUS AND THE AMBIGUITY DOES NOT REACH THE ANSWER. It is also NVDA's own route out of focus
+ * mode (`script_disablePassThrough`), so pressing it may change the screen reader's mode rather than the
+ * page's state. But a mode change cannot manufacture a focusable control: if the dialog did not release,
+ * Tab still moves within the same ring whichever mode NVDA is in. So a stop OUTSIDE the ring is a fact
+ * about the page, and that is the whole test.
+ *
+ * `press("Escape")`, never `perform(exitFocusMode)` — both are Escape on paper and only `press` worked,
+ * measured, which `anchorToTop` has relied on since long before anyone understood why.
+ *
+ * @param {{ stops: string[], cycled: boolean, controlsOnPage: number, deadline: number, diag: Diag }} ctx
+ * @returns {Promise<string[] | undefined>} the stops after Escape, or undefined when nothing was asked
+ */
+async function probeEscapeReleasesRing({ stops, cycled, controlsOnPage, deadline, diag }) {
+  const ring = new Set(stops);
+  const confined = cycled && controlsOnPage > 0 && ring.size < controlsOnPage;
+  if (!confined) {
+    // MARKED WHEN IT SKIPS, because "did not need to ask" and "never ran" are otherwise the same silence —
+    // `refreshBrowseBuffer` guarded on a flag nothing ever set and returned early on every capture ever
+    // taken, while three `capture:check` runs passed and would have vouched for it.
+    diag.mark("escapeRing", { asked: false, cycled, ring: ring.size, controlsOnPage });
+    return undefined;
+  }
+  await withTimeout(nvda.press("Escape"), NAV_TIMEOUT_MS, "escapeRing").catch(() => undefined);
+  const beyond = [];
+  for (let i = 0; i < ESCAPE_PROBE_STOPS; i += 1) {
+    if (Date.now() > deadline) break;
+    await withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, "tab").catch(() => undefined);
+    const phrase = await reportFocusedControl();
+    if (!phrase) break;
+    beyond.push(phrase);
+  }
+  diag.mark("escapeRing", {
+    asked: true, ring: ring.size, controlsOnPage, stops: beyond.length,
+    outsideRing: beyond.filter((phrase) => !ring.has(phrase)).length,
+  });
+  return beyond;
 }
 
 /**
