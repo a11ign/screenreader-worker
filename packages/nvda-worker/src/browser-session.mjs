@@ -498,7 +498,16 @@ export async function navigationOutcome() {
 const NAVIGATION_OUTCOME_EXPRESSION = `(() => {
     const nav = performance.getEntriesByType("navigation")[0];
     if (!nav) return null;
-    return { status: nav.responseStatus ?? null, type: nav.type ?? null, url: location.href };
+    return {
+      status: nav.responseStatus ?? null,
+      type: nav.type ?? null,
+      url: location.href,
+      // WHETHER THERE IS ANYTHING TO JUDGE YET: responseStatus is 0 both when the server never
+      // answered and when the response has not arrived, which are opposite conclusions. responseEnd
+      // stays 0 until the response completes, so it is the only thing separating them.
+      responseEnd: nav.responseEnd ?? 0,
+      readyState: document.readyState,
+    };
   })()`;
 
 /**

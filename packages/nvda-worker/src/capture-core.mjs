@@ -1120,13 +1120,72 @@ async function assertPageWasServed(url, diag) {
   // Only HTTP(S) has a status to read. A `file://` capture would report 0 and be refused for having done
   // nothing wrong -- a guard that fires on correct usage is one that gets switched off.
   if (!/^https?:$/i.test(safeProtocol(url))) return;
-  const outcome = await navigationOutcome();
+  const { outcome, waitedMs, polls } = await settledNavigation();
   // Marked whether or not it refused, so "checked, 200" and "never ran" can never be the same silence.
   // `refreshBrowseBuffer` was inert through three green `capture:check` runs for want of exactly this.
-  diag.mark("pageServed", { requested: url,
-    ...(outcome ?? { status: null, unavailable: "no navigation entry — nothing was loaded here" }) });
+  diag.mark("pageServed", { requested: url, waitedMs, polls,
+    ...(outcome ?? { status: null, unavailable: "no navigation entry -- nothing was loaded here" }) });
   const refusal = pageServedRefusal(url, outcome);
   if (refusal) throw captureFault(FAULT.PAGE_UNREACHABLE, refusal);
+}
+
+/** Between reads of the navigation entry. A poll INTERVAL, not a guess at how long a server takes. */
+const SERVED_POLL_MS = 150;
+/**
+ * The ceiling on waiting for a response to exist.
+ *
+ * It must exceed the slowest HONEST answer, because expiring early turns "still loading" into "nothing is
+ * serving" -- and this guard's whole job is to distinguish those. Expiry is therefore NOT a refusal: the
+ * mark says `settled: false` and the capture proceeds to the checks that can judge a document.
+ */
+const SERVED_BUDGET_MS = 20_000;
+
+/**
+ * WAIT FOR A RESPONSE TO EXIST BEFORE JUDGING IT.
+ *
+ * The first version of this read the navigation entry ONCE, immediately after the URL guard. Measured on
+ * `nls.uk/join/` from a fleet worker: `landedOnRequested` matched at 898 ms because CDP reports the target's
+ * PENDING url, and 397 ms later `location.href` was still `about:blank` -- so the entry read was the initial
+ * blank document's, whose `responseStatus` is 0. A page that was serving perfectly was refused as unserved.
+ *
+ * WORSE, AND THE REASON THIS IS WRITTEN OUT: the dead-port test that "proved" the guard reported
+ * `about:blank` too. It refused for the wrong reason and the green result was read as confirmation -- the
+ * `refreshBrowseBuffer` defect exactly, committed inside the fix for it. A remedy must be confirmed by its
+ * diagnostic MARK, not by the outcome it was expected to produce.
+ *
+ * So this polls for the CONDITION -- a navigation entry with `responseEnd > 0`, meaning a response
+ * completed -- rather than reading at a moment that happens to be convenient. `about:blank` is never
+ * judged: it is the browser's starting document, not an answer about the site.
+ */
+async function settledNavigation() {
+  const startedAt = Date.now();
+  let polls = 0;
+  let outcome = null;
+  while (Date.now() - startedAt < SERVED_BUDGET_MS) {
+    polls += 1;
+    outcome = await navigationOutcome();
+    if (navigationHasAnswered(outcome)) {
+      return { outcome: { ...outcome, settled: true }, waitedMs: Date.now() - startedAt, polls };
+    }
+    await sleep(SERVED_POLL_MS);
+  }
+  // NOT a refusal. `pageServedRefusal` needs a status to refuse on, and a pending navigation has none --
+  // reporting one here would be the early-deadline inversion this whole function exists to remove.
+  return {
+    outcome: { ...(outcome ?? {}), status: null, settled: false,
+      unavailable: `no response completed within ${SERVED_BUDGET_MS} ms` },
+    waitedMs: Date.now() - startedAt, polls,
+  };
+}
+
+/**
+ * A navigation entry that describes a real document and a completed response, so it can be judged.
+ * @param {{url?: string|null, responseEnd?: number} | null} outcome
+ */
+function navigationHasAnswered(outcome) {
+  if (!outcome || typeof outcome !== "object") return false;
+  if (typeof outcome.url === "string" && outcome.url.startsWith("about:")) return false;
+  return typeof outcome.responseEnd === "number" && outcome.responseEnd > 0;
 }
 
 /**
@@ -1138,13 +1197,13 @@ async function assertPageWasServed(url, diag) {
  * the remaining risk is confined to whether `navigationOutcome` reads the right number.
  *
  * @param {string} url
- * @param {{status: number|null} | null} outcome
+ * @param {{status?: number|null} | null} outcome
  * @returns {string|null} the refusal message, or null to proceed
  */
 export function pageServedRefusal(url, outcome) {
   // "We could not ask" is not a refusal, and it is not a pass either -- the caller MARKS it. Conflating
   // absence with zero would turn a browser too old to report the status into a permanently broken worker.
-  if (!outcome || outcome.status === null) return null;
+  if (!outcome || outcome.status === null || outcome.status === undefined) return null;
   if (outcome.status >= 200 && outcome.status < 300) return null;
   if (outcome.status === 0) {
     return `nothing is serving ${JSON.stringify(url)} — the browser got no HTTP response at all, so what `
