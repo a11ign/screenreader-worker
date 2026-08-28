@@ -166,8 +166,25 @@ function captureClients(): Array<[string, string]> {
   return sourceFiles()
     // The worker SERVES this route; it is not a client of it.
     .filter(([path]) => !path.endsWith("server.mjs"))
-    .filter(([, src]) => /\/capture\b/.test(src) && /method:\s*["']POST["']/.test(src));
+    // A CLIENT IS ONE THAT DECLARES A BUDGET, however it sends the request. This matched `method: "POST"`
+    // literally, so when the nine hand-rolled POSTs moved behind `captureTolerantly` the walk found four
+    // and the whole guard went quiet — which its own count assertion caught, exactly as designed. The
+    // shared client is now one of the matches, and so is anything that passes a timeout to it.
+    .filter(([, src]) => /\/capture\b/.test(src)
+      && (/method:\s*["']POST["']/.test(src) || /\bcaptureTolerantly\(/.test(src)));
 }
+
+test("the shared capture client posts through requestJson — proved, not assumed", () => {
+  // The delegation the assertion above depends on. `requestJson` uses node:http directly, so it has no
+  // undici headers cap; a `fetch` here would silently reimpose a 300 s ceiling on every capture client at
+  // once, and each one's own budget would read as though it applied.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const src = readFileSync(
+    join(here, "..", "..", "lab", "src", "capture", "capture-client.mjs"), "utf8");
+  assert.match(src, /\brequestJson\(/, "captureTolerantly must send its POST through requestJson");
+  assert.doesNotMatch(src, /\bfetch\(/,
+    "a fetch here would put undici's 300 s headers cap back under every client that delegates to this one");
+});
 
 test("no capture client declares a budget that undici will silently ignore", () => {
   const clients = captureClients();
@@ -178,8 +195,13 @@ test("no capture client declares a budget that undici will silently ignore", () 
     `only found ${clients.length} capture clients; the discovery walk is broken, not the codebase clean`);
 
   for (const [name, src] of clients) {
-    assert.match(src, /requestJson/,
-      `${name} must post captures through requestJson (worker-http.mjs), which has no headers cap`);
+    // DIRECTLY OR THROUGH THE SHARED CLIENT. `captureTolerantly` posts via `requestJson` -- proved by the
+    // next test rather than trusted here, because widening this on a comment's say-so would be the hole
+    // the assertion exists to close. Nine clients moved behind it in one change; if it ever grew its own
+    // `fetch`, every one of them would lose the ceiling and this list would still be waving them through.
+    assert.match(src, /requestJson|captureTolerantly/,
+      `${name} must post captures through requestJson (worker-http.mjs), which has no headers cap — `
+      + "directly, or via captureTolerantly which does");
 
     for (const [, argument] of src.matchAll(/AbortSignal\.timeout\(\s*([A-Za-z0-9_]+)\s*\)/g)) {
       const ms = resolveMs(src, argument);
