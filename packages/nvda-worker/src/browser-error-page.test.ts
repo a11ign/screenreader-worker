@@ -114,3 +114,12 @@ test("UNCHECKED IS NOT BROKEN — an unanswerable status proceeds, and the calle
   assert.equal(pageServedRefusal("http://x/y", null), null);
   assert.equal(pageServedRefusal("http://x/y", { status: null }), null);
 });
+
+test("chrome-error IS an answer, not a document to wait past — measured, not assumed", () => {
+  // The dead-port capture on the fleet reports exactly this: the browser commits a real document at
+  // `chrome-error://chromewebdata/` with `responseEnd: 2240.9` and `status: 0`. Excluding that URL the way
+  // `about:` is excluded would make the guard wait out its budget and then decline to refuse — the
+  // original defect restored, wearing the look of tidying up.
+  assert.match(String(pageServedRefusal("http://127.0.0.1:59999/nothing", { status: 0 })),
+    /no HTTP response at all/);
+});

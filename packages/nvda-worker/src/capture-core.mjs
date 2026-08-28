@@ -1180,6 +1180,18 @@ async function settledNavigation() {
 
 /**
  * A navigation entry that describes a real document and a completed response, so it can be judged.
+ *
+ * MEASURED on the fleet 2026-08-28, both sides, because the first version of this guard was built on a
+ * guess about what an error page reports and the guess was wrong:
+ *
+ *   served     url "https://www.nls.uk/join/"      status 200  responseEnd  405.4  polls 2
+ *   dead port  url "chrome-error://chromewebdata/" status   0  responseEnd 2240.9  polls 9
+ *
+ * So `chrome-error://` IS an answer and must NOT be excluded here — it is the browser telling us it
+ * committed a document without a response, which is exactly the finding. Only `about:` is excluded, and
+ * only because it is the starting document the browser holds BEFORE navigating. Adding `chrome-error` to
+ * that list would restore the original defect while looking like tidying.
+ *
  * @param {{url?: string|null, responseEnd?: number} | null} outcome
  */
 function navigationHasAnswered(outcome) {
