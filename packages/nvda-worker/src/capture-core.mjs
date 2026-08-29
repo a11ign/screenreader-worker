@@ -124,7 +124,32 @@ import { setTimeout as sleep } from "node:timers/promises";
 // Protocol 6 raises the baseline ceiling to 20 s and CONSUMES the result. The bump is not for the new
 // `baselineQuiet` field, which no signal reads yet — it is because the same page can now produce
 // different evidence than it did under 5, which is the definition this file gives for a bump.
-export const CAPTURE_PROTOCOL_VERSION = 6;
+//
+// Protocol 7 is capture-integrity-plan C1-C6, and the SECOND reason below is why it is a bump rather than
+// an additive change.
+//
+// What is new: `census.distinct` (distinct NAMES per type, because the sweep dedupes announcements while
+// the census counted elements — measured across 106 real pages, 75% of named elements share a name with
+// another, so the two were never comparable); `formControl` in that census, counting the roles NVDA's `f`
+// quick-nav actually visits; and `truncatedAnnouncements` marked UNCONDITIONALLY.
+//
+// FIRST, it meets this file's own criterion — "a new field a signal reads". `completeness` and
+// `assertableSweep` read all three, and 2.1.1 and 4.1.2 now decline to assert on a sweep the census
+// contradicts.
+//
+// SECOND, and this is the decisive half: WITHOUT the bump the recapture is a no-op. `workerCode` is
+// deliberately not in `environmentKey` -- "it changes when a comment changes, and invalidating 1,061 pairs
+// over a reworded comment is how a cache gets switched off" -- so nothing in C1-C6 moves a cache key.
+// `training:capture` would serve every cached capture unchanged, the new fields would never appear,
+// `completeness` would read `unknown` for ever, C2's guard would abstain on every page, and every gate
+// would stay green. A cache correctly serving stale-SHAPED evidence raises no error at all. That is the
+// memoised `browserVersion` again, which stamped five days of captures with a build they were not taken
+// under and defeated the fleet-consistency check written for exactly that.
+//
+// And it meets the strict definition too: the same page now produces different evidence. A capture that
+// previously carried NO truncation mark now carries one reading `{ truncated: [], checked: true }`, so
+// "nothing was truncated" and "nothing checked" stop being the same silence.
+export const CAPTURE_PROTOCOL_VERSION = 7;
 
 // Re-exported for callers that had these from `capture-core` before the split.
 export {
