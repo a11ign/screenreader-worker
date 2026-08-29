@@ -77,7 +77,7 @@ test("headings, links and graphics are counted for the other sweeps", () => {
     node("heading", "A"), node("link", "Read more"), node("image", "A chart"), node("img", "Another"),
   ]);
   assert.deepEqual(census, {
-    landmark: 0, heading: 1, link: 1, graphicUnnamed: 0, graphic: 2,
+    landmark: 0, heading: 1, link: 1, graphicUnnamed: 0, graphic: 2, formControl: 0,
     // Names are kept alongside the counts so a TRUNCATED announcement is detectable; a count
     // cross-check cannot see a control that is present but misnamed.
     names: ["A", "Read more", "A chart", "Another"],
@@ -88,7 +88,8 @@ test("headings, links and graphics are counted for the other sweeps", () => {
 
 test("a malformed or empty tree yields zeros, not a throw", () => {
   // The oracle must never be the reason a capture fails.
-  const empty = { landmark: 0, heading: 0, link: 0, graphicUnnamed: 0, graphic: 0, names: [],
+  const empty = { landmark: 0, heading: 0, link: 0, graphicUnnamed: 0, graphic: 0, formControl: 0,
+    names: [],
     distinct: { landmark: 0, heading: 0, link: 0, graphic: 0, formControl: 0 } };
   assert.deepEqual(censusFromAXTree([]), empty);
   assert.deepEqual(censusFromAXTree(undefined), empty);
@@ -240,6 +241,15 @@ test("FORM CONTROLS ARE COUNTED IN NVDA'S ALPHABET, which is not the DOM's", () 
   ]);
   assert.equal(census.distinct.formControl, 6,
     "a button is a form field to NVDA even though it is not one to the DOM census");
+  // THE WHOLE OBJECT, and NO NaN ANYWHERE. Asserting only `distinct.formControl` is what let a real
+  // defect ship: `census[bucket] += 1` had no top-level `formControl`, so it was `undefined + 1` = NaN,
+  // which JSON writes as `null`. A per-field assertion cannot see a field that was added, and cannot see
+  // one that is quietly NaN — the failure was found on a live capture instead.
+  assert.equal(census.formControl, 6, "the top-level element count must exist for every bucket");
+  for (const [field, value] of Object.entries(census)) {
+    assert.ok(!(typeof value === "number" && Number.isNaN(value)),
+      `census.${field} is NaN — a bucket was added to ROLE_BUCKET without a counter to increment`);
+  }
 });
 
 test("a form control with NO NAME still counts, because an unnamed control is the 4.1.2 finding", () => {

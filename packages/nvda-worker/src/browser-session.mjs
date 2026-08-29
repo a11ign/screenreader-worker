@@ -355,7 +355,13 @@ export function censusFromAXTree(nodes) {
   // detector's input, so an empty inferred type would have made the one field added for that unusable.
   /** @type {{ landmark: number, heading: number, link: number, graphic: number,
    *           graphicUnnamed: number, names: string[] } & Record<string, any>} */
-  const census = { landmark: 0, heading: 0, link: 0, graphic: 0, graphicUnnamed: 0, names: [],
+  // EVERY BUCKET NEEDS A TOP-LEVEL COUNTER, because the loop below does `census[bucket] += 1`. Adding
+  // `formControl` to ROLE_BUCKET without one made that `undefined + 1` -> NaN, which `JSON.stringify`
+  // writes as `null` — so a capture reported `"formControl": null` and it read as "not measured" rather
+  // than as arithmetic on an absent field. Found on the first real capture after the deploy, not by a
+  // test: the tests asserted the fields they knew about, and an assertion on named fields cannot see a
+  // field that was ADDED. Same lesson as `browser-args.test.ts` asserting the whole command line.
+  const census = { landmark: 0, heading: 0, link: 0, graphic: 0, formControl: 0, graphicUnnamed: 0, names: [],
     // DISTINCT NAMES PER TYPE, because the raw element count is not comparable with what the sweep
     // produces and the cross-check was comparing them anyway.
     //
