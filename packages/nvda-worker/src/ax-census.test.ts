@@ -82,14 +82,14 @@ test("headings, links and graphics are counted for the other sweeps", () => {
     // cross-check cannot see a control that is present but misnamed.
     names: ["A", "Read more", "A chart", "Another"],
     // Every name here is unique, so distinct == raw. The case that matters is the next test.
-    distinct: { landmark: 0, heading: 1, link: 1, graphic: 2 },
+    distinct: { landmark: 0, heading: 1, link: 1, graphic: 2, formControl: 0 },
   });
 });
 
 test("a malformed or empty tree yields zeros, not a throw", () => {
   // The oracle must never be the reason a capture fails.
   const empty = { landmark: 0, heading: 0, link: 0, graphicUnnamed: 0, graphic: 0, names: [],
-    distinct: { landmark: 0, heading: 0, link: 0, graphic: 0 } };
+    distinct: { landmark: 0, heading: 0, link: 0, graphic: 0, formControl: 0 } };
   assert.deepEqual(censusFromAXTree([]), empty);
   assert.deepEqual(censusFromAXTree(undefined), empty);
   assert.deepEqual(censusFromAXTree([null, {}]), empty);
@@ -227,4 +227,23 @@ test("an UNNAMED element counts once per element, never collapsed", () => {
   assert.equal(census.graphic, 2);
   assert.equal(census.distinct.graphic, 2, "two unnamed graphics are two things, not one");
   assert.equal(census.graphicUnnamed, 2);
+});
+
+test("FORM CONTROLS ARE COUNTED IN NVDA'S ALPHABET, which is not the DOM's", () => {
+  // `dom.formField` counts `input, select, textarea, [role=textbox], [role=combobox]` and is 2.1.2's
+  // denominator. NVDA's `f` quick-nav ALSO walks buttons, checkboxes, radios and sliders — so comparing
+  // `structure.formFields` against the DOM count would report a phantom on every page with a button.
+  // Two alphabets compared as one is the defect `capture-integrity-plan` is about.
+  const census = censusFromAXTree([
+    node("textbox", "Search"), node("button", "Go"), node("checkbox", "Remember me"),
+    node("radio", "Card"), node("combobox", "Country"), node("slider", "Volume"),
+  ]);
+  assert.equal(census.distinct.formControl, 6,
+    "a button is a form field to NVDA even though it is not one to the DOM census");
+});
+
+test("a form control with NO NAME still counts, because an unnamed control is the 4.1.2 finding", () => {
+  // The rule this repo paid most for: a check must never reject evidence whose absence IS the finding.
+  const census = censusFromAXTree([node("button", ""), node("button", "")]);
+  assert.equal(census.distinct.formControl, 2, "two unnamed buttons are two controls, not one");
 });

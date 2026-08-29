@@ -182,6 +182,26 @@ export async function navigateExisting(url) {
 const LANDMARK_ROLES = ["main", "navigation", "banner", "contentinfo", "complementary", "search", "form", "region"];
 
 /**
+ * NVDA'S OWN FORM-FIELD ALPHABET, which is not the DOM's.
+ *
+ * `dom.formField` counts `input, select, textarea, [role=textbox], [role=combobox]`, and that set is
+ * correct for what it does -- it is 2.1.2's denominator of things a dialog can hold. It is the WRONG
+ * oracle for `structure.formFields`, because NVDA's `f` quick-nav also walks buttons, checkboxes, radios,
+ * sliders and switches. Comparing the sweep against the DOM count would report a phantom on every page
+ * carrying a button: two alphabets compared as one, which is the defect `capture-integrity-plan` is about
+ * and which this file has already paid for twice (U+FFFC, U+E604).
+ *
+ * So the oracle is counted HERE, from the accessibility tree, over the roles NVDA actually visits.
+ * Deliberately a separate bucket from `dom.formField` rather than a widening of it: that count is load
+ * bearing for 2.1.2 and changing it would move a denominator this is not about.
+ */
+/** @type {string[]} */
+const FORM_CONTROL_ROLES = [
+  "textbox", "searchbox", "combobox", "listbox", "checkbox", "radio", "switch",
+  "slider", "spinbutton", "button", "menuitemcheckbox", "menuitemradio",
+];
+
+/**
  * Role -> which sweep it belongs to. A lookup rather than a branch chain: the chain put this function
  * over the complexity gate, and naming the mapping once is clearer than restating it in `else if`s.
  */
@@ -189,6 +209,7 @@ const LANDMARK_ROLES = ["main", "navigation", "banner", "contentinfo", "compleme
 const ROLE_BUCKET = new Map([
   ["heading", "heading"], ["link", "link"],
   ["image", "graphic"], ["img", "graphic"], ["graphics-document", "graphic"],
+  .../** @type {[string, string][]} */ (FORM_CONTROL_ROLES.map((role) => [role, "formControl"])),
   .../** @type {[string, string][]} */ (LANDMARK_ROLES.map((role) => [role, "landmark"])),
 ]);
 
@@ -348,9 +369,10 @@ export function censusFromAXTree(nodes) {
     // Against DISTINCT names the ratio is 0.49 — still a real shortfall, and now a comparison of two
     // things that are supposed to be equal. Half the "97% disagreement" was definitional and half is the
     // finding; before this they were indistinguishable.
-    distinct: { landmark: 0, heading: 0, link: 0, graphic: 0 } };
+    distinct: { landmark: 0, heading: 0, link: 0, graphic: 0, formControl: 0 } };
   /** @type {Record<string, Set<string>>} */
-  const seenByType = { landmark: new Set(), heading: new Set(), link: new Set(), graphic: new Set() };
+  const seenByType = { landmark: new Set(), heading: new Set(), link: new Set(), graphic: new Set(),
+    formControl: new Set() };
   for (const node of nodes ?? []) {
     const classified = classifyAXNode(node);
     if (!classified) continue;

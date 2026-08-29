@@ -1933,7 +1933,11 @@ async function navigateByStructureThenAudit(options) {
       [...result.structure.formFields, ...result.structure.headings, ...result.structure.links],
       census.names,
     );
-    if (truncated.length) options.diag.mark("truncatedAnnouncements", { truncated });
+    // MARKED UNCONDITIONALLY, so "nothing was truncated" and "nothing checked it" stop being the same
+    // silence. Writing the mark only when `truncated.length` made an absent mark ambiguous, and C6's
+    // naming verdict read that absence as a clean bill of health — caught by `explain-capture.test.ts`,
+    // which exists for exactly this shape. Same rule as `refreshBrowseBuffer` marking when it SKIPS.
+    options.diag.mark("truncatedAnnouncements", { truncated, checked: true });
     options.diag.mark("structureCrossCheck", crossCheckStructure({
       sweep: {
         heading: result.structure.headings.length,
