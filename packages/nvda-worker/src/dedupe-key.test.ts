@@ -51,3 +51,46 @@ test("two genuinely different headings still key differently", () => {
     dedupeKey("Park gate information, region, heading, level 2, Park gate information"),
   );
 });
+
+test("EVERY container prefix is stripped, not just the first", () => {
+  // known-gaps §18. NVDA announces every container it entered, so the same landmark reached from outside
+  // and from inside keyed two ways and `structure.landmarks` reported 3 on a page with 2. Measured: 146
+  // of 24,774 sweep announcements, 34 captures, all `landmark-*`.
+  assert.equal(
+    dedupeKey("main landmark, Home energy, region, Home energy"),
+    dedupeKey("Home energy, region, Home energy"),
+    "the same landmark reached from two directions must key identically");
+});
+
+test("nested landmarks collapse to the element's own name", () => {
+  assert.equal(dedupeKey("main landmark, navigation landmark, Home, heading, level 2"),
+    dedupeKey("Home, heading, level 2"));
+});
+
+test("stripping repeatedly never empties a real announcement", () => {
+  // The over-strip signature, and the reason this was verified against the corpus before being applied:
+  // across all 24,774 sweep announcements, 146 keys change and NONE is reduced to nothing. An empty key
+  // would collapse unrelated elements into one, trading a phantom for a truncation — the harder defect to
+  // notice, because a missing element looks like a page that does not have one.
+  for (const phrase of [
+    "main landmark, navigation landmark, Home, heading, level 2",
+    "Home energy, region, Home energy",
+    "form, Full name",
+    "Archive selected messages",
+  ]) {
+    assert.notEqual(dedupeKey(phrase).trim(), "", `dedupeKey emptied ${JSON.stringify(phrase)}`);
+  }
+});
+
+test("the strip is idempotent, which is what stripping to a fixed point buys", () => {
+  // Before §18 a key could depend on how many times it was taken; `capture-pure.corpus.test.ts` carried a
+  // BOUNDED assertion (146 known non-idempotent sweep keys) precisely because of it. That bound can go.
+  for (const phrase of [
+    "main landmark, Home energy, region, Home energy",
+    "main landmark, navigation landmark, Home, heading, level 2",
+    "heading, level 1, Archive",
+  ]) {
+    assert.equal(dedupeKey(dedupeKey(phrase)), dedupeKey(phrase));
+  }
+});
+

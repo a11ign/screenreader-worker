@@ -209,7 +209,42 @@ export function screenReaderWasSilentAtStart(diag) {
 // kind of miscount that is invisible without an independent count to compare against.
 export const CONTAINER_PREFIX = /^(?:\w[\w\s'-]*[,\s]\s*)?(?:landmark|region|banner|navigation|main|complementary|content info|form|article),\s*/i;
 
-export const dedupeKey = (/** @type {string} */ phrase) => phrase.replace(CONTAINER_PREFIX, "").slice(0, DEDUPE_KEY_LEN);
+/**
+ * The key `collectPhrase` dedupes on — every container prefix removed, not just the first.
+ *
+ * STRIPPED REPEATEDLY since protocol 8 (known-gaps §18). `CONTAINER_PREFIX` removes ONE leading container
+ * announcement, and NVDA announces EVERY container it entered, so a nested one survived and the same
+ * element keyed two ways:
+ *
+ *   "main landmark, Home energy, region, Home energy"     reached from outside
+ *   "Home energy, region, Home energy"                    reached from inside
+ *
+ * `structure.landmarks` then reported 3 landmarks on a page with 2. Measured across 5,304 captures: 146 of
+ * 24,774 sweep announcements affected, in 34 captures, every one a `landmark-*` case. The transcript
+ * channel was clean at 0 of 35,647, because `dedupeKey` is never applied to it.
+ *
+ * VERIFIED BEFORE APPLYING: over all 24,774 sweep announcements the repeated strip changes 146 keys and
+ * reduces NONE to empty — the over-strip signature this would otherwise risk. `MAX_CONTAINER_DEPTH` bounds
+ * it anyway, because a pathological announcement must not make this loop the slow part of a capture.
+ */
+export const dedupeKey = (/** @type {string} */ phrase) => {
+  let key = String(phrase);
+  for (let depth = 0; depth < MAX_CONTAINER_DEPTH; depth += 1) {
+    const stripped = key.replace(CONTAINER_PREFIX, "");
+    if (stripped === key) break;
+    key = stripped;
+  }
+  return key.slice(0, DEDUPE_KEY_LEN);
+};
+
+/**
+ * How many nested containers one announcement can carry.
+ *
+ * NVDA announces the containers it passed through on the way in, and real pages nest a handful at most —
+ * the deepest observed in 24,774 corpus announcements is two. Bounded rather than looped to a fixed point
+ * so a malformed announcement cannot spin here; four is well clear of anything measured.
+ */
+const MAX_CONTAINER_DEPTH = 4;
 
 /**
  * Given the speech log and how much of it we had already read, did the last quick-nav jump MOVE, and

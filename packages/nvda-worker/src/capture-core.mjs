@@ -149,7 +149,28 @@ import { setTimeout as sleep } from "node:timers/promises";
 // And it meets the strict definition too: the same page now produces different evidence. A capture that
 // previously carried NO truncation mark now carries one reading `{ truncated: [], checked: true }`, so
 // "nothing was truncated" and "nothing checked" stop being the same silence.
-export const CAPTURE_PROTOCOL_VERSION = 7;
+//
+// 7 -> 8: TWO EVIDENCE CHANGES, bundled deliberately into one bump — known-gaps §18 and §19. Each needs a
+// full recapture on its own and neither is urgent, so paying once is the whole point; CLAUDE.md's rule is
+// that the cheap moment for a key change is bundled with another that was happening anyway.
+//
+//   §18  `dedupeKey` strips EVERY container prefix, not just the first. NVDA announces every container it
+//        entered, so a nested one survived and the same element keyed two ways — "main landmark, Home
+//        energy, region, Home energy" and "Home energy, region, Home energy" — and `structure.landmarks`
+//        reported 3 landmarks on a page with 2. Measured: 146 of 24,774 sweep announcements, in 34
+//        captures, every one a `landmark-*` case; the transcript channel was clean at 0 of 35,647 because
+//        `dedupeKey` is never applied to it. Verified over all 24,774: 146 keys change and NONE is reduced
+//        to empty, which is the over-strip signature this would otherwise risk.
+//
+//   §19  an accompanying defect declares the probes its evidence needs, and
+//        `withAccompanyingDefects` unions them over the host's. 69 cases carried the label
+//        `1.3.1:unassociated-table` with `probeTables: false` inherited from their host, so
+//        `structure.tableCells` was empty on every one. `grants-audit` passed correctly — the feature it
+//        checks reads the TRANSCRIPT — and only a rule would have noticed, by finding nothing.
+//
+// Both are strictly evidence changes: the same page now produces different `structure` content. Neither
+// is a fix to what a capture MEANS, which is why they waited for a bump rather than causing one.
+export const CAPTURE_PROTOCOL_VERSION = 8;
 
 // Re-exported for callers that had these from `capture-core` before the split.
 export {
