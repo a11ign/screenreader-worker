@@ -1,7 +1,9 @@
 // @ts-check
 // server.mjs — NVDA capture worker as an HTTP service.
 // MUST run in an interactive desktop session (see run-server.cmd + the README).
-//   POST /capture  { url, task?, steps?, probeForms?, probeFocus?, probeTables?, probeNavigation?, captureId? }
+//   POST /capture  { url, task?, steps?, probeForms?, probeFocus?, probeTables?, probeNavigation?, captureId?,
+//                    async? }   -> async:true returns 202 {captureId} at once and delivers the result to
+//                                  the store; poll GET /capture/<id>. Requires captureId.
 //                                          -> { url, screenReader, transcript, task }
 //   GET  /capture/<captureId>              -> the response that POST returned, replayed verbatim,
 //                                             or 202 while it is still running, or 404 if unknown.
@@ -955,6 +957,31 @@ function acceptCaptureRequest(/** @type {any} */ req, /** @type {any} */ res) {
       return send(res, 400, { error: "captureId must be 1-64 characters of [A-Za-z0-9_-]" });
     }
     if (captureId) results.begin(captureId);
+    // ASYNC IS THE POINT OF THIS ROUTE, and the synchronous path is what it replaces.
+    //
+    // A capture is 12-520 s of work and the synchronous form holds a connection open, SILENT, for all of
+    // it: the worker writes status and body together at the end, so nothing crosses the wire in between.
+    // Every NAT, firewall and Wi-Fi power-save in the path reads that as an idle connection and reaps it.
+    // Measured 2026-08-28: 9 of 40 responses lost, while the WORKERS reported 0 failures across 242
+    // captures. The work completed every time and only the answer was lost.
+    //
+    // Answering 202 immediately removes the long connection rather than managing it. The result goes to
+    // the store, which the caller reads with `GET /capture/<id>` -- the endpoint that already existed for
+    // exactly this shape and was only ever reached after a failure.
+    if (parsed.async) {
+      // A CAPTURE ID IS MANDATORY HERE, and this is not a formality: without one the result is stored
+      // nowhere and the caller has no handle to ask for it, so the capture would run to completion and be
+      // unreachable. A 400 says so rather than accepting work whose answer can never be collected.
+      if (!captureId) {
+        busy = false;
+        return send(res, 400, { error: "async capture requires a captureId — without one the result "
+          + "cannot be fetched, and the capture would run with nowhere to deliver it" });
+      }
+      send(res, 202, { captureId, state: "running" });
+      // NOT awaited by the response, deliberately: the socket is already closed. `runCapture` owns the
+      // `busy` flag in its own `finally`, so the slot is released exactly as it is synchronously.
+      return void runCapture(null, { url: parsed.url, opts: options, captureId });
+    }
     await runCapture(res, { url: parsed.url, opts: options, captureId });
   });
 }
@@ -999,7 +1026,10 @@ let inFlight = null;
 async function runCapture(/** @type {any} */ res, /** @type {any} */ { url, opts, captureId }) {
   const answer = (/** @type {any} */ status, /** @type {any} */ body) => {
     if (captureId) results.finish(captureId, { status, body });
-    send(res, status, body);
+    // `res` IS NULL IN ASYNC MODE, where the socket was answered 202 long ago and the STORE is how the
+    // result reaches the caller. Writing to it again would be a second response on a finished socket.
+    // The store call above happens either way, which is what makes the two modes deliver the same bytes.
+    if (res) send(res, status, body);
   };
   const startedAt = new Date().toISOString();
   log(`[${startedAt}] capture ${url} (nav=${opts.nav || "object"}, probeForms=${opts.probeForms}, probeFocus=${opts.probeFocus})`);
