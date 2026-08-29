@@ -345,6 +345,24 @@ export function elementsListRowName(phrase) {
 }
 
 /**
+ * The oracle's count for one type, and WHICH of its two numbers it came from.
+ *
+ * `distinct` counts distinct NAMES; the bare entry counts elements. The sweep dedupes announcements, so
+ * distinct names is the like-for-like comparison — but `distinct` may not cover every type the oracle
+ * reported, and falling back silently would mix the two inside one verdict. Returning the provenance
+ * beside the number is the same rule the rest of this file follows: a number carries what it came from.
+ *
+ * @param {Record<string, number | undefined> | undefined} elementsList
+ * @param {string} type
+ * @returns {{ value: number | undefined, fromDistinct: boolean }}
+ */
+function authoritativeCount(elementsList, type) {
+  const distinct = /** @type {any} */ (elementsList)?.distinct?.[type];
+  if (typeof distinct === "number") return { value: distinct, fromDistinct: true };
+  return { value: elementsList?.[type], fromDistinct: false };
+}
+
+/**
  * Compare what the sweeps found against what NVDA's Elements List reports.
  *
  * Reports; decides nothing. A disagreement is evidence about the CAPTURE, not about the page, and the
@@ -359,6 +377,7 @@ export function elementsListRowName(phrase) {
 export function crossCheckStructure({ sweep, elementsList }) {
   const disagreements = [];
   let compared = 0;
+  let usedFallback = false;
   // Whatever BOTH sides name. Previously this iterated NVDA's five Elements List types, which silently
   // ignored any type the oracle could speak about but that list cannot -- and the CDP census covers
   // graphics and links too. Comparing the intersection keeps it honest in both directions.
@@ -372,7 +391,8 @@ export function crossCheckStructure({ sweep, elementsList }) {
     // duplicate. Comparing those two numbers reported a disagreement on 97% of pages, roughly half of it
     // definitional. This compares like with like; an older capture without `distinct` falls back and is
     // marked as such by `basis`, so a stale comparison cannot pass for a current one.
-    const authoritative = /** @type {any} */ (elementsList)?.distinct?.[type] ?? elementsList?.[type];
+    const { value: authoritative, fromDistinct } = authoritativeCount(elementsList, type);
+    if (typeof authoritative === "number" && !fromDistinct) usedFallback = true;
     // Absent is not a disagreement: a type the dialog could not be read for must not be reported as
     // a mismatch against a sweep that did run. Only two KNOWN numbers that differ are evidence.
     if (typeof found !== "number" || typeof authoritative !== "number") continue;
@@ -395,7 +415,18 @@ export function crossCheckStructure({ sweep, elementsList }) {
   // WHICH ORACLE THIS VERDICT RESTS ON. "Compared against distinct names" and "compared against raw
   // element counts" are different claims, and a reader who cannot tell them apart will read a stale
   // capture's disagreement as the same finding as a current one.
-  const basis = elementsList?.distinct ? "distinct-names" : "element-counts";
+  // PER COMPARISON, not per capture. `distinct` being PRESENT does not mean it covered every type
+  // compared: the lookup falls back to the raw element count type by type, so one absent entry silently
+  // mixes distinct names and element counts inside a verdict labelled "distinct-names". Those two numbers
+  // differ by 75% on real pages -- that measurement is the whole reason `distinct` exists -- so a reader
+  // told the wrong basis is told the wrong thing about the disagreement in front of them.
+  //
+  // Not observed: no capture on disk carries `distinct` yet, because it lands with the recapture in
+  // flight. Written this way because "the same census builds both, so they cover the same types" is an
+  // assumption, and an unverifiable assumption reported as a fact is what `basis` exists to prevent.
+  const basis = !elementsList?.distinct ? "element-counts"
+    : usedFallback ? "mixed-distinct-names-and-element-counts"
+      : "distinct-names";
   return { agrees: compared > 0 && disagreements.length === 0, compared, disagreements, basis };
 }
 

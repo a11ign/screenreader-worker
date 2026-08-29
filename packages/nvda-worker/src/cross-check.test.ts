@@ -106,3 +106,26 @@ test("agreement requires at least one type actually compared", () => {
   assert.equal(result.compared, 1);
   assert.equal(result.agrees, true);
 });
+
+test("a type with a raw count but no DISTINCT entry makes the basis mixed, never distinct-names", () => {
+  // `distinct` being present does not mean it covered every type compared: the lookup falls back to the
+  // raw element count type by type. Distinct names and element counts differ by 75% on real pages — that
+  // measurement is the reason `distinct` exists — so a verdict labelled "distinct-names" that silently
+  // compared one type on element counts is telling the reader the wrong thing about the disagreement.
+  const result = crossCheckStructure({
+    sweep: { heading: 3, link: 9 },
+    elementsList: { heading: 3, link: 9, distinct: { heading: 3 } } as never,
+  });
+  assert.equal(result.compared, 2);
+  assert.equal(result.basis, "mixed-distinct-names-and-element-counts");
+});
+
+test("distinct covering every compared type is reported as distinct-names", () => {
+  const result = crossCheckStructure({
+    sweep: { heading: 3, link: 4 },
+    elementsList: { heading: 9, link: 9, distinct: { heading: 3, link: 4 } } as never,
+  });
+  assert.equal(result.basis, "distinct-names");
+  assert.equal(result.agrees, true, "it must compare against distinct names, not the element counts");
+});
+
