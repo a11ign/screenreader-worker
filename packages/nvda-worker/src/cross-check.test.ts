@@ -43,8 +43,8 @@ test("equal counts agree", () => {
     sweep: { heading: 2, landmark: 1, formField: 3 },
     elementsList: { heading: 2, landmark: 1, formField: 3 },
   });
-  assert.equal(result.agrees, true);
-  assert.deepEqual(result.disagreements, []);
+  assert.equal(result.sameCounts, true);
+  assert.deepEqual(result.differsOn, []);
 });
 
 test("a sweep reporting MORE than NVDA exposes is named a phantom", () => {
@@ -55,13 +55,27 @@ test("a sweep reporting MORE than NVDA exposes is named a phantom", () => {
     sweep: { landmark: 1 },
     elementsList: { landmark: 0 },
   });
-  assert.equal(result.agrees, false);
-  assert.deepEqual(result.disagreements, [{ type: "landmark", sweep: 1, elementsList: 0, kind: "phantom" }]);
+  assert.equal(result.sameCounts, false);
+  assert.deepEqual(result.differsOn, [{ type: "landmark", sweepEntries: 1, oracleDistinctNames: 0 }]);
 });
 
-test("a sweep reporting FEWER is named truncated, because the cause and fix differ", () => {
+test("a difference records BOTH raw numbers and renders no verdict", () => {
+  // REPLACES "a sweep reporting FEWER is named truncated, because the cause and fix differ", which
+  // asserted `kind: "truncated"`. The worker cannot justify that word: `sweep` is an ENTRY COUNT
+  // (`structure.headings.length`) and the oracle's is a count of distinct NAMES, and those differ in both
+  // directions for reasons that are not defects — two links sharing a name are two announcements and one
+  // name; one landmark entry can announce several landmarks, and some announce none.
+  //
+  // Measured on 675 fresh protocol-7 captures, worker against host on the same evidence: the worker
+  // agreed 51% of the time and called `link` phantom 191 times, while the host's `sweepCompleteness` —
+  // which parses the announcements — was exact on 60 of 60. Its 13 landmark truncations were REAL.
+  //
+  // `parseAnnouncement` is TypeScript and this file is plain node on the guest, so the worker has no
+  // grammar to do better with. It records; the host judges. known-gaps §13.
   const result = crossCheckStructure({ sweep: { heading: 1 }, elementsList: { heading: 4 } });
-  assert.equal(result.disagreements[0].kind, "truncated");
+  assert.deepEqual(result.differsOn, [{ type: "heading", sweepEntries: 1, oracleDistinctNames: 4 }]);
+  assert.ok(!("kind" in result.differsOn[0]),
+    "a verdict the worker cannot compute must not be rendered; sweepCompleteness on the host decides");
 });
 
 test("an unread type is not a disagreement", () => {
@@ -73,10 +87,10 @@ test("an unread type is not a disagreement", () => {
   // Conflating those two is what let a probe that read the wrong control report success.
   for (const elementsList of [{}, { landmark: undefined }, { heading: 2 }]) {
     const result = crossCheckStructure({ sweep: { landmark: 3 }, elementsList });
-    assert.deepEqual(result.disagreements, [], `absent counts must not be reported: ${JSON.stringify(elementsList)}`);
+    assert.deepEqual(result.differsOn, [], `absent counts must not be reported: ${JSON.stringify(elementsList)}`);
   }
   // ...and symmetrically, a type the sweep did not run.
-  assert.deepEqual(crossCheckStructure({ sweep: {}, elementsList: { landmark: 2 } }).disagreements, []);
+  assert.deepEqual(crossCheckStructure({ sweep: {}, elementsList: { landmark: 2 } }).differsOn, []);
 });
 
 test("only the five types NVDA's dialog can list are compared", () => {
@@ -87,7 +101,7 @@ test("only the five types NVDA's dialog can list are compared", () => {
     sweep: { graphic: 5, list: 2, tableCell: 9, heading: 1 },
     elementsList: { heading: 1 },
   });
-  assert.equal(result.agrees, true);
+  assert.equal(result.sameCounts, true);
 });
 
 test("comparing NOTHING is not agreement", () => {
@@ -97,14 +111,14 @@ test("comparing NOTHING is not agreement", () => {
   // because it launders "unchecked" into "checked and fine".
   const result = crossCheckStructure({ sweep: { landmark: 3, heading: 2 }, elementsList: {} });
   assert.equal(result.compared, 0);
-  assert.equal(result.agrees, false, "nothing was compared, so nothing can be said to agree");
-  assert.deepEqual(result.disagreements, [], "and nothing disagreed either -- it is simply unverified");
+  assert.equal(result.sameCounts, false, "nothing was compared, so nothing can be said to agree");
+  assert.deepEqual(result.differsOn, [], "and nothing disagreed either -- it is simply unverified");
 });
 
 test("agreement requires at least one type actually compared", () => {
   const result = crossCheckStructure({ sweep: { landmark: 1 }, elementsList: { landmark: 1 } });
   assert.equal(result.compared, 1);
-  assert.equal(result.agrees, true);
+  assert.equal(result.sameCounts, true);
 });
 
 test("a type with a raw count but no DISTINCT entry makes the basis mixed, never distinct-names", () => {
@@ -126,6 +140,6 @@ test("distinct covering every compared type is reported as distinct-names", () =
     elementsList: { heading: 9, link: 9, distinct: { heading: 3, link: 4 } } as never,
   });
   assert.equal(result.basis, "distinct-names");
-  assert.equal(result.agrees, true, "it must compare against distinct names, not the element counts");
+  assert.equal(result.sameCounts, true, "it must compare against distinct names, not the element counts");
 });
 

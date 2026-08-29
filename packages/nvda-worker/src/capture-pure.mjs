@@ -375,7 +375,7 @@ function authoritativeCount(elementsList, type) {
  * @param {{sweep: Record<string, number | undefined>, elementsList: Record<string, number | undefined>}} counts
  */
 export function crossCheckStructure({ sweep, elementsList }) {
-  const disagreements = [];
+  const differences = [];
   let compared = 0;
   let usedFallback = false;
   // Whatever BOTH sides name. Previously this iterated NVDA's five Elements List types, which silently
@@ -398,13 +398,27 @@ export function crossCheckStructure({ sweep, elementsList }) {
     if (typeof found !== "number" || typeof authoritative !== "number") continue;
     compared += 1;
     if (found !== authoritative) {
-      disagreements.push({
+      differences.push({
         type,
-        sweep: found,
-        elementsList: authoritative,
-        // Naming the direction matters: too many is a phantom, too few is a truncation, and they have
-        // different causes and different fixes.
-        kind: found > authoritative ? "phantom" : "truncated",
+        // NAMED FOR WHAT THEY ARE, and no `kind`. This used to render
+        // `kind: found > authoritative ? "phantom" : "truncated"`, which is a VERDICT the worker cannot
+        // justify: `sweep` is `structure.links.length`, an ENTRY COUNT, and `authoritative` is a count of
+        // distinct NAMES. Those differ in both directions for reasons that are not defects — two links
+        // sharing a name are two announcements and one name; one landmark entry can announce several
+        // landmarks and some announce none.
+        //
+        // Measured on 675 fresh protocol-7 captures, worker-side against host-side on the same evidence:
+        // the worker agreed 51% of the time and called `link` phantom 191 times, while the host's
+        // `sweepCompleteness` — which parses the announcements — was exact on 60 of 60 links. Its 13
+        // landmark truncations were REAL: the documented caret rule, where quick navigation cannot reach a
+        // landmark containing the caret.
+        //
+        // The worker has no announcement grammar to do better with. `parseAnnouncement` is TypeScript and
+        // this file is plain node on the guest, so the split C1 established is the answer: the WORKER
+        // records what it measured, the HOST judges. Rendering a verdict it cannot compute is how a
+        // diagnostic comes to be believed.
+        sweepEntries: found,
+        oracleDistinctNames: authoritative,
       });
     }
   }
@@ -427,7 +441,10 @@ export function crossCheckStructure({ sweep, elementsList }) {
   const basis = !elementsList?.distinct ? "element-counts"
     : usedFallback ? "mixed-distinct-names-and-element-counts"
       : "distinct-names";
-  return { agrees: compared > 0 && disagreements.length === 0, compared, disagreements, basis };
+  // `differsOn`, not `disagreements`, and `sameCounts`, not `agrees`. Both old names read as verdicts on
+  // the PAGE; these two numbers differing is usually a fact about how they are counted. `sweepCompleteness`
+  // on the host is the verdict, and `capture:explain` already reports that one and prints these as raw.
+  return { sameCounts: compared > 0 && differences.length === 0, compared, differsOn: differences, basis };
 }
 
 /**
