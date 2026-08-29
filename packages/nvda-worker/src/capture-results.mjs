@@ -72,7 +72,17 @@ export function isValidCaptureId(id) {
  *   202  running                  -> wait; do NOT start a second capture
  *   the original status and body  -> use it exactly as if the POST had returned it
  *
- * @param {{ state: "running" | "done", status?: number, body?: unknown } | undefined} entry
+ * THE SAME DISCRIMINATED UNION THE STORE HOLDS. This read
+ * `{ state: "running" | "done", status?: number, body?: unknown }`, which permits `{ state: "done" }`
+ * carrying no status — and the last line then sends `undefined` as an HTTP status code.
+ *
+ * `createResultStore` tightened its map for exactly this reason and says so at length. The tightening
+ * reached the store and not this function, so the shape the store cannot produce was still expressible
+ * here. Nothing was broken in practice — the only caller passes `store.recall(id)` — but a contract
+ * looser than its sole producer is how the next caller gets it wrong, and this file's whole argument is
+ * that a replay must be byte-identical to the original response, status included.
+ *
+ * @param {{ state: "running" } | { state: "done", status: number, body: unknown } | undefined} entry
  * @param {unknown} id
  */
 export function storedResultResponse(entry, id) {
