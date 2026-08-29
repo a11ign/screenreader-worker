@@ -26,7 +26,7 @@ import { dedupeKey, CONTAINER_PREFIX, lastMark, screenReaderWasSilentAtStart } f
 const CAPTURES = resolve(process.cwd(), process.env.DATASET_ROOT ?? "runs/screenreader-dataset", "captures");
 
 interface Mark { event: string; lastSpoken?: string }
-interface Capture { transcript?: unknown[]; diagnostics?: { entries?: Mark[] } | Mark[] }
+interface Capture { transcript?: unknown[]; structure?: Record<string, unknown>; diagnostics?: { entries?: Mark[] } | Mark[] }
 
 /** Every capture on disk. Empty when the corpus is absent. */
 function corpus(): Capture[] {
@@ -48,9 +48,12 @@ function corpus(): Capture[] {
 const CORPUS = corpus();
 const skip = CORPUS.length === 0 ? "no corpus on disk (runs/ is gitignored; local-only gate)" : false;
 
-/** Every string NVDA said, across every capture. */
+/** Every string NVDA said, across every capture — BOTH channels. */
 function announcements(): string[] {
-  return CORPUS.flatMap((c) => (c.transcript ?? []).filter((p): p is string => typeof p === "string"));
+  return CORPUS.flatMap((c) => [
+    ...(c.transcript ?? []),
+    ...Object.values(c.structure ?? {}).flatMap((v) => (Array.isArray(v) ? v : [])),
+  ].filter((p): p is string => typeof p === "string"));
 }
 
 function marksOf(capture: Capture): Mark[] {
@@ -84,10 +87,57 @@ test("every container prefix NVDA actually produces is stripped", { skip }, () =
     + "recorded twice — the phantom heading that took an independent count to find");
 });
 
-test("the strip is idempotent, so a key cannot depend on how many times it was taken", { skip }, () => {
-  const once = announcements().map(dedupeKey);
+/** Only the read-through channel. `dedupeKey` is applied to SWEEP results, so both are worth asserting. */
+function transcripts(): string[] {
+  return CORPUS.flatMap((c) => (c.transcript ?? []).filter((p): p is string => typeof p === "string"));
+}
+
+/** Only the sweep channel — the one `collectPhrase` actually keys on. */
+function sweeps(): string[] {
+  return CORPUS.flatMap((c) => Object.values(c.structure ?? {})
+    .flatMap((v) => (Array.isArray(v) ? v : []))
+    .filter((p): p is string => typeof p === "string"));
+}
+
+test("the strip is idempotent on the read-through", { skip }, () => {
+  const once = transcripts().map(dedupeKey);
   assert.ok(once.length >= 1000, `only ${once.length} announcements examined`);
   for (const key of once) assert.equal(dedupeKey(key), key);
+});
+
+/**
+ * THE SWEEP CHANNEL, WHICH THIS FILE WAS NOT LOOKING AT — and it is the only channel `dedupeKey` is used
+ * on. `collectPhrase` is its sole caller; the transcript is never keyed. So every assertion here examined
+ * the one channel its subject does not touch, and passed. The `>= 1000` floor above, added precisely to
+ * stop this file passing vacuously, was satisfied by the wrong data.
+ *
+ * KNOWN, BOUNDED, AND DEFERRED. `CONTAINER_PREFIX` strips ONE leading container; NVDA announces every
+ * container it entered, so a nested one survives:
+ *
+ *   "main landmark, Home energy, region, Home energy"   and   "Home energy, region, Home energy"
+ *
+ * key differently and the same landmark is recorded twice — measured, 3 landmarks on a page with 2, in 34
+ * of 5,304 captures, all `landmark-*`. Blast radius checked: no rule counts the list, and the model's
+ * `landmark_present` / `landmark_named` are booleans, so nothing downstream reads a wrong verdict today.
+ *
+ * NOT FIXED HERE because `dedupeKey` runs at CAPTURE time, so changing it alters `structure.*` and needs a
+ * `CAPTURE_PROTOCOL_VERSION` bump and a full recapture. Fixing it without one leaves a corpus where some
+ * captures dedupe twice and some once — the mixed-evidence state the cache key exists to prevent. The
+ * cheap moment is bundled with the next bump, which is what CLAUDE.md prescribes.
+ *
+ * So this asserts the bound rather than the property: it fails if the phantom SPREADS, and it must be
+ * replaced by a strict `assert.equal(dedupeKey(key), key)` when that bump lands.
+ */
+const KNOWN_SWEEP_PHANTOMS = 146;
+
+test("the sweep strip is idempotent, except for a known bounded phantom", { skip }, () => {
+  const all = sweeps();
+  assert.ok(all.length >= 1000, `only ${all.length} sweep announcements examined`);
+  const notIdempotent = all.map(dedupeKey).filter((key) => dedupeKey(key) !== key);
+  assert.ok(notIdempotent.length <= KNOWN_SWEEP_PHANTOMS,
+    `${notIdempotent.length} sweep keys are not idempotent, up from the known ${KNOWN_SWEEP_PHANTOMS}. `
+    + "A nested container prefix is surviving on more announcements than before — e.g. "
+    + `${JSON.stringify(notIdempotent.slice(0, 2))}`);
 });
 
 test("the strip never empties a real announcement", { skip }, () => {
