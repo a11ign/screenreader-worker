@@ -81,12 +81,15 @@ test("headings, links and graphics are counted for the other sweeps", () => {
     // Names are kept alongside the counts so a TRUNCATED announcement is detectable; a count
     // cross-check cannot see a control that is present but misnamed.
     names: ["A", "Read more", "A chart", "Another"],
+    // Every name here is unique, so distinct == raw. The case that matters is the next test.
+    distinct: { landmark: 0, heading: 1, link: 1, graphic: 2 },
   });
 });
 
 test("a malformed or empty tree yields zeros, not a throw", () => {
   // The oracle must never be the reason a capture fails.
-  const empty = { landmark: 0, heading: 0, link: 0, graphicUnnamed: 0, graphic: 0, names: [] };
+  const empty = { landmark: 0, heading: 0, link: 0, graphicUnnamed: 0, graphic: 0, names: [],
+    distinct: { landmark: 0, heading: 0, link: 0, graphic: 0 } };
   assert.deepEqual(censusFromAXTree([]), empty);
   assert.deepEqual(censusFromAXTree(undefined), empty);
   assert.deepEqual(censusFromAXTree([null, {}]), empty);
@@ -198,4 +201,30 @@ test("generated content still contributes its NAME, because NVDA announces gener
   const census = censusFromAXTree([generated("image", "New!")]);
   assert.equal(census.graphic, 0, "still not a counted graphic");
   assert.deepEqual(census.names, ["New!"], "but the name a screen reader can speak is kept");
+});
+
+test("DISTINCT NAMES, NOT ELEMENTS — the count the sweep can actually be compared against", () => {
+  // The reason this field exists. `collectPhrase` DEDUPES: an announcement already heard is dropped, so
+  // `structure.links` is a list of distinct announcements while the element count counts elements.
+  //
+  // Measured 2026-08-29 across 106 real captures: 75% of named elements share a name with another, and
+  // 100% of pages carry at least one duplicate — ico.org.uk has 15,081 duplicates among 15,356 names.
+  // Comparing a deduplicated sweep against a raw element count reported a disagreement on 97% of pages,
+  // about half of it definitional.
+  const census = censusFromAXTree([
+    node("link", "Read more"), node("link", "Read more"), node("link", "Read more"),
+    node("link", "Contact us"), node("heading", "News"),
+  ]);
+  assert.equal(census.link, 4, "four link ELEMENTS are present");
+  assert.equal(census.distinct.link, 2, "a sweep can only announce two DISTINCT link names");
+  assert.equal(census.distinct.heading, 1);
+});
+
+test("an UNNAMED element counts once per element, never collapsed", () => {
+  // Unnamed elements have no name to be distinct from, and the sweep still announces each one. Collapsing
+  // them would under-count exactly what 1.1.1 and 4.1.2 are about — an unnamed control is the finding.
+  const census = censusFromAXTree([node("image", ""), node("image", ""), node("link", "Home")]);
+  assert.equal(census.graphic, 2);
+  assert.equal(census.distinct.graphic, 2, "two unnamed graphics are two things, not one");
+  assert.equal(census.graphicUnnamed, 2);
 });

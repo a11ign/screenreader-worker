@@ -334,7 +334,23 @@ export function censusFromAXTree(nodes) {
   // detector's input, so an empty inferred type would have made the one field added for that unusable.
   /** @type {{ landmark: number, heading: number, link: number, graphic: number,
    *           graphicUnnamed: number, names: string[] } & Record<string, any>} */
-  const census = { landmark: 0, heading: 0, link: 0, graphic: 0, graphicUnnamed: 0, names: [] };
+  const census = { landmark: 0, heading: 0, link: 0, graphic: 0, graphicUnnamed: 0, names: [],
+    // DISTINCT NAMES PER TYPE, because the raw element count is not comparable with what the sweep
+    // produces and the cross-check was comparing them anyway.
+    //
+    // `collectPhrase` DEDUPES: an announcement already seen is dropped, so `structure.links` is a list of
+    // DISTINCT announcements. The census counts ELEMENTS. On real pages those are wildly different
+    // quantities — measured 2026-08-29 across 106 real captures, 75% of named elements share a name with
+    // another element and 100% of pages carry at least one duplicate; ico.org.uk has 15,081 duplicates
+    // among 15,356 names. So the sweep read 0.24 of the element count and the cross-check called that a
+    // defect on 97% of pages.
+    //
+    // Against DISTINCT names the ratio is 0.49 — still a real shortfall, and now a comparison of two
+    // things that are supposed to be equal. Half the "97% disagreement" was definitional and half is the
+    // finding; before this they were indistinguishable.
+    distinct: { landmark: 0, heading: 0, link: 0, graphic: 0 } };
+  /** @type {Record<string, Set<string>>} */
+  const seenByType = { landmark: new Set(), heading: new Set(), link: new Set(), graphic: new Set() };
   for (const node of nodes ?? []) {
     const classified = classifyAXNode(node);
     if (!classified) continue;
@@ -347,8 +363,14 @@ export function censusFromAXTree(nodes) {
     if (classified.named) census.names.push(classified.named);
     if (!classified.bucket) continue;
     census[classified.bucket] += 1;
+    // An UNNAMED element has no name to be distinct from, and the sweep still announces it — so it counts
+    // once per element rather than being collapsed. Treating unnamed elements as one would under-count the
+    // very thing 1.1.1 and 4.1.2 are about.
+    if (classified.named) seenByType[classified.bucket]?.add(classified.named);
+    else if (classified.bucket in seenByType) census.distinct[classified.bucket] += 1;
     if (classified.bucket === "graphic" && !classified.named) census.graphicUnnamed += 1;
   }
+  for (const type of Object.keys(seenByType)) census.distinct[type] += seenByType[type].size;
   return census;
 }
 

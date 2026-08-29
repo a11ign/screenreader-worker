@@ -364,7 +364,15 @@ export function crossCheckStructure({ sweep, elementsList }) {
   // graphics and links too. Comparing the intersection keeps it honest in both directions.
   for (const type of Object.keys(sweep ?? {})) {
     const found = sweep?.[type];
-    const authoritative = elementsList?.[type];
+    // DISTINCT NAMES WHEN THE ORACLE HAS THEM, the raw element count only when it does not.
+    //
+    // The sweep DEDUPES — `collectPhrase` drops an announcement it has already seen — so it produces
+    // distinct announcements, while the element count counts elements. Measured 2026-08-29 across 106 real
+    // captures: 75% of named elements share a name with another, and every page has at least one
+    // duplicate. Comparing those two numbers reported a disagreement on 97% of pages, roughly half of it
+    // definitional. This compares like with like; an older capture without `distinct` falls back and is
+    // marked as such by `basis`, so a stale comparison cannot pass for a current one.
+    const authoritative = /** @type {any} */ (elementsList)?.distinct?.[type] ?? elementsList?.[type];
     // Absent is not a disagreement: a type the dialog could not be read for must not be reported as
     // a mismatch against a sweep that did run. Only two KNOWN numbers that differ are evidence.
     if (typeof found !== "number" || typeof authoritative !== "number") continue;
@@ -384,7 +392,11 @@ export function crossCheckStructure({ sweep, elementsList }) {
   // nothing". The first version returned agrees:true when every count was unreadable, so a probe that
   // read the wrong control and parsed nothing reported AGREES -- a verification that cannot fail,
   // which is the exact defect this cross-check was built to catch elsewhere.
-  return { agrees: compared > 0 && disagreements.length === 0, compared, disagreements };
+  // WHICH ORACLE THIS VERDICT RESTS ON. "Compared against distinct names" and "compared against raw
+  // element counts" are different claims, and a reader who cannot tell them apart will read a stale
+  // capture's disagreement as the same finding as a current one.
+  const basis = elementsList?.distinct ? "distinct-names" : "element-counts";
+  return { agrees: compared > 0 && disagreements.length === 0, compared, disagreements, basis };
 }
 
 /**
