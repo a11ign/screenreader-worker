@@ -1593,7 +1593,14 @@ async function ensureSpeechChannel(diag) {
   // healthy session. Restarting NVDA costs ~23 s and, done repeatedly, is itself what produces the
   // `nvdaHelperRemote (injection_terminate)` modal that wedges a guest. So the expensive remedy was
   // feeding the fault. See speech-channel.mjs for why guidepup cannot do this itself.
-  if (speechChannel.reset("probe heard nothing before a capture")) {
+  // WHETHER A REBUILD WAS EVEN ATTEMPTED. `reset` returns false when there is no socket to destroy --
+  // which is what an INERT shim looks like, and the mark below would still say "a socket rebuild did not
+  // fix it". That is the `refreshBrowseBuffer` fault exactly: a remedy whose trigger was never set,
+  // confirmed by a message it had no part in producing. Measured on the corpus: 1 `speechChannelReconnected`
+  // with `resets: 1`, so the shim DOES adopt a real socket -- but the two `speechChannelRestart` marks
+  // cannot say which of the two happened, and that is the question worth asking when one appears.
+  const rebuildAttempted = speechChannel.reset("probe heard nothing before a capture");
+  if (rebuildAttempted) {
     // POLL the condition; do not sleep a guess and probe once.
     //
     // The failure mode of guessing short here is not a slow capture, it is an unnecessary NVDA restart --
@@ -1612,7 +1619,14 @@ async function ensureSpeechChannel(diag) {
     }
   }
 
-  diag.mark("speechChannelRestart", { reason: "no speech, and a socket rebuild did not fix it" });
+  diag.mark("speechChannelRestart", {
+    rebuildAttempted,
+    connects: speechChannel.state.connects,
+    reason: rebuildAttempted
+      ? "no speech, and a socket rebuild did not fix it"
+      : "no speech, and there was NO SOCKET to rebuild -- the shim never adopted one, so guidepup's "
+        + "reconnect cannot be triggered and this restart is the only remedy left",
+  });
   // Through `startScreenReader`, NOT `stopScreenReader` + `startFreshWithRetry` directly.
   //
   // Those two lines bypassed the "already running" adoption that `startScreenReader`'s catch performs,
