@@ -12,7 +12,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { fileProductVersion } from "./server.mjs";
+// file-version.mjs, NOT server.mjs: server imports capture-core, which imports guidepup, which
+// constructs a ScreenReader at module scope and throws where none exists. This file passed on a
+// Mac (VoiceOver satisfies it) and died on CI. known-gaps §12, second occurrence.
+import { fileProductVersion } from "./file-version.mjs";
 
 const EXE = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 

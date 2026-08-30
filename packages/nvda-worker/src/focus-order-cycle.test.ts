@@ -17,7 +17,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 // capture-core is plain .mjs, deliberately: it runs under bare node on the worker.
-import { focusOrderCycled } from "./capture-core.mjs";
+// capture-pure, not capture-core — see known-gaps §12: capture-core imports guidepup, which throws at
+// module scope on any host without a screen reader, so this file died on CI while passing on a Mac.
+import { focusOrderCycled } from "./capture-pure.mjs";
 
 const stops = (...phrases: string[]) => phrases;
 

@@ -30,7 +30,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { addressesSamePage, landedVerdict } from "./capture-core.mjs";
+// capture-pure, not capture-core — see known-gaps §12: capture-core imports guidepup, which throws at
+// module scope on any host without a screen reader, so this file died on CI while passing on a Mac.
+import { addressesSamePage, landedVerdict } from "./capture-pure.mjs";
 
 const PAGE = "http://REDACTED-INTERNAL-ADDRESS:5050/link-vague-ferry/good.html";
 const OTHER = "http://REDACTED-INTERNAL-ADDRESS:5050/image-filename-alt-exhibit/bad";

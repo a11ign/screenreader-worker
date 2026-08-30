@@ -16,6 +16,10 @@
 export const WORKER_FILES = [
   "capture-core.mjs",
   "capture-pure.mjs",
+  // Split out of `server.mjs` so a Linux test can import it without reaching guidepup; the guest runs
+  // it, so it is hashed like every other worker file. `code-version.test.ts` refused the split until it
+  // was listed here, which is that guard working.
+  "file-version.mjs",
   "server.mjs",
   "server-log.mjs",
   "worker-recovery.mjs",

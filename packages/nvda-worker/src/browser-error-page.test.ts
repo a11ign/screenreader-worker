@@ -14,7 +14,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 // capture-core is plain .mjs; it runs under bare node on the worker.
-import { isBrowserErrorTitle, pageServedRefusal, samePath } from "./capture-core.mjs";
+// FROM capture-pure, NOT capture-core: importing capture-core pulls guidepup, which constructs a
+// ScreenReader at module scope and throws where none exists. On macOS VoiceOver satisfies it and the
+// suite passes; on CI it does not. known-gaps §12, second occurrence.
+import { isBrowserErrorTitle, pageServedRefusal, samePath } from "./capture-pure.mjs";
 
 test("Edge's unreachable-page titles are refused", () => {
   for (const title of [

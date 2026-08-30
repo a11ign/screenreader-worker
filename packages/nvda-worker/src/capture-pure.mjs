@@ -24,6 +24,8 @@
  * exactly these 19 declarations, and it contains no guidepup symbol. An earlier attempt to do this by hand
  * broke `capture-core` — a 2,370-line module with no local test — and was reverted.
  */
+import { setTimeout as sleep } from "node:timers/promises";
+
 import { captureFault, FAULT } from "./capture-faults.mjs";
 
 export const MIN_CONTROL_NAME_LEN = 3; // shorter is a stray key echo ("f"), not a control name
@@ -614,4 +616,191 @@ export function budgetLadderIsSound({ budgetMs, hardTimeoutMs, hostTimeoutMs, st
 export function censusShape(census) {
   if (!census || "error" in census) return null;
   return `${census.heading}/${census.link}/${census.graphic}/${census.landmark}`;
+}
+
+
+// --- Page identity, browser error pages, and the focus cycle -------------------------------------
+//
+// MOVED HERE FROM `capture-core.mjs` on 2026-08-30, verbatim including their comments, for the reason
+// this file exists: guidepup constructs a ScreenReader at MODULE SCOPE and throws `No available
+// supported screen readers` where there is none, so importing `capture-core.mjs` AT ALL fails on Linux.
+//
+// Four test files reached these helpers through it and died with it the moment `main` went green enough
+// to run: `browser-error-page`, `focus-order-cycle`, `landed-on-page`, and `file-version-memo` via
+// `server.mjs`, which imports capture-core too.
+//
+// THAT IS known-gaps §12 A SECOND TIME. Its fix switched two files from package-name imports to relative
+// ones and added `no-win32-imports.test.ts` to keep them that way — but a relative import of
+// capture-core is poisoned just the same, and that guard's `isSource` EXCLUDES `.test.ts`, so it could
+// never look at the four files that were failing. The remedy reached two of six, and its guard was blind
+// to the rest.
+//
+// `capture-core.mjs` imports and re-exports every one of these, so its callers are unchanged.
+
+/** Between reads of the browser's current URL. A poll INTERVAL, not a guess at how long a load takes. */
+const LANDED_POLL_MS = 100;
+export const LANDED_BUDGET_MS = 30_000;
+const FOCUS_CYCLE_CONFIRM = 3;
+
+const BROWSER_ERROR_TITLE_RE =
+  /can.t reach this page|no internet|site can.t be reached|refused to connect|ERR_[A-Z_]+/i;
+
+/**
+ * Titles Edge gives its own error pages, which are not the page under test.
+ *
+ * Deliberately matched on the TITLE rather than on transcript content: the title is one string NVDA
+ * reports before anything else, so this fails fast and cannot be confused with a site whose prose
+ * happens to mention connectivity. Chromium's error titles are stable and short.
+ */
+/** Exported so the guard can be shown to FAIL — a check never seen to reject anything is untested. */
+export const isBrowserErrorTitle = (/** @type {unknown} */ title) => BROWSER_ERROR_TITLE_RE.test(String(title ?? ""));
+
+/**
+ * Did the browser open the page we asked for?
+ *
+ * The one fact that settles it, and `currentPageUrl` has been imported into this file all along to
+ * answer a different question. Measured 2026-08-25: a fixture capture came back with 173 transcript
+ * lines containing `"Back to Bing search"` and the title `"localhost - Search - Profile 1 - Microsoft
+ * Edge"`. Edge had treated the address as a SEARCH QUERY and gone to Bing — which is a real page with a
+ * real title, so every readiness check passed and it was recorded as evidence about the fixture.
+ *
+ * That is the THIRD distinct way one afternoon produced a capture of the wrong page, after a dead port
+ * and a host the worker could not reach. The first two are caught by the error-page title guard; this
+ * one cannot be, because Bing is not an error. Comparing the URL catches all three and anything else of
+ * the same shape, which is why it belongs here rather than beside either specific fix.
+ *
+ * Compared on ORIGIN AND PATH only. A site may legitimately add a query string, a fragment or a
+ * trailing slash, and failing a capture for that would be a guard that cries wolf — while a redirect to
+ * a different host or path is exactly what this must catch. A capture whose URL cannot be read at all
+ * makes no claim: `currentPageUrl` returns null when CDP is unreachable, which is a separate fault
+ * already reported elsewhere.
+ */
+/**
+ * Two paths that address the same document.
+ *
+ * A trailing slash and a `.html` extension are both things a SERVER may add or drop while serving
+ * exactly what was asked for. Measured 2026-08-25, and it cost a run: `serve` logs
+ * `GET /route-title-stale/bad` for a request to `/bad.html` — it resolves the extension and the browser's
+ * URL then ends `/bad`, so a strict comparison rejected two captures that were completely correct. The
+ * whole run reported 0/3.
+ *
+ * That is the guard crying wolf, which is worse than useless: a check that fails on correct input gets
+ * switched off, and this one exists to catch three real ways of capturing the wrong page. Normalising
+ * here keeps it able to see a redirect to a different host or a different document, which is what it is
+ * for, and blind to a rewrite that changes neither.
+ */
+/** @param {string} a @param {string} b */
+export function samePath(a, b) {
+  const normalise = (/** @type {string} */ path) => path.replace(/\/$/, "").replace(/\.html?$/i, "").replace(/\/index$/i, "");
+  return normalise(a) === normalise(b);
+}
+
+/** Does what the browser is showing address the same document we asked for? PURE. */
+/** @param {string} actual @param {string} url */
+export function addressesSamePage(actual, url) {
+  let got;
+  try {
+    got = new URL(actual);
+  } catch {
+    return null; // not a URL at all: this guard makes no claim
+  }
+  const want = new URL(url);
+  return got.origin === want.origin && samePath(got.pathname, want.pathname);
+}
+
+/**
+ * Poll until the browser is showing the requested page, or the budget runs out.
+ *
+ * POLLED, never read once — and the one-shot version cost five captures the day it shipped.
+ *
+ * `browserReady` means `browserAlive()` returned true, and that only proves **the DevTools port
+ * answers**. It is not a claim that the requested URL has loaded. So reading the URL immediately after
+ * `openPage` reads whatever document the browser happens to be showing, which after a recycle is the
+ * previous one while the new navigation is still in flight.
+ *
+ * Measured 2026-08-25, from the diagnostics of five failed captures on one worker:
+ *
+ *     browserClosed  atMs 8153  forced: true
+ *     browserReady   atMs 8163
+ *     landedOnRequested atMs 8164  ok: false   <- ONE MILLISECOND later
+ *
+ * Every one followed `browserRecycle after: 25`, and the `actual` URL was a real page the server was
+ * serving. Nothing was unreachable; the check simply looked before the navigation landed.
+ *
+ * This is the defect CLAUDE.md's longest section is about, committed in a new place: *"a condition must
+ * be sufficient — `screenReaderResponds()` only proves the Remote port accepts a TCP connection, not
+ * that NVDA's virtual buffer is navigable."* `browserAlive()` is that same insufficient condition one
+ * subsystem over, and this guard was built on top of it with no poll at all.
+ *
+ * The budget must exceed the slowest HONEST navigation, because a wrong page is a legitimate finding and
+ * a guard that gives up early turns "still loading" into "wrong page" — the same inversion a short sleep
+ * once turned into "the page announced nothing". It costs nothing when the page is already right: the
+ * first read matches and the loop exits.
+ *
+ * INJECTABLE, because the entire defect is about WHEN the URL is read and a test that cannot control
+ * time cannot see it — the same reasoning as `file-version-memo.test.ts`.
+ *
+ * @returns {Promise<{ok: boolean, actual: string|null, attempts: number, waitedMs: number}>}
+ */
+/**
+ * @param {string} url
+ * @param {{ read: () => Promise<string|null>, budgetMs?: number, pollMs?: number,
+ *           now?: () => number, wait?: (ms: number) => Promise<void> }} options
+ */
+// NO `= {}` DEFAULT: `read` has none either, so an omitted options object gives `read === undefined` and
+// the loop below calls it. Every one of the four call sites passes `{ read: ... }`. Same contradiction as
+// `refuseUnknownFlags` had -- a default that makes a required argument optional.
+export async function landedVerdict(url, options) {
+  const {
+    read, budgetMs = LANDED_BUDGET_MS, pollMs = LANDED_POLL_MS,
+    now = () => Date.now(), wait = sleep,
+  } = options;
+  const startedAt = now();
+  let actual = null;
+  let attempts = 0;
+
+  while (now() - startedAt < budgetMs) {
+    attempts += 1;
+    actual = await read();
+    // A null URL is CDP being unreachable, which is a DIFFERENT fault reported elsewhere — but it is also
+    // transient right after a launch, so it is retried rather than taken as a verdict.
+    if (actual && addressesSamePage(actual, url) === true) {
+      return { ok: true, actual, attempts, waitedMs: now() - startedAt };
+    }
+    await wait(pollMs);
+  }
+  return { ok: false, actual, attempts, waitedMs: now() - startedAt };
+}
+
+/**
+ * The decision alone, EXPORTED so it can be shown to refuse.
+ *
+ * Separated from the CDP call for the reason `failIfScreenReaderIsMute` is: a guard that has never been
+ * seen to reject anything is untested, and the integration path needs a Windows guest and a dead port to
+ * exercise. This is a pure function of the status, so the three outcomes are provable in milliseconds and
+ * the remaining risk is confined to whether `navigationOutcome` reads the right number.
+ *
+ * @param {string} url
+ * @param {{status?: number|null} | null} outcome
+ * @returns {string|null} the refusal message, or null to proceed
+ */
+export function pageServedRefusal(url, outcome) {
+  // "We could not ask" is not a refusal, and it is not a pass either -- the caller MARKS it. Conflating
+  // absence with zero would turn a browser too old to report the status into a permanently broken worker.
+  if (!outcome || outcome.status === null || outcome.status === undefined) return null;
+  if (outcome.status >= 200 && outcome.status < 300) return null;
+  if (outcome.status === 0) {
+    return `nothing is serving ${JSON.stringify(url)} — the browser got no HTTP response at all, so what `
+      + "it displayed is its own error page, not the site";
+  }
+  return `the server answered HTTP ${outcome.status} for ${JSON.stringify(url)}, so the document captured `
+    + "is an error page rather than the page requested";
+}
+
+/** Have we returned to where we started? See `FOCUS_CYCLE_CONFIRM` for why this is not one comparison. */
+/** @param {string[]} stops */
+export function focusOrderCycled(stops) {
+  if (stops.length < FOCUS_CYCLE_CONFIRM * 2) return false;
+  return stops.slice(-FOCUS_CYCLE_CONFIRM)
+    .every((phrase, i) => phrase === stops[i]);
 }

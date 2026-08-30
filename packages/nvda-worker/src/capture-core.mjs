@@ -41,6 +41,15 @@ import {
   readThroughDeadline,
   screenReaderWasSilentAtStart,
   sweepStepFromSpeech,
+  // MOVED to capture-pure so a Linux test can reach them without guidepup (known-gaps §12,
+  // second occurrence). Re-exported below, so every existing caller of this module is unchanged.
+  addressesSamePage,
+  focusOrderCycled,
+  LANDED_BUDGET_MS,
+  isBrowserErrorTitle,
+  landedVerdict,
+  pageServedRefusal,
+  samePath,
 } from "./capture-pure.mjs";
 import { installSpeechChannelShim } from "./speech-channel.mjs";
 
@@ -184,6 +193,8 @@ export {
   focusOrderCycled,
   isBrowserErrorTitle,
   samePath,
+  landedVerdict,
+  pageServedRefusal,
 };
 
 /**
@@ -232,10 +243,10 @@ const STATE_WAIT_MS = 5_000;
 // parts, and cutting after the first would truncate multi-phrase live regions.
 const STATE_QUIET_MS = 600;
 const STATE_POLL_MS = 100;
-const LANDED_POLL_MS = 100;          // between reads of the browser's current URL
+
 // Above the slowest honest navigation, not above a fixture's. A real site is the slow case, and being
 // wrong here turns "still loading" into "wrong page" — which destroys a capture rather than costing time.
-const LANDED_BUDGET_MS = 30_000;
+
 
 const ADVANCE_TIMEOUT_MS = 8_000; // moving to the next line/object
 const READ_TIMEOUT_MS = 5_000; // reading the phrase after advancing
@@ -946,122 +957,11 @@ async function waitForBufferReady(diag, budgetMs = BUFFER_READY_BUDGET_MS) {
   return { ready: false, sawLoading, refreshed: false };
 }
 
-/**
- * Did the browser open the page we asked for?
- *
- * The one fact that settles it, and `currentPageUrl` has been imported into this file all along to
- * answer a different question. Measured 2026-08-25: a fixture capture came back with 173 transcript
- * lines containing `"Back to Bing search"` and the title `"localhost - Search - Profile 1 - Microsoft
- * Edge"`. Edge had treated the address as a SEARCH QUERY and gone to Bing — which is a real page with a
- * real title, so every readiness check passed and it was recorded as evidence about the fixture.
- *
- * That is the THIRD distinct way one afternoon produced a capture of the wrong page, after a dead port
- * and a host the worker could not reach. The first two are caught by the error-page title guard; this
- * one cannot be, because Bing is not an error. Comparing the URL catches all three and anything else of
- * the same shape, which is why it belongs here rather than beside either specific fix.
- *
- * Compared on ORIGIN AND PATH only. A site may legitimately add a query string, a fragment or a
- * trailing slash, and failing a capture for that would be a guard that cries wolf — while a redirect to
- * a different host or path is exactly what this must catch. A capture whose URL cannot be read at all
- * makes no claim: `currentPageUrl` returns null when CDP is unreachable, which is a separate fault
- * already reported elsewhere.
- */
-/**
- * Two paths that address the same document.
- *
- * A trailing slash and a `.html` extension are both things a SERVER may add or drop while serving
- * exactly what was asked for. Measured 2026-08-25, and it cost a run: `serve` logs
- * `GET /route-title-stale/bad` for a request to `/bad.html` — it resolves the extension and the browser's
- * URL then ends `/bad`, so a strict comparison rejected two captures that were completely correct. The
- * whole run reported 0/3.
- *
- * That is the guard crying wolf, which is worse than useless: a check that fails on correct input gets
- * switched off, and this one exists to catch three real ways of capturing the wrong page. Normalising
- * here keeps it able to see a redirect to a different host or a different document, which is what it is
- * for, and blind to a rewrite that changes neither.
- */
-/** @param {string} a @param {string} b */
-function samePath(a, b) {
-  const normalise = (/** @type {string} */ path) => path.replace(/\/$/, "").replace(/\.html?$/i, "").replace(/\/index$/i, "");
-  return normalise(a) === normalise(b);
-}
 
-/** Does what the browser is showing address the same document we asked for? PURE. */
-/** @param {string} actual @param {string} url */
-function addressesSamePage(actual, url) {
-  let got;
-  try {
-    got = new URL(actual);
-  } catch {
-    return null; // not a URL at all: this guard makes no claim
-  }
-  const want = new URL(url);
-  return got.origin === want.origin && samePath(got.pathname, want.pathname);
-}
 
-/**
- * Poll until the browser is showing the requested page, or the budget runs out.
- *
- * POLLED, never read once — and the one-shot version cost five captures the day it shipped.
- *
- * `browserReady` means `browserAlive()` returned true, and that only proves **the DevTools port
- * answers**. It is not a claim that the requested URL has loaded. So reading the URL immediately after
- * `openPage` reads whatever document the browser happens to be showing, which after a recycle is the
- * previous one while the new navigation is still in flight.
- *
- * Measured 2026-08-25, from the diagnostics of five failed captures on one worker:
- *
- *     browserClosed  atMs 8153  forced: true
- *     browserReady   atMs 8163
- *     landedOnRequested atMs 8164  ok: false   <- ONE MILLISECOND later
- *
- * Every one followed `browserRecycle after: 25`, and the `actual` URL was a real page the server was
- * serving. Nothing was unreachable; the check simply looked before the navigation landed.
- *
- * This is the defect CLAUDE.md's longest section is about, committed in a new place: *"a condition must
- * be sufficient — `screenReaderResponds()` only proves the Remote port accepts a TCP connection, not
- * that NVDA's virtual buffer is navigable."* `browserAlive()` is that same insufficient condition one
- * subsystem over, and this guard was built on top of it with no poll at all.
- *
- * The budget must exceed the slowest HONEST navigation, because a wrong page is a legitimate finding and
- * a guard that gives up early turns "still loading" into "wrong page" — the same inversion a short sleep
- * once turned into "the page announced nothing". It costs nothing when the page is already right: the
- * first read matches and the loop exits.
- *
- * INJECTABLE, because the entire defect is about WHEN the URL is read and a test that cannot control
- * time cannot see it — the same reasoning as `file-version-memo.test.ts`.
- *
- * @returns {Promise<{ok: boolean, actual: string|null, attempts: number, waitedMs: number}>}
- */
-/**
- * @param {string} url
- * @param {{ read: () => Promise<string|null>, budgetMs?: number, pollMs?: number,
- *           now?: () => number, wait?: (ms: number) => Promise<void> }} options
- */
-// NO `= {}` DEFAULT: `read` has none either, so an omitted options object gives `read === undefined` and
-// the loop below calls it. Every one of the four call sites passes `{ read: ... }`. Same contradiction as
-// `refuseUnknownFlags` had -- a default that makes a required argument optional.
-export async function landedVerdict(url, options) {
-  const {
-    read, budgetMs = LANDED_BUDGET_MS, pollMs = LANDED_POLL_MS,
-    now = () => Date.now(), wait = sleep,
-  } = options;
-  const startedAt = now();
-  let actual = null;
-  let attempts = 0;
 
-  while (now() - startedAt < budgetMs) {
-    attempts += 1;
-    actual = await read();
-    // A null URL is CDP being unreachable, which is a DIFFERENT fault reported elsewhere — but it is also
-    // transient right after a launch, so it is retried rather than taken as a verdict.
-    if (actual && addressesSamePage(actual, url) === true) {
-      return { ok: true, actual, attempts, waitedMs: now() - startedAt };
-    }
-    await wait(pollMs);
-  }
-  return { ok: false, actual, attempts, waitedMs: now() - startedAt };
-}
+
+
 
 /** Between two reads of the tree. A poll INTERVAL, not a guess at how long rendering takes. */
 const SETTLE_POLL_MS = 400;
@@ -1246,30 +1146,7 @@ function navigationHasAnswered(outcome) {
   return typeof outcome.responseEnd === "number" && outcome.responseEnd > 0;
 }
 
-/**
- * The decision alone, EXPORTED so it can be shown to refuse.
- *
- * Separated from the CDP call for the reason `failIfScreenReaderIsMute` is: a guard that has never been
- * seen to reject anything is untested, and the integration path needs a Windows guest and a dead port to
- * exercise. This is a pure function of the status, so the three outcomes are provable in milliseconds and
- * the remaining risk is confined to whether `navigationOutcome` reads the right number.
- *
- * @param {string} url
- * @param {{status?: number|null} | null} outcome
- * @returns {string|null} the refusal message, or null to proceed
- */
-export function pageServedRefusal(url, outcome) {
-  // "We could not ask" is not a refusal, and it is not a pass either -- the caller MARKS it. Conflating
-  // absence with zero would turn a browser too old to report the status into a permanently broken worker.
-  if (!outcome || outcome.status === null || outcome.status === undefined) return null;
-  if (outcome.status >= 200 && outcome.status < 300) return null;
-  if (outcome.status === 0) {
-    return `nothing is serving ${JSON.stringify(url)} — the browser got no HTTP response at all, so what `
-      + "it displayed is its own error page, not the site";
-  }
-  return `the server answered HTTP ${outcome.status} for ${JSON.stringify(url)}, so the document captured `
-    + "is an error page rather than the page requested";
-}
+
 
 /** A malformed URL is a different fault, reported by the caller; here it simply means "not HTTP". */
 function safeProtocol(/** @type {string} */ url) {
@@ -1281,18 +1158,9 @@ function safeProtocol(/** @type {string} */ url) {
   }
 }
 
-/**
- * Titles Edge gives its own error pages, which are not the page under test.
- *
- * Deliberately matched on the TITLE rather than on transcript content: the title is one string NVDA
- * reports before anything else, so this fails fast and cannot be confused with a site whose prose
- * happens to mention connectivity. Chromium's error titles are stable and short.
- */
-/** Exported so the guard can be shown to FAIL — a check never seen to reject anything is untested. */
-const isBrowserErrorTitle = (/** @type {unknown} */ title) => BROWSER_ERROR_TITLE_RE.test(String(title ?? ""));
 
-const BROWSER_ERROR_TITLE_RE =
-  /can.t reach this page|no internet|site can.t be reached|refused to connect|ERR_[A-Z_]+/i;
+
+
 
 /** @param {Diag} diag */
 async function waitForDocument(diag) {
@@ -1302,7 +1170,7 @@ async function waitForDocument(diag) {
   const bufferDeadline = Date.now() + BUFFER_READY_BUDGET_MS;
   for (let attempt = 1; attempt <= READY_ATTEMPTS; attempt++) {
     const title = await reportedTitle(diag);
-    if (title && BROWSER_ERROR_TITLE_RE.test(title)) {
+    if (title && isBrowserErrorTitle(title)) {
       // THE BROWSER'S OWN ERROR PAGE IS NOT THE PAGE. It has a title, headings and text, so every check
       // below passes and the capture is recorded as evidence about the site — measured 2026-08-25, when
       // three fixture captures came back whose first transcript line was
@@ -2910,20 +2778,14 @@ const TRAP_REPEATS = 2;
 // and "this control announces exactly like the first one" -- four identical avatar links already cost
 // this project a sweep that reported 5 graphics of 66. Requiring the first N to recur IN ORDER makes a
 // coincidence vanishingly unlikely without needing to know anything about the page.
-const FOCUS_CYCLE_CONFIRM = 3;
+
 
 // The probe must not eat the capture. At the ~2s per stop this file's own comment records, 312 stops
 // would be 624s against a 280s hard capture timeout, so full coverage is not achievable on the largest
 // pages at any cap and the honest move is to bound the spend and REPORT the shortfall.
 const FOCUS_PROBE_BUDGET_MS = 120_000;
 
-/** Have we returned to where we started? See `FOCUS_CYCLE_CONFIRM` for why this is not one comparison. */
-/** @param {string[]} stops */
-function focusOrderCycled(stops) {
-  if (stops.length < FOCUS_CYCLE_CONFIRM * 2) return false;
-  return stops.slice(-FOCUS_CYCLE_CONFIRM)
-    .every((phrase, i) => phrase === stops[i]);
-}
+
 
 /**
  * The order the two position-dependent probes run in, so a gate can permute them.

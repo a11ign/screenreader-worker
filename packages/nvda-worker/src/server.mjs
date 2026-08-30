@@ -11,8 +11,13 @@
 //   GET  /health                           -> { ok, screenReader, busy, code, environment }
 // NVDA is a single shared resource, so captures are serialized.
 import { createServer } from "node:http";
-import { existsSync, openSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { execFileSync, spawn } from "node:child_process";
+// Kept in their own module so a Linux test can import them without reaching guidepup through
+// this file's `capture-core` import — see file-version.mjs. Re-exported below, unchanged.
+import { fileProductVersion, powershellValue } from "./file-version.mjs";
+// Re-exported so every existing importer of `server.mjs` is unchanged by the move.
+export { fileProductVersion, powershellValue } from "./file-version.mjs";
+import { existsSync, openSync, readFileSync, readdirSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { freemem, totalmem, uptime as osUptime } from "node:os";
 import { join, resolve } from "node:path";
@@ -222,23 +227,7 @@ const { app: BROWSER, error: BROWSER_CONFIG_ERROR } = configuredBrowser();
  *
  * Bounded is a mitigation, not the fix; the fix is the memo below, which keeps it off the polled path.
  */
-const POWERSHELL_VALUE_TIMEOUT_MS = 5_000;
 
-function powershellValue(/** @type {any} */ script) {
-  if (process.platform !== "win32") return "unknown";
-  try {
-    const value = execFileSync("powershell.exe", [
-      "-NoProfile", "-NonInteractive", "-Command", script,
-    ], {
-      encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: POWERSHELL_VALUE_TIMEOUT_MS,
-      windowsHide: true,
-    }).trim();
-    return value || "unknown";
-  } catch {
-    // "unknown" rather than throwing: a version string we could not read must never take a worker offline.
-    return "unknown";
-  }
-}
 
 /**
  * Memoised for the life of the process, because an executable's version cannot change under a running worker.
@@ -289,46 +278,7 @@ function bootConstant(/** @type {any} */ script) {
  * differently and are not interchangeable, so a silent change would surface later as unexplained cache
  * churn -- which is how this was nearly dismissed.
  */
-const fileVersions = new Map();
 
-/**
- * `stat` and `read` are injectable so this is testable off Windows, where `powershellValue` cannot run.
- * The defect it fixes was invisible to every check precisely because nothing could exercise it, and a
- * deploy would have HIDDEN it -- restarting the worker rebuilds the memo, so a correct version after a
- * deploy proves the restart worked and says nothing about the invalidation.
- *
- * The injected types name only the FIELDS this function reads, rather than `typeof statSync` -- same
- * reasoning as `ScorableCapture` in evidence-units.ts. A narrow contract is what makes the seam usable from
- * a test, and it says in the type system that nothing here depends on the rest of `Stats`.
- *
- * @param {string} path
- * @param {{ stat?: (path: string) => { mtimeMs: number, size: number },
- *           read?: (script: string) => string }} [injected]
- * @returns {string}
- */
-export function fileProductVersion(path, { stat = statSync, read = powershellValue } = {}) {
-  let identity;
-  try {
-    const info = stat(path);
-    identity = `${path}|${info.mtimeMs}|${info.size}`;
-  } catch {
-    // Vanished or unreadable. Not memoisable, and "unknown" is the honest answer -- the same rule
-    // `bootConstant` applies to a failed read.
-    return "unknown";
-  }
-  if (fileVersions.has(identity)) return fileVersions.get(identity);
-  const escaped = path.replace(/'/g, "''");
-  const value = read(`(Get-Item -LiteralPath '${escaped}').VersionInfo.ProductVersion`);
-  if (value === "unknown") return value; // a transient PowerShell failure must not become permanent
-  const previous = [...fileVersions.entries()].find(([key]) => key.startsWith(`${path}|`));
-  if (previous && previous[1] !== value) {
-    log(`${path} changed version under a running worker: ${previous[1]} -> ${value}. `
-      + "Captures before and after this point have different cache keys and are not interchangeable.");
-    fileVersions.delete(previous[0]);
-  }
-  fileVersions.set(identity, value);
-  return value;
-}
 
 /**
  * Memoised, because this WALKS THE DISK and `/health` is polled.
@@ -393,13 +343,13 @@ function runtimeEnvironment() {
   return {
     measuredAt: new Date().toISOString(),
     screenReader: "NVDA",
-    screenReaderVersion: nvdaPath ? fileProductVersion(nvdaPath) : "unknown",
+    screenReaderVersion: nvdaPath ? fileProductVersion(nvdaPath, { log }) : "unknown",
     // The capture cache keys on this pair, exactly as it keys on `os` and `architecture`, and for the same
     // reason: a fleet can have more than one image, and now more than one BROWSER. It was the literal
     // string "Microsoft Edge" while there was only ever one — a constant standing in for a variable, which
     // is only correct until it is not.
     browser: BROWSER.name,
-    browserVersion: browserPath ? fileProductVersion(browserPath) : "unknown",
+    browserVersion: browserPath ? fileProductVersion(browserPath, { log }) : "unknown",
     guidepupVersion: packageVersion("@guidepup/guidepup"),
     nodeVersion: process.version,
     // Memoised, and the reason is the cache key rather than the ~200 ms. This value is half of the key's
