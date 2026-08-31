@@ -429,6 +429,9 @@ function captureOptions(/** @type {any} */ parsed) {
     // Opt-in cross-check against NVDA's own Elements List totals. Opens a modal
     // dialog on the guest, so it is never on by default.
     probeElementsList: parsed.probeElementsList ?? false,
+    // Opt-in: it presses Escape after the sweep, which changes state on a page we do not own, and the
+    // reading is worthless once anything has anchored -- `anchorToTop` presses Escape first.
+    probeDialog: parsed.probeDialog ?? false,
     // Which order the two position-dependent probes run in. A NAME, never a caller-supplied list — see
     // `probeSequence`. Absent means the order that has always run, so no cached capture is affected.
     probeOrder: parsed.probeOrder === "focus-first" ? "focus-first" : undefined,

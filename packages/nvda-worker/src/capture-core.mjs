@@ -484,19 +484,21 @@ export async function captureWithNvda(url, opts = {}) {
 
 // The capture proper. Split out so captureWithNvda is nothing but "launch, run, always clean
 // up" -- the guarantee is the point, and it should be readable at a glance.
-/** @param {string} url @param {Record<string, any>} opts @param {Diag} diag */
-async function runCapturePhases(url, opts, diag) {
-  const steps = Number(opts.steps || DEFAULT_STEPS);
-  const browserWaitMs = Number(opts.browserWaitMs || DEFAULT_BROWSER_WAIT_MS);
-  const navStrategy = opts.nav === "object" ? "object" : "line";
-  const maxMs = Number(opts.maxMs || DEFAULT_BUDGET_MS);
-
+/**
+ * Bring the machine to a state where a capture can start: window focused, pointer parked, NVDA speaking.
+ *
+ * One job -- everything here is setup that must succeed before the first keystroke means anything, and
+ * every step of it is a condition being waited for rather than a duration being slept.
+ *
+ * @param {{ browserWaitMs: number, reuse: boolean, diag: Diag }} ctx
+ */
+async function bringUpCaptureEnvironment({ browserWaitMs, reuse, diag }) {
   await focusBrowserWindow(browserWaitMs, diag);
   // Own the pointer before anything sends a keystroke. It is a capture INPUT, not a bystander: it holds
   // hover state over whatever it rests on, and guidepup prefixes every captured action with Ctrl, which
   // Edge turns into a magnifier overlay when an image is underneath. See pointer.mjs.
   await parkPointer(/** @type {any} */ (diag));
-  const coldStart = await startScreenReader(diag, { reuse: !!opts.reuseScreenReader });
+  const coldStart = await startScreenReader(diag, { reuse: !!reuse });
   // Wait for NVDA to answer, rather than for a fixed three seconds.
   //
   // This was `sleep(NVDA_SETTLE_MS)` and its own comment conceded the point: "dead time when NVDA was
@@ -513,6 +515,16 @@ async function runCapturePhases(url, opts, diag) {
   // round trip; discovered after the read-through it costs the whole capture and a retry.
   await ensureSpeechChannel(diag);
   await resetSpeechLogs(diag);
+}
+
+/** @param {string} url @param {Record<string, any>} opts @param {Diag} diag */
+async function runCapturePhases(url, opts, diag) {
+  const steps = Number(opts.steps || DEFAULT_STEPS);
+  const browserWaitMs = Number(opts.browserWaitMs || DEFAULT_BROWSER_WAIT_MS);
+  const navStrategy = opts.nav === "object" ? "object" : "line";
+  const maxMs = Number(opts.maxMs || DEFAULT_BUDGET_MS);
+
+  await bringUpCaptureEnvironment({ browserWaitMs, reuse: !!opts.reuseScreenReader, diag });
 
   const deadline = Date.now() + maxMs;
 
@@ -554,6 +566,7 @@ async function runCapturePhases(url, opts, diag) {
     deadline, diag,
     probeForms: !!opts.probeForms, probeFocus: !!opts.probeFocus, probeTables: !!opts.probeTables,
     probeNavigation: !!opts.probeNavigation,
+    probeDialog: !!opts.probeDialog,
     probeElementsList: !!opts.probeElementsList,
     probeOrder: opts.probeOrder === "focus-first" ? "focus-first" : undefined,
     task: opts.task,
@@ -1946,9 +1959,10 @@ async function navigateByStructureThenAudit(options) {
  * the first time that channel could say so.
  *
  * @param {{ observed: Record<string, Observation>, probeForms?: boolean, probeFocus?: boolean,
- *           probeNavigation?: boolean, interaction: { formChanges: AnnouncedChange[] } }} ctx
+ *           probeNavigation?: boolean, probeDialog?: boolean,
+ *           interaction: { formChanges: AnnouncedChange[] } }} ctx
  */
-function recordWhatWasAsked({ observed, probeForms, probeFocus, probeNavigation, interaction }) {
+function recordWhatWasAsked({ observed, probeForms, probeFocus, probeNavigation, probeDialog, interaction }) {
   observed.formChanges = probeForms
     ? { asked: true, activated: interaction.formChanges.length }
     : notObserved("probeForms is off for this capture, so no control was activated");
@@ -1960,17 +1974,57 @@ function recordWhatWasAsked({ observed, probeForms, probeFocus, probeNavigation,
   observed.focusOrder = probeFocus
     ? { asked: true }
     : notObserved("probeFocus is opt-in -- ~8s on a ~12s capture -- and this case did not ask");
+  observed.dialogEscape = probeDialog
+    ? { asked: true }
+    : notObserved("probeDialog is opt-in: it presses Escape, which changes state on a page we do not own");
   observed.routeChange = probeNavigation
     ? { asked: true }
     : notObserved("probeNavigation is opt-in: it ACTIVATES A LINK and can leave the page under measurement");
 }
 
 /**
+ * Assemble the interaction evidence, naming every field that survives.
+ *
+ * Extracted because the assembly is one job with one rule, and that rule is the reason it is written out
+ * longhand rather than spread: this object is REBUILT from named fields, so anything set on `interaction`
+ * and not listed here is silently dropped. `postSubmitFields` was empty on all 2,122 captures for a
+ * related reason, and an omission here looks exactly like a page with nothing to report.
+ *
+ * @param {{ structure: CapturedStructure, interaction: {stateChanges: AnnouncedChange[],
+ *           formChanges: AnnouncedChange[], navigatedOnSubmit?: unknown, postSubmitNames?: string[]},
+ *           postSubmitFields: string[], focusOrder: string[], routeChange: unknown, dialogEscape: unknown }} ctx
+ */
+function interactionEvidence({ structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape }) {
+  return {
+    controls: structure.formFields,
+    stateChanges: interaction.stateChanges,
+    formChanges: interaction.formChanges,
+    postSubmitFields,
+    focusOrder,
+    // Absent unless asked for, exactly like the other opt-in evidence. Absent and "we navigated and nothing
+    // was announced" must stay distinguishable: the second IS the 2.4.2 finding, and a field that is `null`
+    // in both cases would make a page nobody probed look like a page that failed.
+    ...(routeChange ? { routeChange } : {}),
+    // Absent unless asked for, like every other opt-in field. Absent and "Escape was pressed and nothing
+    // happened" must stay distinguishable: the second is the finding.
+    ...(dialogEscape ? { dialogEscape } : {}),
+    // Absent (rather than false) when the submit did not navigate, so "we did not check" and "it did not
+    // navigate" stay distinguishable.
+    ...(interaction.navigatedOnSubmit ? { navigatedOnSubmit: interaction.navigatedOnSubmit } : {}),
+    // Same rule, same reason: absent when no submit happened, so "no submit was probed" cannot be read as
+    // "the page showed nothing after submitting". 3.3.1 depends on telling those apart.
+    ...(interaction.postSubmitNames ? { postSubmitNames: interaction.postSubmitNames } : {}),
+  };
+}
+
+/**
  * @param {{ deadline: number, diag: Diag, probeForms?: boolean, probeFocus?: boolean, probeTables?: boolean,
  *           probeNavigation?: boolean, probeElementsList?: boolean, probeOrder?: string,
+ *           probeDialog?: boolean,
  *           task?: string }} ctx
  */
 async function navigateByStructure({ deadline, diag, probeForms, probeFocus, probeTables, probeNavigation,
+  probeDialog,
   probeElementsList, probeOrder, task }) {
   // BOTH ACCUMULATORS ARE DECLARED, because both are filled in by probes that run later and elsewhere.
   // An inferred type here describes only the fields present at construction -- `never[]` for each array,
@@ -2008,9 +2062,14 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   let postSubmitFields = [];
   /** @type {string[]} */
   let focusOrder = [];
+  /** @type {{focusBefore: string, announced: string, focusAfter: string} | null} */
+  let dialogEscape = null;
   const runSweep = async () => {
     await sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips, observed });
     if (probeForms) diag.mark("formProbe", { activated: interaction.formChanges.length });
+    // BEFORE the re-read, which anchors -- and `anchorToTop` presses Escape first, dismissing exactly what
+    // this probe exists to observe.
+    dialogEscape = probeDialog ? await probeDialogEscape({ interaction, deadline, diag }) : null;
     postSubmitFields = await rescanFormFieldsAfterSubmit({ interaction, probeForms, deadline, diag, trips });
   };
   const runFocus = async () => {
@@ -2026,28 +2085,11 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
     ? await probeRouteChange({ interaction, deadline, diag })
     : null;
   if (probeElementsList) await crossCheckAgainstElementsList({ structure, deadline, diag });
-  recordWhatWasAsked({ observed, probeForms, probeFocus, probeNavigation, interaction });
+  recordWhatWasAsked({ observed, probeForms, probeFocus, probeNavigation, probeDialog, interaction });
 
-  const result = {
-    controls: structure.formFields,
-    stateChanges: interaction.stateChanges,
-    formChanges: interaction.formChanges,
-    postSubmitFields,
-    focusOrder,
-    // Absent unless asked for, exactly like the other opt-in evidence. Absent and "we navigated and nothing
-    // was announced" must stay distinguishable: the second IS the 2.4.2 finding, and a field that is `null`
-    // in both cases would make a page nobody probed look like a page that failed.
-    ...(routeChange ? { routeChange } : {}),
-    // Named explicitly, because this object is rebuilt from named fields and anything set on `interaction`
-    // but not listed here is SILENTLY DROPPED -- which is how a field a signal reads can go missing with
-    // every check still green. `postSubmitFields` itself was empty on all 2,122 captures for a related
-    // reason. Absent (rather than false) when the submit did not navigate, so "we did not check" and
-    // "it did not navigate" stay distinguishable.
-    ...(interaction.navigatedOnSubmit ? { navigatedOnSubmit: interaction.navigatedOnSubmit } : {}),
-    // Same rule, same reason: absent when no submit happened, so "no submit was probed" cannot be read as
-    // "the page showed nothing after submitting". 3.3.1 depends on telling those apart.
-    ...(interaction.postSubmitNames ? { postSubmitNames: interaction.postSubmitNames } : {}),
-  };
+  const result = interactionEvidence({
+    structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape,
+  });
   diag.mark("interaction", {
     controls: result.controls.length,
     stateChanges: result.stateChanges.length,
@@ -3535,6 +3577,55 @@ function noLinkReached(control) {
  * fact rather than a fiction the rule has to undo later.
  */
 const NOTHING_FURTHER_RE = /\bno (next|previous) \w+/i;
+
+/**
+ * DOES ESCAPE CLOSE IT, AND WHERE DOES FOCUS GO? — the dialog half of `docs/screenreader-coverage.md`.
+ *
+ * A modal's accessibility is four questions: does focus enter it, does Escape close it, does focus RETURN
+ * to what opened it, and is the background still reachable. This tool observed none of them, and the
+ * coverage map named a focus trap here as "the classic blocker".
+ *
+ * PURELY OBSERVATIONAL, and that is what makes it safe to add. It activates nothing of its own: it runs
+ * immediately after the sweep, when a control has already been activated by `probeDisclosure` or
+ * `probeForms`, and asks what state that left behind. A probe that opened its own dialog would be pressing
+ * buttons on a stranger's site for a second time in one capture, and `SECURITY.md` is explicit that
+ * pressing *Book* is not a review.
+ *
+ * ORDER IS LOAD-BEARING, again. `anchorToTop` presses Escape as its FIRST action, so anything that anchors
+ * before this runs has already dismissed whatever a dialog probe exists to find — the same coupling that
+ * refuted three 2.1.2 rules. It therefore runs inside `runSweep`, before `rescanFormFieldsAfterSubmit`
+ * anchors, and never after the focus walk.
+ *
+ * `focusReturned` is NOT computed here. Whether "back where it started" means the same control is a
+ * judgement about announcements, and `parseAnnouncement` is the single grammar for that — TypeScript this
+ * plain-node worker cannot import. The three readings are recorded and the comparison belongs to a rule,
+ * which is the same split `sweepCompleteness` already makes.
+ *
+ * @param {{ interaction: any, deadline: number, diag: Diag }} ctx
+ */
+async function probeDialogEscape({ interaction, deadline, diag }) {
+  const mark = (/** @type {Record<string, unknown>} */ fields) => diag.mark("dialogEscape", fields);
+  try {
+    if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
+    const focusBefore = await reportFocusedControlWithRetry(interaction);
+    // `press`, never `perform(exitFocusMode)`. Both are Escape on paper and only `press` worked, measured
+    // -- `anchorToTop` has used it for this since before anyone understood why.
+    const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "dialogEscape")) || []).length;
+    await withTimeout(nvda.press("Escape"), NAV_TIMEOUT_MS, "dialogEscape").catch(() => undefined);
+    const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "dialogEscape")) || [];
+    const announced = log.slice(before).map((/** @type {unknown} */ x) => String(x).trim())
+      .filter(Boolean).join(" | ");
+    const focusAfter = await reportFocusedControlWithRetry(interaction);
+    mark({ focusBefore, announced: announced.slice(0, 120), focusAfter });
+    return { focusBefore, announced, focusAfter };
+  } catch (e) {
+    // RECORDED, never dropped. A probe that threw and a page where Escape did nothing are different
+    // findings, and this file has already paid once for making them the same silence.
+    mark({ error: errMsg(e) });
+    interaction.sweepLog.push(`dialogEscape ERROR ${errMsg(e)}`);
+    return null;
+  }
+}
 
 /** @param {{ interaction: Record<string, any>, deadline: number, diag: Diag }} ctx */
 async function probeRouteChange({ interaction, deadline, diag }) {
