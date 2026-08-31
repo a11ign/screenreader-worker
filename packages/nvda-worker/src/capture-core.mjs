@@ -224,7 +224,27 @@ import { setTimeout as sleep } from "node:timers/promises";
 // the defect: a consumer reading `observed.links?.asked` gets a fact on some records and `undefined` on
 // others, and `undefined` is the ambiguity this whole field removes. Bumping makes the corpus provably
 // homogeneous for the price of 46 captures nobody has used.
-export const CAPTURE_PROTOCOL_VERSION = 10;
+// 10 -> 11, 2026-09-01: THREE additions, bundled, because the recapture is the cost and it is paid once.
+//
+// Bundling is the whole point of this bump rather than an economy on it. Each of the three is individually
+// too small to justify ~4.5 h of fleet time, and the register says so about the first one outright; three
+// together are not, and taking them separately would have cost that time three times over.
+//
+//   `structure.frames`          a frame sweep. An iframe with no accessible name is a real failure NVDA
+//                               announces ("Radios example, frame") and this tool had no channel for --
+//                               CLAUDE.md lists it under what the corpus structurally cannot express.
+//   `interaction.dialogEscape`  focus, Escape, the delta, focus again. 2.1.2 asks whether a modal can be
+//                               left, and nothing here could ask. Observational only: whether focus came
+//                               back is a judgement about announcements and belongs to a rule.
+//   `formChanges[].baselineWaitedMs`
+//                               the settle MARGIN. `baselineQuiet` reads `true` on 1,117 of 1,117, so the
+//                               verdict is a constant carrying no information while the margin still
+//                               separates a robust wait from one record from the cliff.
+//
+// All three are additive and an older consumer ignores each. The bump is for the MEANING, as with 9: the
+// same page now produces evidence it could not produce before, and two captures of one page must never
+// differ by which build took them.
+export const CAPTURE_PROTOCOL_VERSION = 11;
 
 // Re-exported for callers that had these from `capture-core` before the split.
 export {
