@@ -213,7 +213,18 @@ import { setTimeout as sleep } from "node:timers/promises";
 // The same page can now produce different evidence than it did under 8 — a new field consumers read — which
 // is the definition this file gives for a bump. It is additive, so every existing channel keeps its type and
 // an older consumer ignores it; the bump is for the MEANING, not for compatibility.
-export const CAPTURE_PROTOCOL_VERSION = 9;
+// 9 -> 10, 2026-08-31, and it costs NOTHING because no corpus exists under 9.
+//
+// `observed` shipped with eight of its eleven channels: `sweepExtraTypes` was called without the
+// accumulator, so `links`, `lists` and `graphics` could never say whether anyone asked. Threading it in is
+// not a meaning change and correctly did not move the key -- which is exactly why the 46 captures already
+// taken under 9 were served from CACHE, still carrying eight channels.
+//
+// That is the split-corpus failure the key exists to prevent, arriving through the fix rather than through
+// the defect: a consumer reading `observed.links?.asked` gets a fact on some records and `undefined` on
+// others, and `undefined` is the ambiguity this whole field removes. Bumping makes the corpus provably
+// homogeneous for the price of 46 captures nobody has used.
+export const CAPTURE_PROTOCOL_VERSION = 10;
 
 // Re-exported for callers that had these from `capture-core` before the split.
 export {
