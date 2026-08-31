@@ -404,7 +404,7 @@ function createDiagnostics(sink) {
 }
 
 /**
- * @typedef {{ headings: string[], landmarks: string[], formFields: string[], graphics: string[], links: string[], lists: string[], tableCells: string[] }} CapturedStructure
+ * @typedef {{ headings: string[], landmarks: string[], formFields: string[], graphics: string[], links: string[], lists: string[], tableCells: string[], frames: string[] }} CapturedStructure
  * @typedef {{ control: string, after: string }} AnnouncedChange
  * @typedef {{ controls: string[], stateChanges: AnnouncedChange[], formChanges: AnnouncedChange[], postSubmitFields: string[], focusOrder: string[], routeChange?: unknown, navigatedOnSubmit?: unknown, postSubmitNames?: string[] }} CapturedInteraction
  * @typedef {{ url: string, screenReader: string, capturedAt: string, transcript: string[], structure: CapturedStructure, interaction: CapturedInteraction, media?: Record<string, unknown>[] | null, observed?: Record<string, Observation>, diagnostics: object[] }} Capture
@@ -1984,6 +1984,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   /** @type {CapturedStructure} */
   const structure = {
     headings: [], landmarks: [], formFields: [], graphics: [], links: [], lists: [], tableCells: [],
+    frames: [],
   };
   // WHAT THIS CAPTURE ASKED, beside what it heard -- capture-protocol 9. Declared here rather than
   // inferred, for the same reason `interaction` above is: an inferred type makes adding a channel the
@@ -2681,6 +2682,17 @@ const EXTRA_SWEEPS = [
   // redundant -- it was load-bearing for any sweep whose elements nest around an earlier sweep's. Only
   // this one needs it, so the ~3s is paid once rather than before all six.
   { key: "lists", label: "list", prev: "moveToPreviousList", next: "moveToNextList", anchorFirst: true },
+  // FRAMES. An embedded document with no accessible name is a dead end a user cannot label, and until now
+  // this tool could not see one at all -- `docs/screenreader-coverage.md` listed it as a gap and noted the
+  // corpus has no iframe either, so it was invisible to every gate as well as to every capture.
+  //
+  // `anchorFirst` for the reason the `lists` comment gives above, applied one container further out: a
+  // frame CONTAINS the things swept before it, and quick navigation cannot find the container the caret is
+  // standing inside. The link and list sweeps both end somewhere that may be inside a frame, so without
+  // the anchor "next frame" finds none after it and "previous frame" none before it -- the exact signature
+  // of a page with no frames, on a page that has one. It costs ~3s, which is the same ~3s `lists` pays and
+  // for the same reason.
+  { key: "frames", label: "frame", prev: "moveToPreviousFrame", next: "moveToNextFrame", anchorFirst: true },
 ];
 
 /** @param {Omit<SweepContext, "out" | "seenKeys">} ctx */
