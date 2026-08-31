@@ -50,6 +50,8 @@ import {
   landedVerdict,
   pageServedRefusal,
   samePath,
+  sweepObservation,
+  notObserved,
 } from "./capture-pure.mjs";
 import { installSpeechChannelShim } from "./speech-channel.mjs";
 
@@ -66,9 +68,30 @@ import { installSpeechChannelShim } from "./speech-channel.mjs";
  *   sites and a change applied at seven of them launches Chrome and kills Edge; a shared type is the same
  *   argument, and a shared type describing the wrong fields is that defect wearing the remedy's clothes.
  *
+ * @typedef {{ asked: boolean, complete?: boolean, why?: string, activated?: number,
+ *             stop?: { prev: string, next: string } }} Observation
+ *   Whether this capture ASKED about a channel, and what it can support if it did — capture-protocol 9.
+ *
+ *   Every channel except `media` is a bare array, and a bare array cannot say why it is empty. `media` has
+ *   been alone in getting this right for the whole project, with a comment saying so. Measured over 6,467
+ *   corpus captures: `formChanges` empty on 4,830 with **3,006 never asked**, `postSubmitFields` 55%, and
+ *   `tableCells` empty on 6,095 with NOT ONE where the tool could say the page has no table. Ten of the 28
+ *   model features read only such channels, so a `0` they treat as a fact about the page is usually a fact
+ *   about the request.
+ *
+ *   A RELOCATION rather than new instrumentation: the probe flags decide what runs and `collectByType`
+ *   already records why every sweep stopped. Both went to `diagnostics`, a FORBIDDEN_INPUT_KEY — the
+ *   capture's own record of its method, filed as debugging output. This makes it evidence.
+ *
+ *   ADDITIVE: every existing channel keeps its exact type, so the 28 files that read them are untouched and
+ *   an older consumer ignores this entirely — the same shape as `fault` and `captureId`.
+ *
+ *   Named once because six sites write one — the eight-call-site lesson the browser preset records.
+ *
  * @typedef {{ out: string[], seenKeys: Set<string>,
  *             onItem?: ((phrase: string) => Promise<unknown> | unknown) | null,
  *             deadline: number, diag: Diag, label: string, trips: { count: number },
+ *             observed?: Record<string, Observation>, observedAs?: string,
  *             trace?: string[] }} SweepContext
  *   What a sweep carries. `trips` is REQUIRED and that is the point: adding it to `collectByType` and
  *   spelling the context out at one call site instead of spreading it threw on the function's first line,
@@ -179,7 +202,18 @@ import { setTimeout as sleep } from "node:timers/promises";
 //
 // Both are strictly evidence changes: the same page now produces different `structure` content. Neither
 // is a fix to what a capture MEANS, which is why they waited for a bump rather than causing one.
-export const CAPTURE_PROTOCOL_VERSION = 8;
+// 8 -> 9, 2026-08-31: `observed` — WHAT THE CAPTURE ASKED, beside what it heard.
+//
+// A channel is a bare array and a bare array cannot say why it is empty. `media` has been alone in getting
+// this right for the whole project, with a comment saying so. Measured over 6,467 corpus captures:
+// `formChanges` empty on 4,830 with 3,006 NEVER ASKED, `postSubmitFields` 55%, and `tableCells` empty on
+// 6,095 with not one where the tool could say the page has no table. Ten of the 28 model features read only
+// such channels, so a `0` they treat as a page fact is usually a fact about the request.
+//
+// The same page can now produce different evidence than it did under 8 — a new field consumers read — which
+// is the definition this file gives for a bump. It is additive, so every existing channel keeps its type and
+// an older consumer ignores it; the bump is for the MEANING, not for compatibility.
+export const CAPTURE_PROTOCOL_VERSION = 9;
 
 // Re-exported for callers that had these from `capture-core` before the split.
 export {
@@ -362,7 +396,7 @@ function createDiagnostics(sink) {
  * @typedef {{ headings: string[], landmarks: string[], formFields: string[], graphics: string[], links: string[], lists: string[], tableCells: string[] }} CapturedStructure
  * @typedef {{ control: string, after: string }} AnnouncedChange
  * @typedef {{ controls: string[], stateChanges: AnnouncedChange[], formChanges: AnnouncedChange[], postSubmitFields: string[], focusOrder: string[], routeChange?: unknown, navigatedOnSubmit?: unknown, postSubmitNames?: string[] }} CapturedInteraction
- * @typedef {{ url: string, screenReader: string, capturedAt: string, transcript: string[], structure: CapturedStructure, interaction: CapturedInteraction, media?: Record<string, unknown>[] | null, diagnostics: object[] }} Capture
+ * @typedef {{ url: string, screenReader: string, capturedAt: string, transcript: string[], structure: CapturedStructure, interaction: CapturedInteraction, media?: Record<string, unknown>[] | null, observed?: Record<string, Observation>, diagnostics: object[] }} Capture
  *
  * THE EVIDENCE SHAPE, named once. It was written out inline in this `@returns` and then built by three
  * separate object literals whose inferred types disagreed with it and with each other -- so the one
@@ -505,7 +539,7 @@ async function runCapturePhases(url, opts, diag) {
     silentAtStart: screenReaderWasSilentAtStart(diag),
   });
   failIfScreenReaderIsMute(transcript, diag);
-  const { structure, interaction, media } = await navigateByStructureThenAudit({
+  const { structure, interaction, media, observed } = await navigateByStructureThenAudit({
     deadline, diag,
     probeForms: !!opts.probeForms, probeFocus: !!opts.probeFocus, probeTables: !!opts.probeTables,
     probeNavigation: !!opts.probeNavigation,
@@ -525,6 +559,8 @@ async function runCapturePhases(url, opts, diag) {
     // 1.4.2 evidence, from the DOM. `null` means the probe did not run and is NOT the same as an empty
     // array, which means the page declares no media — the rule reading this makes no claim on null.
     media,
+    // What this capture ASKED, beside what it heard. See the `Observation` typedef.
+    observed,
     diagnostics: diag.entries,
   };
 }
@@ -1831,7 +1867,8 @@ async function navigateByStructureThenAudit(options) {
   // The audit ADDS to what the structural pass produced -- `media` here, and the cross-check marks
   // below -- so the accumulator is declared rather than inferred, for the same reason as the two inside
   // `navigateByStructure`: an inferred type makes adding evidence the error and dropping it the default.
-  /** @type {{ structure: CapturedStructure, interaction: CapturedInteraction, media?: Record<string, unknown>[] | null }} */
+  /** @type {{ structure: CapturedStructure, interaction: CapturedInteraction,
+   *           observed: Record<string, Observation>, media?: Record<string, unknown>[] | null }} */
   const result = await navigateByStructure(options);
   const census = await structuralCensus();
   // BESIDE the tree census, never instead of it. The two answer different questions — what Chromium
@@ -1886,6 +1923,38 @@ async function navigateByStructureThenAudit(options) {
  * phase below says which cursor state it leaves behind and therefore why it cannot move.
  */
 /**
+ * What this capture ASKED about the OPT-IN channels — the half `collectByType` cannot record for itself.
+ *
+ * The sweeps record their own observation as they run, because only they know how they ended. These four
+ * are decided by a flag rather than by a walk, so they are recorded in one place at the end: four `if`s
+ * scattered through the caller is four chances for the next probe to be added without one.
+ *
+ * `activated` separates the two states the boolean cannot — asked and something happened, asked and the
+ * page had nothing to activate. That distinction is what `formProbe: {activated: 0}` on the focus cases
+ * turned out to mean: not a failure, but a page with no submit control, which is a fact about the page and
+ * the first time that channel could say so.
+ *
+ * @param {{ observed: Record<string, Observation>, probeForms?: boolean, probeFocus?: boolean,
+ *           probeNavigation?: boolean, interaction: { formChanges: AnnouncedChange[] } }} ctx
+ */
+function recordWhatWasAsked({ observed, probeForms, probeFocus, probeNavigation, interaction }) {
+  observed.formChanges = probeForms
+    ? { asked: true, activated: interaction.formChanges.length }
+    : notObserved("probeForms is off for this capture, so no control was activated");
+  observed.postSubmitFields = probeForms && interaction.formChanges.length > 0
+    ? { asked: true }
+    : notObserved(probeForms
+      ? "probeForms ran and activated nothing, so there was no submit to re-read after"
+      : "probeForms is off for this capture");
+  observed.focusOrder = probeFocus
+    ? { asked: true }
+    : notObserved("probeFocus is opt-in -- ~8s on a ~12s capture -- and this case did not ask");
+  observed.routeChange = probeNavigation
+    ? { asked: true }
+    : notObserved("probeNavigation is opt-in: it ACTIVATES A LINK and can leave the page under measurement");
+}
+
+/**
  * @param {{ deadline: number, diag: Diag, probeForms?: boolean, probeFocus?: boolean, probeTables?: boolean,
  *           probeNavigation?: boolean, probeElementsList?: boolean, probeOrder?: string,
  *           task?: string }} ctx
@@ -1905,6 +1974,12 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   const structure = {
     headings: [], landmarks: [], formFields: [], graphics: [], links: [], lists: [], tableCells: [],
   };
+  // WHAT THIS CAPTURE ASKED, beside what it heard -- capture-protocol 9. Declared here rather than
+  // inferred, for the same reason `interaction` above is: an inferred type makes adding a channel the
+  // error and dropping one the default, and a dropped channel is invisible because an absent observation
+  // reads exactly like an unasked one.
+  /** @type {Record<string, Observation>} */
+  const observed = {};
   const onFormField = (/** @type {string} */ phrase) => operateControl(phrase, { probeForms, deadline, interaction, task });
 
   // THE TWO POSITION-DEPENDENT PROBES, SEQUENCED RATHER THAN HARD-CODED — see `probeSequence`.
@@ -1922,7 +1997,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   /** @type {string[]} */
   let focusOrder = [];
   const runSweep = async () => {
-    await sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips });
+    await sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips, observed });
     if (probeForms) diag.mark("formProbe", { activated: interaction.formChanges.length });
     postSubmitFields = await rescanFormFieldsAfterSubmit({ interaction, probeForms, deadline, diag, trips });
   };
@@ -1939,6 +2014,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
     ? await probeRouteChange({ interaction, deadline, diag })
     : null;
   if (probeElementsList) await crossCheckAgainstElementsList({ structure, deadline, diag });
+  recordWhatWasAsked({ observed, probeForms, probeFocus, probeNavigation, interaction });
 
   const result = {
     controls: structure.formFields,
@@ -1967,7 +2043,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
     postSubmit: postSubmitFields.length,
     sweepLog: interaction.sweepLog,
   });
-  return { structure, interaction: result };
+  return { structure, interaction: result, observed };
 }
 
 /**
@@ -1979,9 +2055,10 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
  */
 /**
  * @param {{ structure: CapturedStructure, onFormField: (phrase: string) => Promise<unknown>,
- *           probeTables?: boolean, deadline: number, diag: Diag, trips: { count: number } }} ctx
+ *           probeTables?: boolean, deadline: number, diag: Diag, trips: { count: number },
+ *           observed: Record<string, Observation> }} ctx
  */
-async function sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips }) {
+async function sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips, observed }) {
   const K = nvda.keyboardCommands;
   // No anchor here, deliberately. Measured: anchorToTop costs ~3s -- two nvda.press calls at
   // roughly 1.3s each plus the settle -- making it the single largest item in a 13.4s capture,
@@ -1996,7 +2073,7 @@ async function sweepEveryStructuralType({ structure, onFormField, probeTables, d
   // read-through ended somewhere awkward -- capture-check asserts those counts on all 7 pages.
   try {
     structure.headings = await collectByType(
-      { prev: K.moveToPreviousHeading, next: K.moveToNextHeading }, { label: "heading", onItem: null, deadline, diag, trips });
+      { prev: K.moveToPreviousHeading, next: K.moveToNextHeading }, { label: "heading", observedAs: "headings", onItem: null, deadline, diag, trips, observed });
     // INCOMPLETE BY CONSTRUCTION, and that is not fixable here. Quick navigation cannot reach a
     // landmark containing the caret -- NVDA searches by start position and needs a separate "up"
     // direction for enclosing items -- so a `<main>` wrapping the page is invisible to this sweep.
@@ -2006,7 +2083,7 @@ async function sweepEveryStructuralType({ structure, onFormField, probeTables, d
     //
     // An empty result therefore means "nothing reachable by quick-nav", NOT "the page exposes none".
     structure.landmarks = await collectByType(
-      { prev: K.moveToPreviousLandmark, next: K.moveToNextLandmark }, { label: "landmark", onItem: null, deadline, diag, trips });
+      { prev: K.moveToPreviousLandmark, next: K.moveToNextLandmark }, { label: "landmark", observedAs: "landmarks", onItem: null, deadline, diag, trips, observed });
     // Enumerate interactive controls with the form-field command ("F"), which
     // covers buttons, edits, checkboxes, combos and radios in one pass. (The NVDA
     // guide lists "F" and "B" as distinct co-equal commands; in our testing the
@@ -2014,7 +2091,7 @@ async function sweepEveryStructuralType({ structure, onFormField, probeTables, d
     // reached, but that's a build-specific observation, not documented behaviour.)
     // This sweep also drives the disclosure and (opt-in) form-submit probes in place.
     structure.formFields = await collectByType(
-      { prev: K.moveToPreviousFormField, next: K.moveToNextFormField }, { label: "formField", onItem: onFormField, deadline, diag, trips });
+      { prev: K.moveToPreviousFormField, next: K.moveToNextFormField }, { label: "formField", observedAs: "formFields", onItem: onFormField, deadline, diag, trips, observed });
     diag.mark("structural", { headings: structure.headings.length, landmarks: structure.landmarks.length, formFields: structure.formFields.length, roundTrips: trips.count });
     // Additive: graphics, links and lists by quick-nav, then a table walked cell by cell.
     // These fields are new, so no existing signal reads them and none can be broken by them.
@@ -2031,7 +2108,15 @@ async function sweepEveryStructuralType({ structure, onFormField, probeTables, d
     // A field that varies with timing is indistinguishable from a page that differs, which is
     // precisely the contamination this project exists to avoid -- so it stays off unless asked
     // for, and `docs/screenreader-coverage.md` says not to use it as dataset evidence yet.
-    if (probeTables) structure.tableCells = await probeTableCells({ deadline, diag });
+    if (probeTables) {
+      structure.tableCells = await probeTableCells({ deadline, diag });
+      observed.tableCells = { asked: true, complete: false, stop: { prev: "n/a", next: "n/a" } };
+    } else {
+      // THE 100% CASE. `tableCells` is empty on 6,095 of 6,467 corpus captures and on NOT ONE of them can
+      // the tool say the page has no table -- `probeTables` is opt-in, so the emptiness is about the
+      // request and never about the page. Saying so is the whole point of this field.
+      observed.tableCells = notObserved("probeTables is opt-in and this capture did not request it");
+    }
   } catch (e) {
     diag.mark("structural", { error: errMsg(e) });
   }
@@ -2245,6 +2330,13 @@ async function collectByType(commands, ctx) {
     prevCount,
     phrases: out.slice(),
   });
+  // BESIDE the mark, not instead of it. The mark goes to `diagnostics`, which is a FORBIDDEN_INPUT_KEY --
+  // so the capture's own record of how it swept is classified as debugging output and cannot reach a
+  // consumer. This lifts the same fact to a first-class field. A relocation, not new instrumentation.
+  // Keyed by the CHANNEL it fills (`headings`), not by the sweep's diagnostic label (`heading`). The mark's
+  // `type` is existing evidence and must not move: renaming it to line the two up would change every
+  // capture's diagnostics to save one lookup.
+  if (ctx.observed) ctx.observed[ctx.observedAs ?? ctx.label] = sweepObservation(prevOutcome, nextOutcome);
   return out;
 }
 
@@ -2578,7 +2670,8 @@ async function sweepExtraTypes(ctx) {
   for (const { key, label, prev, next, anchorFirst } of EXTRA_SWEEPS) {
     // See EXTRA_SWEEPS: only a sweep whose elements can CONTAIN an earlier sweep's pays for the anchor.
     if (anchorFirst) await anchorToTop();
-    found[key] = await collectByType({ prev: K[prev], next: K[next] }, { ...ctx, label, onItem: null });
+    found[key] = await collectByType({ prev: K[prev], next: K[next] },
+      { ...ctx, label, observedAs: key, onItem: null });
   }
   return found;
 }

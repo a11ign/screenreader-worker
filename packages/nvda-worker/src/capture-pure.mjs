@@ -485,6 +485,54 @@ export function crossCheckStructure({ sweep, elementsList }) {
 }
 
 /**
+ * WHAT THIS CAPTURE ASKED, recorded beside what it heard — capture-protocol 9.
+ *
+ * A channel is a bare array, and a bare array cannot say why it is empty. `media` is the only field in the
+ * whole capture that gets this right, and it carries a comment saying so: *"`null` means the probe did not
+ * run and is NOT the same as an empty array, which means the page declares no media."* Every other channel
+ * conflates the two, and the cost is measured — of 6,467 corpus captures, `formChanges` is empty on 4,830
+ * and **3,006 of those were never asked**; ten of the 28 model features read only such channels.
+ *
+ * The capture already KNOWS. `probeForms`/`probeTables`/`probeFocus` decide what runs, and `collectByType`
+ * records why every sweep stopped. Both go into `diagnostics`, which is a `FORBIDDEN_INPUT_KEY` — so the
+ * capture's own record of its method is classified as debugging output. This lifts it to a first-class
+ * sibling, which is a RELOCATION rather than new instrumentation.
+ *
+ * `exhausted` is the only sound terminus, because it is NVDA's own answer: it says "no next heading" when
+ * there are none left. Every other stop — a deadline, a repeated phrase, silence, a stuck focus mode — is
+ * the sweep giving up, and a sweep that gave up cannot support "the page has none of these".
+ *
+ * @param {{stop?: string}|undefined|null} prev  how the backward walk ended
+ * @param {{stop?: string}|undefined|null} next  how the forward walk ended
+ * @returns {{asked: true, complete: boolean, stop: {prev: string, next: string}}}
+ */
+export function sweepObservation(prev, next) {
+  const prevStop = prev?.stop ?? "unknown";
+  const nextStop = next?.stop ?? "unknown";
+  return {
+    asked: true,
+    // BOTH directions, because `collectByType` walks backwards then forwards and merges them. One
+    // exhausted direction and one that hit a deadline is a HALF-swept page, and reading it as complete is
+    // the truncation-as-absence defect this whole field exists to remove.
+    complete: prevStop === "exhausted" && nextStop === "exhausted",
+    stop: { prev: prevStop, next: nextStop },
+  };
+}
+
+/**
+ * A channel nobody asked about. Distinct from `{asked: true}` with nothing found, and that is the point.
+ *
+ * `why` is required rather than defaulted: "the probe is opt-in and this case did not request it" and "the
+ * page had no control to activate" are different facts, and a reader who cannot tell them apart is back
+ * where they started.
+ *
+ * @param {string} why
+ */
+export function notObserved(why) {
+  return { asked: false, why };
+}
+
+/**
  * WHICH probe an announced control earns — the safety gate on what this tool presses.
  *
  * Here rather than in `capture-core` because this is the decision that has to be TESTABLE.
