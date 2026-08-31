@@ -2125,10 +2125,15 @@ async function sweepEveryStructuralType({ structure, onFormField, probeTables, d
     // for, and `docs/screenreader-coverage.md` says not to use it as dataset evidence yet.
     if (probeTables) {
       structure.tableCells = await probeTableCells({ deadline, diag });
-      // NO `complete`, deliberately. The table probe walks a grid with Ctrl+Alt+Arrow; it has no
-      // "no next heading" to exhaust, so claiming either verdict would invent one. Asked, and this
-      // channel has no exhaustion signal — which is a third state and is reported as one.
-      observed.tableCells = { asked: true };
+      // `complete: false` AND IT IS TRUE, which is why this reverted after a moment's cleverness.
+      //
+      // The table probe walks a grid with Ctrl+Alt+Arrow and has no "no next heading" to exhaust, so my
+      // first instinct was to omit the verdict rather than invent one. But the field does not mean "the
+      // sweep exhausted", it means "an absence here can be read as the page having none" — and for this
+      // channel it never can: measured over 18 captures of one unchanged page across three workers, the
+      // cell count read 4, 2, 4, 4, 1, 4, 4. A probe whose output varies with timing cannot support an
+      // absence claim on ANY capture, so `false` is the honest permanent answer rather than a placeholder.
+      observed.tableCells = { asked: true, complete: false, stop: { prev: "n/a", next: "n/a" } };
     } else {
       // THE 100% CASE. `tableCells` is empty on 6,095 of 6,467 corpus captures and on NOT ONE of them can
       // the tool say the page has no table -- `probeTables` is opt-in, so the emptiness is about the
