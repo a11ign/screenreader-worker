@@ -10,6 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { notObserved, sweepObservation } from "./capture-pure.mjs";
 
@@ -53,4 +54,20 @@ test("a not-observed channel must say WHY, because there is more than one reason
   assert.equal(typeof notObserved("no control was activated, so no state could change").why, "string");
   // @ts-expect-error — the reason is required, not defaulted
   assert.equal(notObserved().why, undefined);
+});
+
+test("EVERY channel a capture fills must be able to report an observation", () => {
+  // The omission that made this test necessary: `sweepExtraTypes` was called without `observed`, so
+  // `links`, `lists` and `graphics` had no observation at all — and an ABSENT observation reads exactly
+  // like an unasked one, which made the gap invisible in the very field built to make gaps visible.
+  //
+  // Found by reading a real capture, not by a green pipeline: `verify` passed, `check-signals` passed, and
+  // three channels were silently unaccounted for. Asserted against the SOURCE because `capture-core.mjs`
+  // imports guidepup and cannot be loaded here — the same reason `probe-chain.test.ts` reads it as text.
+  const source = readFileSync(new URL("./capture-core.mjs", import.meta.url), "utf8");
+  const call = /sweepExtraTypes\(\{[^}]*\}\)/.exec(source);
+  assert.ok(call, "sweepExtraTypes is no longer called the way this guard reads it");
+  assert.match(call[0], /\bobserved\b/,
+    "the extra sweeps fill links, lists and graphics; without `observed` those three channels can never "
+    + "say whether anyone asked");
 });

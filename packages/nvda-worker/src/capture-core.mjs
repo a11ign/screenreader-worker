@@ -2095,7 +2095,11 @@ async function sweepEveryStructuralType({ structure, onFormField, probeTables, d
     diag.mark("structural", { headings: structure.headings.length, landmarks: structure.landmarks.length, formFields: structure.formFields.length, roundTrips: trips.count });
     // Additive: graphics, links and lists by quick-nav, then a table walked cell by cell.
     // These fields are new, so no existing signal reads them and none can be broken by them.
-    Object.assign(structure, await sweepExtraTypes({ deadline, diag, trips, label: "extra" }));
+    // `observed` threaded here too. Left out of this ONE call, `links`, `lists` and `graphics` were the
+    // three channels with no observation at all -- and an absent observation reads exactly like an
+    // unasked one, so the omission was invisible in the field built to make omissions visible. Found by
+    // READING a real capture rather than by a green pipeline, which is this file's own rule.
+    Object.assign(structure, await sweepExtraTypes({ deadline, diag, trips, label: "extra", observed }));
     // Table cells are OPT-IN, unlike the sweeps above, because they are not yet deterministic.
     //
     // Measured over 18 captures of one unchanged page across three workers: 4, 2, 4, 4, 1, 4, 4
