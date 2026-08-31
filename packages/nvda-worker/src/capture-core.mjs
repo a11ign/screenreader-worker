@@ -3481,7 +3481,13 @@ async function activateAndCaptureDelta(phrase, interaction, kind) {
     // this activation proves needs to know whether the measurement was sound. Carried on the evidence
     // rather than left in a log, because a log nothing reads is a comment — this repo lost 604 captures
     // to a crash that was faithfully written to `sweepLog` and never once read.
-    const entry = { control: phrase, kind, after, baselineQuiet: baseline.quiet };
+    // And the MARGIN, not just the verdict. Measured 2026-09-01 on the authoritative corpus: `baselineQuiet`
+    // is `false` on 0 of 1,117 stated entries -- so the 20 s budget always wins, and the honest response to
+    // that was NOT to condition a feature on a value that never occurs. But "settles comfortably" and
+    // "settles at 19.9 s of 20" print the same `true`, and they are the difference between a robust wait
+    // and one record from the cliff. The budget was raised once already because it was too short for a
+    // browser recycle AND nothing could say so; recording the wait is what stops that recurring silently.
+    const entry = { control: phrase, kind, after, baselineQuiet: baseline.quiet, baselineWaitedMs: baseline.waitedMs };
     interaction.formChanges.push(entry);
     // RETURNED as well as pushed, so a caller that needs the result does not have to reach into the array
     // and assume its own entry is the last one. `probeRouteChange` needs it; the three existing callers
