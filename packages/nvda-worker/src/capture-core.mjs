@@ -2125,7 +2125,10 @@ async function sweepEveryStructuralType({ structure, onFormField, probeTables, d
     // for, and `docs/screenreader-coverage.md` says not to use it as dataset evidence yet.
     if (probeTables) {
       structure.tableCells = await probeTableCells({ deadline, diag });
-      observed.tableCells = { asked: true, complete: false, stop: { prev: "n/a", next: "n/a" } };
+      // NO `complete`, deliberately. The table probe walks a grid with Ctrl+Alt+Arrow; it has no
+      // "no next heading" to exhaust, so claiming either verdict would invent one. Asked, and this
+      // channel has no exhaustion signal — which is a third state and is reported as one.
+      observed.tableCells = { asked: true };
     } else {
       // THE 100% CASE. `tableCells` is empty on 6,095 of 6,467 corpus captures and on NOT ONE of them can
       // the tool say the page has no table -- `probeTables` is opt-in, so the emptiness is about the
