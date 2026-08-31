@@ -1994,9 +1994,13 @@ function recordWhatWasAsked({ observed, probeForms, probeFocus, probeNavigation,
   observed.focusOrder = probeFocus
     ? { asked: true }
     : notObserved("probeFocus is opt-in -- ~8s on a ~12s capture -- and this case did not ask");
-  observed.dialogEscape = probeDialog
+  observed.dialogEscape = probeDialog && probeFocus
     ? { asked: true }
-    : notObserved("probeDialog is opt-in: it presses Escape, which changes state on a page we do not own");
+    : notObserved(probeDialog
+      // Two different unmet preconditions, named apart. "Nobody asked" and "asked without the probe that
+      // makes it meaningful" need opposite fixes, and a single `false` would send you to the wrong one.
+      ? "probeDialog was asked WITHOUT probeFocus, and Escape from the browse caret measures the document"
+      : "probeDialog is opt-in: it presses Escape, which changes state on a page we do not own");
   observed.routeChange = probeNavigation
     ? { asked: true }
     : notObserved("probeNavigation is opt-in: it ACTIVATES A LINK and can leave the page under measurement");
@@ -2087,15 +2091,28 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   const runSweep = async () => {
     await sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips, observed });
     if (probeForms) diag.mark("formProbe", { activated: interaction.formChanges.length });
-    // BEFORE the re-read, which anchors -- and `anchorToTop` presses Escape first, dismissing exactly what
-    // this probe exists to observe.
-    dialogEscape = probeDialog ? await probeDialogEscape({ interaction, deadline, diag }) : null;
     postSubmitFields = await rescanFormFieldsAfterSubmit({ interaction, probeForms, deadline, diag, trips });
   };
+  // THE DIALOG PROBE RIDES WITH THE FOCUS PROBE, and it took a capture to find out why.
+  //
+  // It sat after the sweep first, on the reasoning that `anchorToTop` presses Escape and would dismiss
+  // what the probe exists to observe. True, and beside the point: a sweep is BROWSE MODE, which moves
+  // NVDA's virtual caret and never DOM focus. `keyboard-trap-modal-cycle`'s guard fires on `focusin`, so
+  // it never engaged, and the probe recorded Escape pressed on the document -- IDENTICALLY on the good
+  // and bad variants. A probe that cannot express the fault is worthless, and this one could not.
+  //
+  // `probeFocusOrder` is the only probe here that moves real focus, so it is the only one that can put the
+  // caret inside a dialog for Escape to leave. Riding with it also means the pair stays together under
+  // `focus-first`, where the sweep has not run at all.
   const runFocus = async () => {
     focusOrder = probeFocus
       ? await probeFocusOrder({ deadline, diag, controlsOnPage: structure.formFields.length })
       : [];
+    // Gated on `probeFocus` as well as its own flag: Escape from wherever the browse caret happens to
+    // rest measures the document, which is what the first version of this did.
+    dialogEscape = probeDialog && probeFocus
+      ? await probeDialogEscape({ interaction, deadline, diag })
+      : null;
   };
   await runProbeSequence({ probeOrder, diag, runSweep, runFocus });
 
