@@ -3602,6 +3602,30 @@ function onlyControlState(phrases) {
   });
 }
 
+/**
+ * Wait again when everything heard so far is the control's OWN state.
+ *
+ * A BUTTON announces nothing of its own, so the first phrase after activating one IS the page's answer and
+ * `filter-status-silent` has always been reliable. A checkbox says "checked" first — which satisfies
+ * "something was said" and starts `waitForAnnouncement`'s quiet window — and `aria-live="polite"` means
+ * *speak when idle*, so a live region waits for the very silence that ends it.
+ *
+ * MEASURED, AND IT IS NOT ENOUGH. Six repeats of one unchanged page put the region in the delta 2 times in
+ * 6 before this existed and 2 times in 6 after. The announcement is intermittent AT NVDA; no wait catches
+ * what was never spoken. Kept because the reasoning is sound and it costs one quiet window on a silent
+ * toggle, and INSTRUMENTED because a remedy that cannot report itself is one this project has shipped
+ * inert three times — `refreshBrowseBuffer` sat dead through three green runs for want of exactly this.
+ *
+ * @param {string[]} log @param {number} before @param {string} kind @param {any} interaction
+ * @returns {Promise<string[]>} the log, extended if a second wait heard anything
+ */
+async function waitPastControlState(log, before, kind, interaction) {
+  if (!onlyControlState(log.slice(before))) return log;
+  const second = await waitForAnnouncement(log.length, kind);
+  interaction.sweepLog.push(`${kind} SECOND-WAIT-AFTER-OWN-STATE caught=${second.length > log.length}`);
+  return second.length > log.length ? second : log;
+}
+
 /** @param {string} phrase @param {Record<string, any>} interaction @param {string} kind */
 async function activateAndCaptureDelta(phrase, interaction, kind) {
   try {
@@ -3653,10 +3677,7 @@ async function activateAndCaptureDelta(phrase, interaction, kind) {
     // yet and the wait is not finished. Asking again is a condition, not a longer sleep: a page that
     // truly says nothing pays one more quiet window and still reports the empty delta that IS the
     // finding.
-    if (onlyControlState(log.slice(before))) {
-      const second = await waitForAnnouncement(log.length, kind);
-      if (second.length > log.length) log = second;
-    }
+    log = await waitPastControlState(log, before, kind, interaction);
     const after = log.slice(before).map((/** @type {unknown} */ s) => String(s).trim()).filter(Boolean).join(" | ");
     interaction.sweepLog.push(`${kind} ${JSON.stringify(phrase.slice(0, 40))} -> ${JSON.stringify(after)}`);
     // `kind` travels with the evidence, because criteria mean different things per activation.
