@@ -106,6 +106,20 @@ $top = [A11yUser32+EnumProc]{
 $out -join "\`n"
 `;
 
+// Same two calls as the per-dialog body above, against a window that always exists. NO BACKTICKS -- see
+// the warning on LIST_SCRIPT.
+const OWNER_PROBE_SCRIPT = `
+${USER32}
+$h = [A11yUser32]::GetForegroundWindow()
+$owner = 'unknown'
+try {
+  $ownerPid = 0
+  [A11yUser32]::GetWindowThreadProcessId($h, [ref]$ownerPid) | Out-Null
+  if ($ownerPid -gt 0) { $owner = (Get-Process -Id $ownerPid -ErrorAction Stop).ProcessName }
+} catch { $owner = 'unknown' }
+"{0}${SEP}{1}" -f (Get-A11yText $h), $owner
+`;
+
 /** WM_CLOSE to each handle. Equivalent to clicking the dialog's X or its default OK button. */
 /** @param {string[]} handles */
 const closeScript = (handles) => `
@@ -176,6 +190,35 @@ async function powershell(script, onError) {
  */
 export async function listBlockingDialogs(onError) {
   return parseDialogList(await powershell(LIST_SCRIPT, onError));
+}
+
+/**
+ * Resolve the owner of the FOREGROUND window, using the identical two calls the dialog lister uses.
+ *
+ * This exists to make the owner resolution PROVABLE. The lister only reaches those calls when a visible
+ * modal dialog exists, which a healthy guest never has -- so the code that names a blocking dialog's owner
+ * is, on every green run, the one part of this module nothing executes. Three passing `action-smoke` runs
+ * and five ready workers said nothing about it, and the bug it already carried was found by reading:
+ * `$pid` is a read-only automatic variable, so the assignment would have thrown -- inside the readiness
+ * path, only once a dialog appeared, which is the moment it was needed.
+ *
+ * A window is always in the foreground, so this always runs. It answers a diagnostic question worth having
+ * anyway (what is in front of the desktop right now, and whose is it?) and, in doing so, exercises
+ * `GetWindowThreadProcessId` and the `Get-Process` resolution on every call to `/diagnostics`.
+ *
+ * ON-DEMAND ONLY, never on a polled path. `/health` may not shell out -- the comment on `powershell` above
+ * records what happened when window enumeration was wired into readiness: `Add-Type` compiles C# on first
+ * use and the worker stopped answering altogether.
+ *
+ * @param {(reason: string) => void} [onError]
+ * @returns {Promise<{title:string,owner:string,ok:boolean}>}
+ */
+export async function probeWindowOwner(onError) {
+  const out = (await powershell(OWNER_PROBE_SCRIPT, onError)).trim();
+  const [title = "", owner = ""] = out.split(SEP);
+  // `ok` is the point: it says the two calls RAN, which is the thing three green smoke runs could not say.
+  // An empty result means the shell-out itself degraded, which `powershell` reports as "" by design.
+  return { title: title.trim(), owner: owner.trim(), ok: out.length > 0 && owner.trim() !== "" };
 }
 
 /**

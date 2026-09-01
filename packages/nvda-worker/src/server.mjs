@@ -30,7 +30,7 @@ import { configuredBrowser, browserProfileDir, resolveBrowser } from "./browsers
 import { CAPTURE_HARD_TIMEOUT_DEFAULT_MS } from "./capture-pure.mjs";
 import { isLocallyRecoverable } from "./worker-recovery.mjs";
 import { codeVersion } from "./code-version.mjs";
-import { listBlockingDialogs, dismissBlockingDialogs } from "./desktop-dialogs.mjs";
+import { listBlockingDialogs, dismissBlockingDialogs, probeWindowOwner } from "./desktop-dialogs.mjs";
 import { faultCode } from "./capture-faults.mjs";
 import { createResultStore, isValidCaptureId, storedResultResponse } from "./capture-results.mjs";
 import { edgePolicy, guestDiagnostics, processCounts, screenReaderState, treeSize } from "./diagnostics.mjs";
@@ -858,11 +858,19 @@ function respondWithHealth(/** @type {any} */ res) {
  * walks the Edge profile and shells out to tasklist. See diagnostics.mjs for why it exists at all -- the
  * guest agent that used to answer these questions cannot be relied on.
  */
-function respondWithDiagnostics(/** @type {any} */ res) {
+async function respondWithDiagnostics(/** @type {any} */ res) {
   try {
     return send(res, 200, {
       ...guestDiagnostics({ edgeProfile: browserProfileDir(BROWSER), logPath: LOG_PATH }),
       screenReaderSettings: screenReaderSettings(),
+      // WHAT IS IN FRONT OF THE DESKTOP, and whose it is. Worth having on its own -- a capture driven
+      // against a guest whose foreground is not Edge is a capture measuring something else -- and it is
+      // also the only thing that EXERCISES the owner resolution `blockingDialogs` reports with. That path
+      // runs only when a visible modal exists, so on a healthy fleet it is never executed and three green
+      // smoke runs said nothing about it. Here it runs on every call.
+      //
+      // On-demand only, like the rest of this endpoint: `/health` is polled and may not shell out.
+      desktopForeground: await probeWindowOwner((reason) => log(`foreground probe: ${reason}`)),
     });
   } catch (e) {
     return send(res, 500, { error: String((e && /** @type {any} */ (e).message) || e) });
