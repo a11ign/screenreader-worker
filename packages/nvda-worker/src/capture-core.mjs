@@ -259,7 +259,15 @@ import { setTimeout as sleep } from "node:timers/promises";
 // The protocol-11 corpus being captured right now is unaffected: it runs from an earlier commit and is
 // internally homogeneous. It is superseded by the next capture run rather than invalidated as evidence --
 // the gates it feeds still ran against real captures.
-export const CAPTURE_PROTOCOL_VERSION = 12;
+// 12 -> 13, 2026-09-01: `interaction.arrowNavigation` — the observation 2.1.1 abstains without.
+//
+// `SHARES_ONE_TAB_STOP` refuses to decide on a radio group, tab list or menu, because a native one and a
+// broken one both present ONE tab stop and the tab ring cannot separate them. That refusal is correct and
+// it leaves a criterion partly unanswered. Pressing the arrow is the only thing that can answer it.
+//
+// Bundled with 12 rather than deployed separately: neither has shipped, the fleet is mid-recapture, and
+// two bumps against one recapture is the waste this file's own rule about bundling exists to prevent.
+export const CAPTURE_PROTOCOL_VERSION = 13;
 
 // Re-exported for callers that had these from `capture-core` before the split.
 export {
@@ -602,6 +610,7 @@ async function runCapturePhases(url, opts, diag) {
     probeForms: !!opts.probeForms, probeFocus: !!opts.probeFocus, probeTables: !!opts.probeTables,
     probeNavigation: !!opts.probeNavigation,
     probeDialog: !!opts.probeDialog,
+    probeArrows: !!opts.probeArrows,
     probeElementsList: !!opts.probeElementsList,
     probeOrder: opts.probeOrder === "focus-first" ? "focus-first" : undefined,
     task: opts.task,
@@ -1994,10 +2003,12 @@ async function navigateByStructureThenAudit(options) {
  * the first time that channel could say so.
  *
  * @param {{ observed: Record<string, Observation>, probeForms?: boolean, probeFocus?: boolean,
- *           probeNavigation?: boolean, probeDialog?: boolean,
+ *           probeNavigation?: boolean, probeDialog?: boolean, probeArrows?: boolean,
  *           interaction: { formChanges: AnnouncedChange[] } }} ctx
  */
-function recordWhatWasAsked({ observed, probeForms, probeFocus, probeNavigation, probeDialog, interaction }) {
+function recordWhatWasAsked({
+  observed, probeForms, probeFocus, probeNavigation, probeDialog, probeArrows, interaction,
+}) {
   observed.formChanges = probeForms
     ? { asked: true, activated: interaction.formChanges.length }
     : notObserved("probeForms is off for this capture, so no control was activated");
@@ -2016,6 +2027,11 @@ function recordWhatWasAsked({ observed, probeForms, probeFocus, probeNavigation,
       // makes it meaningful" need opposite fixes, and a single `false` would send you to the wrong one.
       ? "probeDialog was asked WITHOUT probeFocus, and Escape from the browse caret measures the document"
       : "probeDialog is opt-in: it presses Escape, which changes state on a page we do not own");
+  observed.arrowNavigation = probeArrows && probeFocus
+    ? { asked: true }
+    : notObserved(probeArrows
+      ? "probeArrows was asked WITHOUT probeFocus, and an arrow in browse mode navigates the DOCUMENT"
+      : "probeArrows is opt-in: it presses keys inside whatever widget focus last landed on");
   observed.routeChange = probeNavigation
     ? { asked: true }
     : notObserved("probeNavigation is opt-in: it ACTIVATES A LINK and can leave the page under measurement");
@@ -2031,9 +2047,12 @@ function recordWhatWasAsked({ observed, probeForms, probeFocus, probeNavigation,
  *
  * @param {{ structure: CapturedStructure, interaction: {stateChanges: AnnouncedChange[],
  *           formChanges: AnnouncedChange[], navigatedOnSubmit?: unknown, postSubmitNames?: string[]},
- *           postSubmitFields: string[], focusOrder: string[], routeChange: unknown, dialogEscape: unknown }} ctx
+ *           postSubmitFields: string[], focusOrder: string[], routeChange: unknown, dialogEscape: unknown,
+ *           arrowNavigation: unknown }} ctx
  */
-function interactionEvidence({ structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape }) {
+function interactionEvidence({
+  structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape, arrowNavigation,
+}) {
   return {
     controls: structure.formFields,
     stateChanges: interaction.stateChanges,
@@ -2047,6 +2066,9 @@ function interactionEvidence({ structure, interaction, postSubmitFields, focusOr
     // Absent unless asked for, like every other opt-in field. Absent and "Escape was pressed and nothing
     // happened" must stay distinguishable: the second is the finding.
     ...(dialogEscape ? { dialogEscape } : {}),
+    // Absent unless asked for. Absent and "we pressed an arrow and nothing moved" must stay
+    // distinguishable: the second IS the 2.1.1 finding.
+    ...(arrowNavigation ? { arrowNavigation } : {}),
     // Absent (rather than false) when the submit did not navigate, so "we did not check" and "it did not
     // navigate" stay distinguishable.
     ...(interaction.navigatedOnSubmit ? { navigatedOnSubmit: interaction.navigatedOnSubmit } : {}),
@@ -2057,13 +2079,63 @@ function interactionEvidence({ structure, interaction, postSubmitFields, focusOr
 }
 
 /**
+ * The two position-dependent probe groups, built as closures over one capture's accumulators.
+ *
+ * Extracted because they are one job -- deciding what each pass RUNS and in what order within itself --
+ * and because `navigateByStructure` reads as a narrative of the phases, not of their contents. The
+ * ordering inside each closure is load-bearing and commented where it bites.
+ *
+ * @param {any} ctx
+ * @returns {{ runSweep: () => Promise<void>, runFocus: () => Promise<void>, results: any }}
+ */
+function probePasses(ctx) {
+  const { structure, interaction, observed, onFormField, probeForms, probeTables, probeFocus,
+    probeDialog, probeArrows, deadline, diag, trips } = ctx;
+  /** @type {{postSubmitFields: string[], focusOrder: string[], dialogEscape: any, arrowNavigation: any}} */
+  const results = { postSubmitFields: [], focusOrder: [], dialogEscape: null, arrowNavigation: null };
+  const runSweep = async () => {
+    await sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips, observed });
+    if (probeForms) diag.mark("formProbe", { activated: interaction.formChanges.length });
+    results.postSubmitFields = await rescanFormFieldsAfterSubmit({ interaction, probeForms, deadline, diag, trips });
+  };
+  // THE DIALOG PROBE RIDES WITH THE FOCUS PROBE, and it took a capture to find out why.
+  //
+  // It sat after the sweep first, on the reasoning that `anchorToTop` presses Escape and would dismiss
+  // what the probe exists to observe. True, and beside the point: a sweep is BROWSE MODE, which moves
+  // NVDA's virtual caret and never DOM focus. `keyboard-trap-modal-cycle`'s guard fires on `focusin`, so
+  // it never engaged, and the probe recorded Escape pressed on the document -- IDENTICALLY on the good
+  // and bad variants. A probe that cannot express the fault is worthless, and this one could not.
+  //
+  // `probeFocusOrder` is the only probe here that moves real focus, so it is the only one that can put the
+  // caret inside a dialog for Escape to leave. Riding with it also means the pair stays together under
+  // `focus-first`, where the sweep has not run at all.
+  const runFocus = async () => {
+    results.focusOrder = probeFocus
+      ? await probeFocusOrder({ deadline, diag, controlsOnPage: structure.formFields.length })
+      : [];
+    // Gated on `probeFocus` as well as its own flag: Escape from wherever the browse caret happens to
+    // rest measures the document, which is what the first version of this did.
+    results.dialogEscape = probeDialog && probeFocus
+      ? await probeDialogEscape({ interaction, deadline, diag })
+      : null;
+    // Same gate and same reason: an arrow pressed without DOM focus inside the widget navigates the
+    // DOCUMENT, because browse mode owns the arrows. AFTER the dialog probe, which may have dismissed an
+    // overlay -- arrows inside a widget the page has since closed measure nothing.
+    results.arrowNavigation = probeArrows && probeFocus
+      ? await probeArrowNavigation({ interaction, deadline, diag })
+      : null;
+  };
+  return { runSweep, runFocus, results };
+}
+
+/**
  * @param {{ deadline: number, diag: Diag, probeForms?: boolean, probeFocus?: boolean, probeTables?: boolean,
  *           probeNavigation?: boolean, probeElementsList?: boolean, probeOrder?: string,
- *           probeDialog?: boolean,
+ *           probeDialog?: boolean, probeArrows?: boolean,
  *           task?: string }} ctx
  */
 async function navigateByStructure({ deadline, diag, probeForms, probeFocus, probeTables, probeNavigation,
-  probeDialog,
+  probeDialog, probeArrows,
   probeElementsList, probeOrder, task }) {
   // BOTH ACCUMULATORS ARE DECLARED, because both are filled in by probes that run later and elsewhere.
   // An inferred type here describes only the fields present at construction -- `never[]` for each array,
@@ -2097,38 +2169,11 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   // what permuting exposes: under `focus-first` the sweep has not run, so that count is 0 and the mark can
   // never say `confined`. That is temporal coupling between two probes that are supposed to be independent
   // observations, and making it visible is the point of the option.
-  /** @type {string[]} */
-  let postSubmitFields = [];
-  /** @type {string[]} */
-  let focusOrder = [];
-  /** @type {{focusBefore: string, announced: string, focusAfter: string} | null} */
-  let dialogEscape = null;
-  const runSweep = async () => {
-    await sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips, observed });
-    if (probeForms) diag.mark("formProbe", { activated: interaction.formChanges.length });
-    postSubmitFields = await rescanFormFieldsAfterSubmit({ interaction, probeForms, deadline, diag, trips });
-  };
-  // THE DIALOG PROBE RIDES WITH THE FOCUS PROBE, and it took a capture to find out why.
-  //
-  // It sat after the sweep first, on the reasoning that `anchorToTop` presses Escape and would dismiss
-  // what the probe exists to observe. True, and beside the point: a sweep is BROWSE MODE, which moves
-  // NVDA's virtual caret and never DOM focus. `keyboard-trap-modal-cycle`'s guard fires on `focusin`, so
-  // it never engaged, and the probe recorded Escape pressed on the document -- IDENTICALLY on the good
-  // and bad variants. A probe that cannot express the fault is worthless, and this one could not.
-  //
-  // `probeFocusOrder` is the only probe here that moves real focus, so it is the only one that can put the
-  // caret inside a dialog for Escape to leave. Riding with it also means the pair stays together under
-  // `focus-first`, where the sweep has not run at all.
-  const runFocus = async () => {
-    focusOrder = probeFocus
-      ? await probeFocusOrder({ deadline, diag, controlsOnPage: structure.formFields.length })
-      : [];
-    // Gated on `probeFocus` as well as its own flag: Escape from wherever the browse caret happens to
-    // rest measures the document, which is what the first version of this did.
-    dialogEscape = probeDialog && probeFocus
-      ? await probeDialogEscape({ interaction, deadline, diag })
-      : null;
-  };
+  const { runSweep, runFocus, results } = probePasses({
+    structure, interaction, observed, onFormField, probeForms, probeTables, probeFocus,
+    probeDialog, probeArrows, deadline, diag, trips,
+  });
+  const { postSubmitFields, focusOrder, dialogEscape, arrowNavigation } = results;
   await runProbeSequence({ probeOrder, diag, runSweep, runFocus });
 
   // LAST of the three, because it is the only probe that can leave the page under measurement: it activates
@@ -2137,10 +2182,10 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
     ? await probeRouteChange({ interaction, deadline, diag })
     : null;
   if (probeElementsList) await crossCheckAgainstElementsList({ structure, deadline, diag });
-  recordWhatWasAsked({ observed, probeForms, probeFocus, probeNavigation, probeDialog, interaction });
+  recordWhatWasAsked({ observed, probeForms, probeFocus, probeNavigation, probeDialog, probeArrows, interaction });
 
   const result = interactionEvidence({
-    structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape,
+    structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape, arrowNavigation,
   });
   diag.mark("interaction", {
     controls: result.controls.length,
@@ -3636,6 +3681,53 @@ function noLinkReached(control) {
  * fact rather than a fiction the rule has to undo later.
  */
 const NOTHING_FURTHER_RE = /\bno (next|previous) \w+/i;
+
+/**
+ * Press an arrow inside whatever the focus probe last landed on, and record whether anything moved.
+ *
+ * THE OBSERVATION 2.1.1 ABSTAINS WITHOUT. `SHARES_ONE_TAB_STOP` refuses to decide on a radio group, tab
+ * list or menu because a native one and a broken one both present ONE tab stop -- the tab ring cannot
+ * separate them, and that refusal is correct. Pressing the arrow is the only thing that can.
+ *
+ * RIDES THE FOCUS PROBE, for the reason the dialog probe cost three captures to establish: a sweep is
+ * BROWSE MODE and never moves DOM focus, and in browse mode an arrow key navigates the DOCUMENT rather
+ * than the widget. An arrow pressed without focus inside the group measures the page, not the group.
+ *
+ * DOWN THEN RIGHT, and both are needed. NVDA and the browser map a radio group to Down/Up, a horizontal
+ * tab list to Right/Left, and a menu to either -- so one key alone would report a working horizontal
+ * widget as inert. Pressing both and taking the union answers "did ANY arrow move it", which is the
+ * question 2.1.1 asks; distinguishing which axis works is a finer claim than the criterion needs.
+ *
+ * NO ESCAPE TOLL HERE, and that asymmetry with `probeDialogEscape` is deliberate rather than an oversight.
+ * NVDA consumes the first ESCAPE to leave focus mode because Escape is flagged
+ * `ignoreTreeInterceptorPassThrough`; arrows carry no such flag, so in focus mode they reach the
+ * application directly. The focus probe has already put NVDA in focus mode by landing on the widget.
+ *
+ * @param {{ interaction: any, deadline: number, diag: Diag }} ctx
+ */
+async function probeArrowNavigation({ interaction, deadline, diag }) {
+  const mark = (/** @type {Record<string, unknown>} */ fields) => diag.mark("arrowNavigation", fields);
+  try {
+    if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
+    const focusBefore = await reportFocusedControlWithRetry(interaction);
+    const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "arrowNav")) || []).length;
+    for (const key of ["Down", "Right"]) {
+      await withTimeout(nvda.press(key), NAV_TIMEOUT_MS, "arrowNav").catch(() => undefined);
+    }
+    const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "arrowNav")) || [];
+    const announced = log.slice(before).map((/** @type {unknown} */ x) => String(x).trim())
+      .filter(Boolean).join(" | ");
+    const focusAfter = await reportFocusedControlWithRetry(interaction);
+    mark({ focusBefore, announced: announced.slice(0, 120), focusAfter });
+    return { focusBefore, announced, focusAfter };
+  } catch (e) {
+    // RECORDED, never dropped. A probe that threw and a widget whose arrows do nothing are different
+    // findings, and this file has already paid a corpus for making them the same silence.
+    mark({ error: errMsg(e) });
+    interaction.sweepLog.push(`arrowNavigation ERROR ${errMsg(e)}`);
+    return null;
+  }
+}
 
 /**
  * DOES ESCAPE CLOSE IT, AND WHERE DOES FOCUS GO? — the dialog half of `docs/screenreader-coverage.md`.
