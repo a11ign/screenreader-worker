@@ -3752,12 +3752,26 @@ const NOTHING_FURTHER_RE = /\bno (next|previous) \w+/i;
  * @param {string} label @param {Diag} diag
  */
 async function restoreBrowseMode(label, diag) {
-  for (const remedy of BROWSE_MODE_REMEDIES) {
-    await remedy().catch(() => undefined);
-  }
+  // `anchorToTop`, NOT the `BROWSE_MODE_REMEDIES` ladder, and getting that wrong cost a capture round.
+  //
+  // That ladder is an ESCALATION the sweep applies ONE AT A TIME, testing between -- its own comment says
+  // "neither is trusted; both are tested by whether the next step still echoes". Applied blindly as a
+  // sequence it is worse than the first remedy alone, because `moveToContainingBrowseModeDocument` is a
+  // TOGGLE: run when Escape has already left focus mode, it goes back in.
+  //
+  // Measured 2026-09-01: the arrow probe worked perfectly -- arrows moved 1 -> 2 -> 3 through the radio
+  // group -- and the capture was still rejected, because the sweep that followed sweept 0 headings on a
+  // page with an h1. `arrowNavBrowseRestored` was marked, so the restore HAD run; it was the restore
+  // itself that put the mode back.
+  //
+  // `anchorToTop` is the proven route and does both halves at once: it presses Escape -- NVDA's own way
+  // out, and `press` rather than `perform(exitFocusMode)`, measured -- and then `Control+End`, which is
+  // exactly where the sweep expects the caret. Quick navigation cannot reach an element the caret is ON,
+  // so leaving the caret mid-page silently costs the sweep one element of each type.
+  await anchorToTop();
   // MARKED WHENEVER IT RUNS, so "did not need to restore" and "never ran" can never be the same silence --
   // the `refreshBrowseBuffer` rule, which sat inert through three green runs for want of exactly this.
-  diag.mark(label + "BrowseRestored", { remedies: BROWSE_MODE_REMEDIES.length });
+  diag.mark(label + "BrowseRestored", { via: "anchorToTop" });
 }
 
 /**
