@@ -3733,6 +3733,34 @@ function noLinkReached(control) {
 const NOTHING_FURTHER_RE = /\bno (next|previous) \w+/i;
 
 /**
+ * Put NVDA back in browse mode after a probe that deliberately entered focus mode.
+ *
+ * NOT OPTIONAL, AND A GUARD CAUGHT IT MISSING. `landOnControl` enters focus mode so the keys that follow
+ * reach the application — and under `probeOrder: "focus-first"` the structural sweep runs AFTERWARDS. In
+ * focus mode a quick-navigation letter is not a command, it is INPUT: the sweep types `hhkkllgg` into the
+ * page it is measuring. That is the 353-capture contamination this file already documents at length,
+ * reintroduced by a probe that borrowed focus and did not give it back.
+ *
+ * Measured 2026-09-01, and it never reached the corpus: `training:capture` rejected all three attempts on
+ * both cases with *"the read-through announced a heading but the heading sweep found none — the page was
+ * not traversed"*. The cross-check that refuses a capture contradicting itself is what stopped it.
+ *
+ * Uses the same `BROWSE_MODE_REMEDIES` ladder the sweep uses rather than a second spelling of Escape:
+ * `press("Escape")` first, then `moveToContainingBrowseModeDocument` for a panel behaving like an embedded
+ * document, which apache.org needed and Escape alone did not fix.
+ *
+ * @param {string} label @param {Diag} diag
+ */
+async function restoreBrowseMode(label, diag) {
+  for (const remedy of BROWSE_MODE_REMEDIES) {
+    await remedy().catch(() => undefined);
+  }
+  // MARKED WHENEVER IT RUNS, so "did not need to restore" and "never ran" can never be the same silence --
+  // the `refreshBrowseBuffer` rule, which sat inert through three green runs for want of exactly this.
+  diag.mark(label + "BrowseRestored", { remedies: BROWSE_MODE_REMEDIES.length });
+}
+
+/**
  * Quick-navigate to a control of the given kind and put NVDA into focus mode on it.
  *
  * THE STEP I SKIPPED, AND THE CAPTURE SAID SO. `probeArrowNavigation` and `probeTypedFeedback` first read
@@ -3834,6 +3862,10 @@ async function probeTypedFeedback({ interaction, deadline, diag }) {
     mark({ error: errMsg(e) });
     interaction.sweepLog.push(`typedFeedback ERROR ${errMsg(e)}`);
     return null;
+  } finally {
+    // ALWAYS, even on the throw path. A probe that borrowed focus mode and died still owes it back, and
+    // the sweep that runs next cannot tell the difference.
+    await restoreBrowseMode("typing", diag);
   }
 }
 
@@ -3884,6 +3916,10 @@ async function probeArrowNavigation({ interaction, deadline, diag }) {
     mark({ error: errMsg(e) });
     interaction.sweepLog.push(`arrowNavigation ERROR ${errMsg(e)}`);
     return null;
+  } finally {
+    // ALWAYS, even on the throw path. A probe that borrowed focus mode and died still owes it back, and
+    // the sweep that runs next cannot tell the difference.
+    await restoreBrowseMode("arrowNav", diag);
   }
 }
 
