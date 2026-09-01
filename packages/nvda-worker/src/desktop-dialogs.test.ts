@@ -28,7 +28,35 @@ test("the specimen this module exists for is parsed into title and message", () 
     title: "Error",
     message: "Couldn't terminate existing NVDA process, abandoning start: "
       + "Exception: [WinError 5] Access is denied. OK",
+    // A THREE-FIELD line predates the owner and yields "", which must stay distinguishable from the
+    // literal "unknown" a live worker reports when the process died before its pid could be resolved.
+    // "nobody asked" and "we asked and could not tell" are different answers; conflating them is this
+    // repo's most-recorded defect.
+    owner: "",
   }]);
+});
+
+test("the owner is parsed, so 'we opened it' and 'the image came with it' are different answers", () => {
+  // The specimen that made this necessary, from a GitHub windows-2022 runner on 2026-09-01.
+  // `action-smoke` failed with this dialog blocking the desktop; the readiness guard correctly refused
+  // to capture, and the report named the dialog but not its owner — so answering "did WE open it?" meant
+  // grepping our own provisioning and inferring from its absence. Those need opposite work: ours is a bug
+  // to fix, the runner image's is a machine to configure.
+  const line = `197350${TAB}Performance Options${TAB}Advanced Processor scheduling OK Cancel${TAB}SystemPropertiesPerformance`;
+  assert.deepEqual(parseDialogList(line), [{
+    handle: "197350",
+    title: "Performance Options",
+    message: "Advanced Processor scheduling OK Cancel",
+    owner: "SystemPropertiesPerformance",
+  }]);
+});
+
+test("a dead process reports `unknown`, which is not the same as an old worker's empty owner", () => {
+  const dead = parseDialogList(`5${TAB}Error${TAB}boom${TAB}unknown`)[0];
+  const old = parseDialogList(`5${TAB}Error${TAB}boom`)[0];
+  assert.equal(dead.owner, "unknown", "the window outlived its process — we asked and could not tell");
+  assert.equal(old.owner, "", "a worker too old to report an owner — nobody asked");
+  assert.notEqual(dead.owner, old.owner, "and the two must never collapse into one value");
 });
 
 test("several dialogs are all reported — one failure can leave more than one box up", () => {

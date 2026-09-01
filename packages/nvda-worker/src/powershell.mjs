@@ -80,6 +80,14 @@ public class A11yUser32 {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern IntPtr SendMessageTimeout(IntPtr h, uint m, IntPtr w, IntPtr l, uint f, uint t, out IntPtr r);
+  // WHO OWNS THE WINDOW. A blocking dialog reported by title and text alone cannot say whether WE opened
+  // it or the machine came with it, and those need opposite work: ours is a bug to fix, the image's is a
+  // runner to configure. Measured 2026-09-01 on a GitHub windows-2022 runner -- action-smoke failed with
+  // a "Performance Options" dialog blocking the desktop, the readiness guard correctly refused to
+  // capture, and answering "did we open it?" meant grepping our own provisioning and inferring from its
+  // absence. One process name would have said so outright.
+  // (No backticks in this block: it is C# inside a JS template literal, and one ends the string.)
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
 }
 "@
 }

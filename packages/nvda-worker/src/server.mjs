@@ -683,7 +683,7 @@ function warmUpOnceIfNeeded() {
 // `dialogs: null` means NOT SAMPLED, and every reader below depends on that being distinct from an
 // empty list -- `noBlockingDialog` answers null rather than true when nobody looked. Inferred from this
 // literal the field is `null` forever, so the sample that fills it is the type error.
-/** @type {{ at: number, dialogs: null | { handle: string, title: string, message: string }[] }} */
+/** @type {{ at: number, dialogs: null | { handle: string, title: string, message: string, owner: string }[] }} */
 let dialogCache = { at: 0, dialogs: null };
 
 async function sampleDesktopDialogs() {
@@ -757,7 +757,7 @@ async function readiness() {
     // The dialog's own text, because "not ready: noBlockingDialog" would name the check and not the fault.
     // The specimen this was built for said "Couldn't terminate existing NVDA process ... Access is denied",
     // which tells you an orphaned NVDA is the cause; the check name tells you nothing.
-    blockingDialogs: (dialogs ?? []).map((d) => ({ title: d.title, message: d.message })),
+    blockingDialogs: (dialogs ?? []).map((d) => ({ title: d.title, message: d.message, owner: d.owner })),
     // Age, because this is sampled at capture start rather than continuously: "no dialogs, as of 40 minutes
     // ago" is a different claim from "no dialogs now", and conflating them is how a stale check reads as a
     // fresh one.

@@ -75,7 +75,12 @@ $top = [A11yUser32+EnumProc]{
     }
     [A11yUser32]::EnumChildWindows($h, $kid, [IntPtr]::Zero) | Out-Null
     $msg = ($parts -join ' ') -replace '\\s+', ' '
-    $out.Add(("{0}${SEP}{1}${SEP}{2}" -f $h.ToInt64(), (Get-A11yText $h), $msg)) | Out-Null
+    # The owning process, so "we opened it" and "the image came with it" are distinguishable. Resolved
+    # here rather than reported as a bare pid, because a pid is dead by the time anyone reads the report.
+    $pid = 0
+    [A11yUser32]::GetWindowThreadProcessId($h, [ref]$pid) | Out-Null
+    $owner = try { (Get-Process -Id $pid -ErrorAction Stop).ProcessName } catch { 'unknown' }
+    $out.Add(("{0}${SEP}{1}${SEP}{2}${SEP}{3}" -f $h.ToInt64(), (Get-A11yText $h), $msg, $owner)) | Out-Null
   }
   return $true
 }
@@ -105,7 +110,7 @@ foreach ($h in @(${handles.join(",")})) {
  * module a unit test can reach, and the part most likely to be wrong.
  *
  * @param {string} stdout
- * @returns {{handle:string,title:string,message:string}[]}
+ * @returns {{handle:string,title:string,message:string,owner:string}[]}
  */
 export function parseDialogList(stdout) {
   return String(stdout ?? "")
@@ -113,8 +118,11 @@ export function parseDialogList(stdout) {
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
     .map((line) => {
-      const [handle, title = "", message = ""] = line.split(SEP);
-      return { handle: handle.trim(), title: title.trim(), message: message.trim() };
+      const [handle, title = "", message = "", owner = ""] = line.split(SEP);
+      // `unknown` when the process died between enumerating the window and resolving its pid — a real
+      // outcome on a busy desktop, and different from a worker too old to report an owner at all, which
+      // yields "". Absent must not read as a value; that is this repo's most-recorded defect.
+      return { handle: handle.trim(), title: title.trim(), message: message.trim(), owner: owner.trim() };
     })
     // A handle is always a positive integer. Anything else is PowerShell noise (a warning, a progress
     // record) and must not be reported as a dialog — a false "the desktop is blocked" would take a healthy
@@ -146,7 +154,7 @@ async function powershell(script, onError) {
  * Visible modal dialogs on the guest desktop, if any.
  *
  * @param {(reason: string) => void} [onError]
- * @returns {Promise<{handle:string,title:string,message:string}[]>}
+ * @returns {Promise<{handle:string,title:string,message:string,owner:string}[]>}
  */
 export async function listBlockingDialogs(onError) {
   return parseDialogList(await powershell(LIST_SCRIPT, onError));
@@ -160,7 +168,7 @@ export async function listBlockingDialogs(onError) {
  * why the guest was stuck, and this project has been bitten by remedies that left no trace.
  *
  * @param {(reason: string) => void} [onError]
- * @returns {Promise<{dismissed:{handle:string,title:string,message:string}[]}>}
+ * @returns {Promise<{dismissed:{handle:string,title:string,message:string,owner:string}[]}>}
  */
 export async function dismissBlockingDialogs(onError) {
   const dialogs = await listBlockingDialogs(onError);
