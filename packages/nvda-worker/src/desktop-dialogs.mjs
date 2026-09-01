@@ -60,6 +60,12 @@ const SEP = "\t";
  * "NVDA", and the message is what identifies which fault occurred. `EnumChildWindows` collects the static
  * labels, which is where the message lives.
  */
+// NO BACKTICKS ANYWHERE BELOW, including in comments. This is PowerShell inside a JS TEMPLATE LITERAL,
+// so a backtick ends the string and the module fails to parse. Made this mistake twice in ten minutes on
+// 2026-09-01, both times while writing a comment about something else -- and `npm run lint` and `tsc` were
+// green for both, because this is .mjs. `node -e "import('./desktop-dialogs.mjs')"` is the only check that
+// sees it. (PowerShell also uses backtick as ITS escape character, so one here is ambiguous even when it
+// does parse.)
 const LIST_SCRIPT = `
 ${USER32}
 $out = New-Object System.Collections.ArrayList
@@ -77,9 +83,21 @@ $top = [A11yUser32+EnumProc]{
     $msg = ($parts -join ' ') -replace '\\s+', ' '
     # The owning process, so "we opened it" and "the image came with it" are distinguishable. Resolved
     # here rather than reported as a bare pid, because a pid is dead by the time anyone reads the report.
-    $pid = 0
-    [A11yUser32]::GetWindowThreadProcessId($h, [ref]$pid) | Out-Null
-    $owner = try { (Get-Process -Id $pid -ErrorAction Stop).ProcessName } catch { 'unknown' }
+    # NOT $pid: that is a READ-ONLY AUTOMATIC VARIABLE in PowerShell (the current process id), so
+    # assigning to it throws -- and it would have thrown inside the enumerator, which runs on the
+    # readiness path, only ONCE A DIALOG EXISTED. That is the worst possible timing: the code that
+    # explains a blocked desktop would itself fail exactly when the desktop was blocked, and every worker
+    # would report "could not enumerate desktop dialogs" instead of naming the dialog.
+    #
+    # The whole resolution is wrapped, not just Get-Process: if the P/Invoke signature is wrong this must
+    # degrade to 'unknown' rather than take the fleet's readiness check down with it. A diagnostic that
+    # can break the thing it reports on is worse than no diagnostic.
+    $owner = 'unknown'
+    try {
+      $ownerPid = 0
+      [A11yUser32]::GetWindowThreadProcessId($h, [ref]$ownerPid) | Out-Null
+      if ($ownerPid -gt 0) { $owner = (Get-Process -Id $ownerPid -ErrorAction Stop).ProcessName }
+    } catch { $owner = 'unknown' }
     $out.Add(("{0}${SEP}{1}${SEP}{2}${SEP}{3}" -f $h.ToInt64(), (Get-A11yText $h), $msg, $owner)) | Out-Null
   }
   return $true
