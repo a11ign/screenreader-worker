@@ -3733,6 +3733,48 @@ function noLinkReached(control) {
 const NOTHING_FURTHER_RE = /\bno (next|previous) \w+/i;
 
 /**
+ * Quick-navigate to a control of the given kind and put NVDA into focus mode on it.
+ *
+ * THE STEP I SKIPPED, AND THE CAPTURE SAID SO. `probeArrowNavigation` and `probeTypedFeedback` first read
+ * "wherever the focus probe finished", which is wherever the tab ring ENDS — on these pages, a furniture
+ * link at the bottom. Measured 2026-09-01: the arrow probe recorded
+ * `focusBefore: "Annual review 2019 02, link"` and its arrows navigated the DOCUMENT, identically on both
+ * variants; the typing probe recorded `typed: false` because its guard correctly refused a link. The
+ * register said this outright — *"route in `moveToNextRadioButton` to land, then raw arrows"* — and it is
+ * the part it called the digging.
+ *
+ * Quick navigation is BROWSE MODE by definition, so landing alone gives a virtual caret and no DOM focus.
+ * `toggleBetweenBrowseAndFocusMode` is used rather than Enter because Enter ACTIVATES: on a radio it would
+ * select an option, which is a state change this probe is supposed to observe rather than cause.
+ *
+ * Returns what the control announced, or null if none of that kind is on the page — and those are
+ * different answers from "the arrows did nothing", which is why the caller checks it.
+ *
+ * @param {{ to: any, label: string, interaction: any, diag: Diag }} ctx
+ */
+async function landOnControl({ to, label, interaction, diag }) {
+  const K = nvda.keyboardCommands;
+  // From the TOP, because quick navigation searches forward from the caret and cannot reach an element
+  // the caret is already on -- the rule `sweepEveryStructuralType` records for landmarks and which is
+  // true of every type in both directions.
+  await anchorToTop();
+  const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label)) || []).length;
+  await withTimeout(nvda.perform(to), NAV_TIMEOUT_MS, label).catch(() => undefined);
+  const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label)) || [];
+  const landed = log.slice(before).map((/** @type {unknown} */ x) => String(x).trim()).filter(Boolean).join(" ");
+  if (!landed) {
+    diag.mark(label + "Landing", { landed: null, why: "no control of this kind on the page" });
+    return null;
+  }
+  // Into focus mode, so the keys that follow reach the APPLICATION rather than NVDA's browse-mode scripts.
+  await withTimeout(nvda.perform(K.toggleBetweenBrowseAndFocusMode), NAV_TIMEOUT_MS, label)
+    .catch(() => undefined);
+  const focused = await reportFocusedControlWithRetry(interaction);
+  diag.mark(label + "Landing", { landed: landed.slice(0, 80), focused });
+  return focused;
+}
+
+/**
  * Type into the focused field and record what the page said BEYOND NVDA's own echo.
  *
  * The half of 3.3.1 a capture could not reach. Every existing record describes an error surfaced by
@@ -3761,7 +3803,13 @@ async function probeTypedFeedback({ interaction, deadline, diag }) {
   const mark = (/** @type {Record<string, unknown>} */ fields) => diag.mark("typedFeedback", fields);
   try {
     if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
-    const focusBefore = await reportFocusedControlWithRetry(interaction);
+    const focusBefore = await landOnControl({
+      to: nvda.keyboardCommands.moveToNextEditField, label: "typing", interaction, diag,
+    });
+    if (!focusBefore) {
+      mark({ typed: false, why: "no edit field on this page" });
+      return { typed: false, focusBefore: "", echoed: "", announced: "" };
+    }
     // The role test is on the ANNOUNCEMENT, because that is the only thing this layer has. NVDA says
     // "edit" for a text input and "edit, multi line" for a textarea; both are places typing belongs.
     if (!/\bedit\b/i.test(String(focusBefore ?? ""))) {
@@ -3816,7 +3864,10 @@ async function probeArrowNavigation({ interaction, deadline, diag }) {
   const mark = (/** @type {Record<string, unknown>} */ fields) => diag.mark("arrowNavigation", fields);
   try {
     if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
-    const focusBefore = await reportFocusedControlWithRetry(interaction);
+    const focusBefore = await landOnControl({
+      to: nvda.keyboardCommands.moveToNextRadioButton, label: "arrowNav", interaction, diag,
+    });
+    if (!focusBefore) { mark({ landed: false, why: "no radio button on this page" }); return null; }
     const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "arrowNav")) || []).length;
     for (const key of ["Down", "Right"]) {
       await withTimeout(nvda.press(key), NAV_TIMEOUT_MS, "arrowNav").catch(() => undefined);
