@@ -101,6 +101,9 @@ function setCursorPosition(x, y) {
   return moved;
 }
 
+/** Two attempts, never more -- see `parkPointer`: the observed failures are transient spawn failures. */
+const PARK_ATTEMPTS = 2;
+
 /**
  * Move the pointer out of the page's way, recording the cost and any failure.
  *
@@ -108,14 +111,51 @@ function setCursorPosition(x, y) {
  * whatever hover state it happened to have, which is exactly what every capture carried before this
  * existed. Turning that into a failed capture would trade a quiet risk for a loud outage.
  */
-/** @param {{mark: (event: string, detail: object) => void} | undefined} [diag] */
-export async function parkPointer(diag) {
+/**
+ * RETRIED ONCE, because a failure here silently splits a good/bad PAIR.
+ *
+ * Measured 2026-09-01 over 4,926 captures: 12 failed to park (0.2%) and NINE of them split their pair --
+ * the failing half was measured with a different instrument from its mate. That is the U+FFFC defect,
+ * which this project calls the one it cannot tolerate, and it had been invisible because the failure was
+ * marked and never read.
+ *
+ * Four of the splits are `image-*` against a 13.9% base rate. That is where the remedy matters most: the
+ * magnifier needs an image under the cursor to appear at all, so the failures concentrate on exactly the
+ * pages the park exists for.
+ *
+ * ONE retry, not a loop. Every observed failure is `Command failed: powershell ...` -- a transient failure
+ * to spawn, not a guest that cannot move its pointer -- so a second attempt is worth its cost and a third
+ * would be a poll disguised as a remedy. `attempts` is recorded on the SUCCESS mark too, so "parked first
+ * time" and "parked on the retry" are different observations rather than the same silence.
+ *
+ * Still never throws. A guest that cannot move its own pointer after two tries still produces a capture --
+ * carrying whatever hover state it happened to have, which is what every capture carried before this
+ * existed. Turning that into a failed capture would trade a quiet risk for a loud outage, and the audit
+ * now names the pairs it split.
+ *
+ * `setCursor` is injected so the RETRY can be tested off Windows. The real one shells out to PowerShell
+ * and only runs on a guest, which is why this file's own header says the decision is all that can be
+ * tested here -- and a retry is a decision. Same seam as `file-version-memo.test.ts`, for the same reason:
+ * a remedy must be shown to fail before it is trusted, and this one cannot be on a Mac otherwise.
+ *
+ * @param {{mark: (event: string, detail: object) => void} | undefined} [diag]
+ * @param {{setCursor?: (x: number, y: number) => Promise<void>}} [deps]
+ */
+export async function parkPointer(diag, { setCursor = setCursorPosition } = {}) {
   const { x, y } = requestedParkPoint();
   const startedAt = Date.now();
-  try {
-    await setCursorPosition(x, y);
-    diag?.mark("pointerParked", { x, y, ms: Date.now() - startedAt });
-  } catch (error) {
-    diag?.mark("pointerParkFailed", { x, y, error: errorText(error), ms: Date.now() - startedAt });
+  /** @type {unknown} */
+  let lastError;
+  for (let attempt = 1; attempt <= PARK_ATTEMPTS; attempt += 1) {
+    try {
+      await setCursor(x, y);
+      diag?.mark("pointerParked", { x, y, attempts: attempt, ms: Date.now() - startedAt });
+      return;
+    } catch (error) {
+      lastError = error;
+    }
   }
+  diag?.mark("pointerParkFailed", {
+    x, y, attempts: PARK_ATTEMPTS, error: errorText(lastError), ms: Date.now() - startedAt,
+  });
 }

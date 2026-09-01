@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { parkPointForTest as parkPoint } from "./pointer.mjs";
+import { parkPointForTest as parkPoint, parkPointer } from "./pointer.mjs";
 
 /** The override is read per call, so each case sets and clears it rather than relying on order. */
 function withOverride<T>(value: string | undefined, fn: () => T): T {
@@ -42,4 +42,34 @@ test("a malformed override falls back to the safe point instead of NaN", () => {
   for (const bad of ["640", "", "x,y", "640px,420", ",", "640,"]) {
     assert.deepEqual(withOverride(bad, parkPoint), { x: 0, y: 0 }, `"${bad}" must not park the pointer`);
   }
+});
+
+test("parkPointer retries once, and says which attempt succeeded", async () => {
+  // "Parked first time" and "parked on the retry" must not be the same silence — a rising retry rate is
+  // the signal that the transient spawn failure is becoming something else, and a bare `pointerParked`
+  // mark cannot carry it. Same rule as `refreshBrowseBuffer` marking when it SKIPS.
+  const marks: { event: string; detail: Record<string, unknown> }[] = [];
+  const diag = { mark: (event: string, detail: object) => marks.push({ event, detail: detail as Record<string, unknown> }) };
+  let calls = 0;
+  await parkPointer(diag, {
+    setCursor: async () => { calls += 1; if (calls === 1) throw new Error("Command failed: powershell"); },
+  });
+  assert.equal(calls, 2, "a first failure must be retried");
+  assert.deepEqual(marks.map((m) => m.event), ["pointerParked"]);
+  assert.equal(marks[0].detail.attempts, 2, "the mark must say it took two attempts");
+});
+
+test("parkPointer gives up after two attempts and never throws", async () => {
+  // A guest that cannot move its own pointer still produces a capture, carrying whatever hover state it
+  // had — which is what every capture carried before the park existed. Turning that into a failed capture
+  // trades a quiet risk for a loud outage. The audit names the pairs it split instead.
+  const marks: { event: string; detail: Record<string, unknown> }[] = [];
+  const diag = { mark: (event: string, detail: object) => marks.push({ event, detail: detail as Record<string, unknown> }) };
+  let calls = 0;
+  await parkPointer(diag, {
+    setCursor: async () => { calls += 1; throw new Error("Command failed: powershell"); },
+  });
+  assert.equal(calls, 2, "exactly two attempts — a third would be a poll disguised as a remedy");
+  assert.deepEqual(marks.map((m) => m.event), ["pointerParkFailed"]);
+  assert.equal(marks[0].detail.attempts, 2);
 });
