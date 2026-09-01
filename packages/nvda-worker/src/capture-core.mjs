@@ -3868,7 +3868,15 @@ async function probeTypedFeedback({ interaction, deadline, diag }) {
     }
     const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "typing")) || []).length;
     await withTimeout(nvda.type(TYPED_PROBE_TEXT), NAV_TIMEOUT_MS, "typing").catch(() => undefined);
-    const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "typing")) || [];
+    // WAIT FOR SPEECH TO SETTLE, do not read the log the instant `type` returns. The first version did,
+    // and the consequence is the exact defect this file has a section about: a live region that DID
+    // announce arrived after the read, so `announced` was empty and the page looked silent -- which IS
+    // the 3.3.1 finding. A fixed wait would be the same mistake with a timer on it.
+    //
+    // `waitForAnnouncement` waits for something to be said and THEN for the rest of it to arrive, which
+    // matters more here than anywhere else: NVDA echoes six characters first, so the page's own
+    // announcement is necessarily behind them in the queue.
+    const log = await waitForAnnouncement(before, "typing");
     const spoken = log.slice(before).map((/** @type {unknown} */ x) => String(x).trim()).filter(Boolean);
     // A phrase is ECHO when it is one of the characters we sent, and ANNOUNCEMENT otherwise. Compared
     // against the string actually typed rather than against a character class, so a page that legitimately
@@ -3926,7 +3934,10 @@ async function probeArrowNavigation({ interaction, deadline, diag }) {
     for (const key of ["Down", "Right"]) {
       await withTimeout(nvda.press(key), NAV_TIMEOUT_MS, "arrowNav").catch(() => undefined);
     }
-    const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "arrowNav")) || [];
+    // Settled rather than read immediately. This one HAPPENED to work reading the log straight away --
+    // arrow navigation echoes at once -- and happening to work is not the same as being right. A silent
+    // result here is the 2.1.1 finding, so a read that outran the speech would manufacture one.
+    const log = await waitForAnnouncement(before, "arrowNav");
     const announced = log.slice(before).map((/** @type {unknown} */ x) => String(x).trim())
       .filter(Boolean).join(" | ");
     const focusAfter = await reportFocusedControlWithRetry(interaction);
