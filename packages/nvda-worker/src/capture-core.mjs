@@ -267,6 +267,13 @@ import { setTimeout as sleep } from "node:timers/promises";
 //
 // Bundled with 12 rather than deployed separately: neither has shipped, the fleet is mid-recapture, and
 // two bumps against one recapture is the waste this file's own rule about bundling exists to prevent.
+/**
+ * What `probeTypedFeedback` types. Six digits: enough to trip a length rule, keyboard-safe, and bound by
+ * no quick-navigation script. Named because it is compared against the speech log to separate NVDA's echo
+ * from the page's own announcement -- a literal here and a character class there would drift apart.
+ */
+const TYPED_PROBE_TEXT = "123456";
+
 export const CAPTURE_PROTOCOL_VERSION = 13;
 
 // Re-exported for callers that had these from `capture-core` before the split.
@@ -611,6 +618,7 @@ async function runCapturePhases(url, opts, diag) {
     probeNavigation: !!opts.probeNavigation,
     probeDialog: !!opts.probeDialog,
     probeArrows: !!opts.probeArrows,
+    probeTyping: !!opts.probeTyping,
     probeElementsList: !!opts.probeElementsList,
     probeOrder: opts.probeOrder === "focus-first" ? "focus-first" : undefined,
     task: opts.task,
@@ -1991,24 +1999,51 @@ async function navigateByStructureThenAudit(options) {
  * phase below says which cursor state it leaves behind and therefore why it cannot move.
  */
 /**
+ * WHICH probes needing DOM FOCUS were asked for — stated once, as data.
+ *
+ * Three channels share one precondition and it was written three times: Escape, an arrow and a typed
+ * character all measure the DOCUMENT rather than a control unless `probeFocusOrder` has put real focus
+ * somewhere first, because a sweep is browse mode and never moves DOM focus. That fact cost the dialog
+ * probe three captures to discover, and repeating it per channel is three chances for the fourth one to
+ * be added without it.
+ *
+ * `why` names WHICH precondition was missing, because "nobody asked" and "asked without the probe that
+ * makes it meaningful" need opposite fixes and a bare `false` sends you to the wrong one.
+ */
+const FOCUS_DEPENDENT_PROBES = Object.freeze({
+  dialogEscape: {
+    flag: "probeDialog",
+    ownReason: "probeDialog is opt-in: it presses Escape, which changes state on a page we do not own",
+    withoutFocus: "probeDialog was asked WITHOUT probeFocus, and Escape from the browse caret measures the document",
+  },
+  arrowNavigation: {
+    flag: "probeArrows",
+    ownReason: "probeArrows is opt-in: it presses keys inside whatever widget focus last landed on",
+    withoutFocus: "probeArrows was asked WITHOUT probeFocus, and an arrow in browse mode navigates the DOCUMENT",
+  },
+  typedFeedback: {
+    flag: "probeTyping",
+    ownReason: "probeTyping is opt-in: it enters characters into a field, changing the page under measurement",
+    withoutFocus: "probeTyping was asked WITHOUT probeFocus, and typing in browse mode sends quick-nav COMMANDS",
+  },
+});
+
+/**
  * What this capture ASKED about the OPT-IN channels — the half `collectByType` cannot record for itself.
  *
- * The sweeps record their own observation as they run, because only they know how they ended. These four
- * are decided by a flag rather than by a walk, so they are recorded in one place at the end: four `if`s
- * scattered through the caller is four chances for the next probe to be added without one.
+ * The sweeps record their own observation as they run, because only they know how they ended. These are
+ * decided by a FLAG rather than by a walk, so they are recorded in one place at the end: a chain of `if`s
+ * scattered through the caller is a chance for the next probe to be added without one.
  *
  * `activated` separates the two states the boolean cannot — asked and something happened, asked and the
- * page had nothing to activate. That distinction is what `formProbe: {activated: 0}` on the focus cases
- * turned out to mean: not a failure, but a page with no submit control, which is a fact about the page and
- * the first time that channel could say so.
+ * page had nothing to activate. That is what `formProbe: {activated: 0}` on the focus cases turned out to
+ * mean: not a failure, but a page with no submit control, which is a fact about the page.
  *
  * @param {{ observed: Record<string, Observation>, probeForms?: boolean, probeFocus?: boolean,
  *           probeNavigation?: boolean, probeDialog?: boolean, probeArrows?: boolean,
- *           interaction: { formChanges: AnnouncedChange[] } }} ctx
+ *           probeTyping?: boolean, interaction: { formChanges: AnnouncedChange[] } }} ctx
  */
-function recordWhatWasAsked({
-  observed, probeForms, probeFocus, probeNavigation, probeDialog, probeArrows, interaction,
-}) {
+function recordWhatWasAsked({ observed, probeForms, probeFocus, interaction, ...flags }) {
   observed.formChanges = probeForms
     ? { asked: true, activated: interaction.formChanges.length }
     : notObserved("probeForms is off for this capture, so no control was activated");
@@ -2020,19 +2055,13 @@ function recordWhatWasAsked({
   observed.focusOrder = probeFocus
     ? { asked: true }
     : notObserved("probeFocus is opt-in -- ~8s on a ~12s capture -- and this case did not ask");
-  observed.dialogEscape = probeDialog && probeFocus
-    ? { asked: true }
-    : notObserved(probeDialog
-      // Two different unmet preconditions, named apart. "Nobody asked" and "asked without the probe that
-      // makes it meaningful" need opposite fixes, and a single `false` would send you to the wrong one.
-      ? "probeDialog was asked WITHOUT probeFocus, and Escape from the browse caret measures the document"
-      : "probeDialog is opt-in: it presses Escape, which changes state on a page we do not own");
-  observed.arrowNavigation = probeArrows && probeFocus
-    ? { asked: true }
-    : notObserved(probeArrows
-      ? "probeArrows was asked WITHOUT probeFocus, and an arrow in browse mode navigates the DOCUMENT"
-      : "probeArrows is opt-in: it presses keys inside whatever widget focus last landed on");
-  observed.routeChange = probeNavigation
+  for (const [channel, { flag, ownReason, withoutFocus }] of Object.entries(FOCUS_DEPENDENT_PROBES)) {
+    const asked = /** @type {Record<string, boolean|undefined>} */ (flags)[flag];
+    observed[channel] = asked && probeFocus
+      ? { asked: true }
+      : notObserved(asked ? withoutFocus : ownReason);
+  }
+  observed.routeChange = flags.probeNavigation
     ? { asked: true }
     : notObserved("probeNavigation is opt-in: it ACTIVATES A LINK and can leave the page under measurement");
 }
@@ -2048,10 +2077,11 @@ function recordWhatWasAsked({
  * @param {{ structure: CapturedStructure, interaction: {stateChanges: AnnouncedChange[],
  *           formChanges: AnnouncedChange[], navigatedOnSubmit?: unknown, postSubmitNames?: string[]},
  *           postSubmitFields: string[], focusOrder: string[], routeChange: unknown, dialogEscape: unknown,
- *           arrowNavigation: unknown }} ctx
+ *           arrowNavigation: unknown, typedFeedback: unknown }} ctx
  */
 function interactionEvidence({
   structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape, arrowNavigation,
+  typedFeedback,
 }) {
   return {
     controls: structure.formFields,
@@ -2069,6 +2099,9 @@ function interactionEvidence({
     // Absent unless asked for. Absent and "we pressed an arrow and nothing moved" must stay
     // distinguishable: the second IS the 2.1.1 finding.
     ...(arrowNavigation ? { arrowNavigation } : {}),
+    // Absent unless asked for. Absent and "we typed and the page said nothing" must stay distinguishable:
+    // the second IS the 3.3.1 finding, and it is the whole reason this probe exists.
+    ...(typedFeedback ? { typedFeedback } : {}),
     // Absent (rather than false) when the submit did not navigate, so "we did not check" and "it did not
     // navigate" stay distinguishable.
     ...(interaction.navigatedOnSubmit ? { navigatedOnSubmit: interaction.navigatedOnSubmit } : {}),
@@ -2090,9 +2123,12 @@ function interactionEvidence({
  */
 function probePasses(ctx) {
   const { structure, interaction, observed, onFormField, probeForms, probeTables, probeFocus,
-    probeDialog, probeArrows, deadline, diag, trips } = ctx;
-  /** @type {{postSubmitFields: string[], focusOrder: string[], dialogEscape: any, arrowNavigation: any}} */
-  const results = { postSubmitFields: [], focusOrder: [], dialogEscape: null, arrowNavigation: null };
+    probeDialog, probeArrows, probeTyping, deadline, diag, trips } = ctx;
+  /** @type {{postSubmitFields: string[], focusOrder: string[], dialogEscape: any,
+   *           arrowNavigation: any, typedFeedback: any}} */
+  const results = {
+    postSubmitFields: [], focusOrder: [], dialogEscape: null, arrowNavigation: null, typedFeedback: null,
+  };
   const runSweep = async () => {
     await sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips, observed });
     if (probeForms) diag.mark("formProbe", { activated: interaction.formChanges.length });
@@ -2124,6 +2160,12 @@ function probePasses(ctx) {
     results.arrowNavigation = probeArrows && probeFocus
       ? await probeArrowNavigation({ interaction, deadline, diag })
       : null;
+    // LAST of the three that ride the focus probe, because it is the only one that CHANGES THE PAGE'S
+    // CONTENT. Escape and an arrow leave the field as they found it; six digits do not, and a later probe
+    // reading a form this one has filled in is measuring our own input.
+    results.typedFeedback = probeTyping && probeFocus
+      ? await probeTypedFeedback({ interaction, deadline, diag })
+      : null;
   };
   return { runSweep, runFocus, results };
 }
@@ -2131,11 +2173,11 @@ function probePasses(ctx) {
 /**
  * @param {{ deadline: number, diag: Diag, probeForms?: boolean, probeFocus?: boolean, probeTables?: boolean,
  *           probeNavigation?: boolean, probeElementsList?: boolean, probeOrder?: string,
- *           probeDialog?: boolean, probeArrows?: boolean,
+ *           probeDialog?: boolean, probeArrows?: boolean, probeTyping?: boolean,
  *           task?: string }} ctx
  */
 async function navigateByStructure({ deadline, diag, probeForms, probeFocus, probeTables, probeNavigation,
-  probeDialog, probeArrows,
+  probeDialog, probeArrows, probeTyping,
   probeElementsList, probeOrder, task }) {
   // BOTH ACCUMULATORS ARE DECLARED, because both are filled in by probes that run later and elsewhere.
   // An inferred type here describes only the fields present at construction -- `never[]` for each array,
@@ -2171,10 +2213,15 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   // observations, and making it visible is the point of the option.
   const { runSweep, runFocus, results } = probePasses({
     structure, interaction, observed, onFormField, probeForms, probeTables, probeFocus,
-    probeDialog, probeArrows, deadline, diag, trips,
+    probeDialog, probeArrows, probeTyping, deadline, diag, trips,
   });
-  const { postSubmitFields, focusOrder, dialogEscape, arrowNavigation } = results;
   await runProbeSequence({ probeOrder, diag, runSweep, runFocus });
+  // READ AFTER THE PROBES RUN, and the order is the whole of it. Destructured before `runProbeSequence`
+  // -- which is where the extraction first put it -- every field binds to its INITIAL value and the
+  // capture reports empty interaction evidence on every page. That is `postSubmitFields: []` on all 2,122
+  // captures, reproduced exactly: an empty field is not a malformed one, no count moves, and every gate
+  // stays green. Caught by reading, because `capture-core` imports guidepup and no test can reach here.
+  const { postSubmitFields, focusOrder, dialogEscape, arrowNavigation, typedFeedback } = results;
 
   // LAST of the three, because it is the only probe that can leave the page under measurement: it activates
   // a link. Everything position-dependent has finished by here, so navigating away costs nothing.
@@ -2182,10 +2229,13 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
     ? await probeRouteChange({ interaction, deadline, diag })
     : null;
   if (probeElementsList) await crossCheckAgainstElementsList({ structure, deadline, diag });
-  recordWhatWasAsked({ observed, probeForms, probeFocus, probeNavigation, probeDialog, probeArrows, interaction });
+  recordWhatWasAsked({
+    observed, probeForms, probeFocus, probeNavigation, probeDialog, probeArrows, probeTyping, interaction,
+  });
 
   const result = interactionEvidence({
     structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape, arrowNavigation,
+    typedFeedback,
   });
   diag.mark("interaction", {
     controls: result.controls.length,
@@ -3681,6 +3731,63 @@ function noLinkReached(control) {
  * fact rather than a fiction the rule has to undo later.
  */
 const NOTHING_FURTHER_RE = /\bno (next|previous) \w+/i;
+
+/**
+ * Type into the focused field and record what the page said BEYOND NVDA's own echo.
+ *
+ * The half of 3.3.1 a capture could not reach. Every existing record describes an error surfaced by
+ * SUBMITTING, because that is the only moment this pipeline observed; validation that fires while typing
+ * arrives with focus unmoved and only a live region can carry it, so a page can pass the first and fail
+ * the second. Measured: `oninput` appears on 0 of 3,948 corpus pages against `onsubmit` on 346.
+ *
+ * REFUSES TO TYPE UNLESS FOCUS IS IN AN EDITABLE, and that guard is doing two jobs. It keeps the probe
+ * from sending characters into whatever the focus probe happened to finish on -- a button, a link, someone
+ * else's page -- and it keeps the evidence honest, because `typed: false` says "we could not ask" where a
+ * bare empty `announced` would read as "the page said nothing", which IS the finding.
+ *
+ * THE ECHO IS SEPARATED FROM THE ANNOUNCEMENT, and without that the probe reports nothing useful. NVDA
+ * echoes typed characters by default, so a silent page still produces speech; counting the echo as
+ * feedback would make every page pass. `echoed` is kept rather than discarded so a future reader can see
+ * the probe worked at all -- the `refreshBrowseBuffer` rule, which was inert through three green runs
+ * because nothing distinguished "did not need to act" from "never ran".
+ *
+ * SIX DIGITS, deliberately: enough to trip a length rule, all keyboard-safe, and no character that any
+ * quick-navigation script binds. It is typed as one string via guidepup's `type`, not as six `press`
+ * calls, so a page debouncing on `input` sees a realistic burst.
+ *
+ * @param {{ interaction: any, deadline: number, diag: Diag }} ctx
+ */
+async function probeTypedFeedback({ interaction, deadline, diag }) {
+  const mark = (/** @type {Record<string, unknown>} */ fields) => diag.mark("typedFeedback", fields);
+  try {
+    if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
+    const focusBefore = await reportFocusedControlWithRetry(interaction);
+    // The role test is on the ANNOUNCEMENT, because that is the only thing this layer has. NVDA says
+    // "edit" for a text input and "edit, multi line" for a textarea; both are places typing belongs.
+    if (!/\bedit\b/i.test(String(focusBefore ?? ""))) {
+      mark({ typed: false, why: "focus is not in an editable control", focusBefore });
+      return { typed: false, focusBefore, echoed: "", announced: "" };
+    }
+    const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "typing")) || []).length;
+    await withTimeout(nvda.type(TYPED_PROBE_TEXT), NAV_TIMEOUT_MS, "typing").catch(() => undefined);
+    const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "typing")) || [];
+    const spoken = log.slice(before).map((/** @type {unknown} */ x) => String(x).trim()).filter(Boolean);
+    // A phrase is ECHO when it is one of the characters we sent, and ANNOUNCEMENT otherwise. Compared
+    // against the string actually typed rather than against a character class, so a page that legitimately
+    // speaks a digit is not silently written off as an echo.
+    const sent = new Set(TYPED_PROBE_TEXT.split(""));
+    const echoed = spoken.filter((/** @type {string} */ phrase) => sent.has(phrase));
+    const announced = spoken.filter((/** @type {string} */ phrase) => !sent.has(phrase)).join(" | ");
+    mark({ typed: true, echoed: echoed.length, announced: announced.slice(0, 120), focusBefore });
+    return { typed: true, focusBefore, echoed: echoed.join(" "), announced };
+  } catch (e) {
+    // RECORDED, never dropped. A probe that threw and a page that said nothing while being typed into are
+    // opposite findings, and this file has already paid a corpus for making them the same silence.
+    mark({ error: errMsg(e) });
+    interaction.sweepLog.push(`typedFeedback ERROR ${errMsg(e)}`);
+    return null;
+  }
+}
 
 /**
  * Press an arrow inside whatever the focus probe last landed on, and record whether anything moved.

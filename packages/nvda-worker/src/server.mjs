@@ -432,6 +432,8 @@ function captureOptions(/** @type {any} */ parsed) {
     // Opt-in: it presses arrows inside whatever widget the focus probe landed on. Meaningless without
     // `probeFocus`, because browse mode owns the arrows and one pressed there navigates the DOCUMENT.
     probeArrows: parsed.probeArrows ?? false,
+    // Opt-in: it TYPES into the focused field, which changes the page under measurement.
+    probeTyping: parsed.probeTyping ?? false,
     probeDialog: parsed.probeDialog ?? false,
     // Which order the two position-dependent probes run in. A NAME, never a caller-supplied list — see
     // `probeSequence`. Absent means the order that has always run, so no cached capture is affected.
