@@ -214,11 +214,17 @@ export async function listBlockingDialogs(onError) {
  * @returns {Promise<{title:string,owner:string,ok:boolean}>}
  */
 export async function probeWindowOwner(onError) {
-  const out = (await powershell(OWNER_PROBE_SCRIPT, onError)).trim();
-  const [title = "", owner = ""] = out.split(SEP);
+  // TRIM THE FIELDS, NEVER THE LINE. Caught on this probe's first run against a real worker, which is
+  // what it is for: the foreground window there has NO TITLE, so PowerShell emitted "<TAB>explorer",
+  // `.trim()` ate the leading tab, and the split put the OWNER in the title slot -- reported as
+  // {"title":"explorer","owner":"","ok":false}, which reads as "the resolution failed" when it had in
+  // fact worked perfectly. A separator-delimited line must be split before it is trimmed, or an empty
+  // leading field silently shifts every field after it.
+  const out = (await powershell(OWNER_PROBE_SCRIPT, onError)).replace(/[\r\n]+$/, "");
+  const [title = "", owner = ""] = out.split(SEP).map((part) => part.trim());
   // `ok` is the point: it says the two calls RAN, which is the thing three green smoke runs could not say.
   // An empty result means the shell-out itself degraded, which `powershell` reports as "" by design.
-  return { title: title.trim(), owner: owner.trim(), ok: out.length > 0 && owner.trim() !== "" };
+  return { title, owner, ok: owner !== "" };
 }
 
 /**
