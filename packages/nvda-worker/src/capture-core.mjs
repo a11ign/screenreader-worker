@@ -244,7 +244,22 @@ import { setTimeout as sleep } from "node:timers/promises";
 // All three are additive and an older consumer ignores each. The bump is for the MEANING, as with 9: the
 // same page now produces evidence it could not produce before, and two captures of one page must never
 // differ by which build took them.
-export const CAPTURE_PROTOCOL_VERSION = 11;
+// 11 -> 12, 2026-09-01: the capture OPERATES MORE CONTROLS, so the same page yields different evidence.
+//
+// `probeKindFor` now returns "toggle" for a check box or radio button under `probeForms`. A live region
+// updated by a checkbox was structurally unreachable before -- real filters and consent toggles are
+// checkboxes far more often than buttons -- and 4.1.3 is the criterion that could not see them. The safety
+// decision, and the line that draws it (can activating this NAVIGATE?), is in `SECURITY.md`.
+//
+// BUMPED BEFORE THE CHANGE SHIPS, not after, and that ordering is the whole point. Deploying it at 11
+// would put pre-toggle and post-toggle captures under one cache key -- the split-corpus failure protocol
+// 10 was spent on, arriving through a probe instead of through a memo. The constant moving here is what
+// makes that impossible rather than merely unlikely.
+//
+// The protocol-11 corpus being captured right now is unaffected: it runs from an earlier commit and is
+// internally homogeneous. It is superseded by the next capture run rather than invalidated as evidence --
+// the gates it feeds still ran against real captures.
+export const CAPTURE_PROTOCOL_VERSION = 12;
 
 // Re-exported for callers that had these from `capture-core` before the split.
 export {
@@ -3269,6 +3284,7 @@ function chooseProbe(phrase, ctx) {
     case "disclosure": return () => probeDisclosure(phrase, ctx);
     case "submit": return () => probeFormSubmit(phrase, ctx);
     case "task": return () => probeTaskButton(phrase, ctx);
+    case "toggle": return () => probeToggle(phrase, ctx);
     default: return null;
   }
 }
@@ -3817,6 +3833,25 @@ async function probeFormSubmit(phrase, { interaction }) {
 /** @param {string} phrase @param {Record<string, any>} ctx */
 async function probeTaskButton(phrase, { interaction }) {
   return activateAndCaptureDelta(phrase, interaction, "taskButton");
+}
+
+/**
+ * Toggle a checkbox or radio button and record what the page announced — 4.1.3's other trigger.
+ *
+ * A live region updated by a CHECKBOX was structurally unreachable before this: `probeKindFor` only ever
+ * reached buttons, and real filters, consent toggles and "show prices including VAT" controls are
+ * checkboxes far more often than they are buttons. The safety decision is in `SECURITY.md` and the gate is
+ * `probeKindFor`; this is only the dispatch, exactly as `probeTaskButton` is.
+ *
+ * `kind: "toggle"` is a NEW value on `formChanges` entries, and it is additive on purpose. `screenreader_
+ * features.py` gates `validation_error_missing` on `kind === "submit"`, so a toggle simply does not match
+ * it -- which is right, since a toggled checkbox is not a rejected submission and 3.3.1 must not read one
+ * as the other. That distinction is what `kind` was added for: it cost 3 false positives when a combo box
+ * counted as a submit, and 12 more when the state-change rule reproduced it.
+ */
+/** @param {string} phrase @param {Record<string, any>} ctx */
+async function probeToggle(phrase, { interaction }) {
+  return activateAndCaptureDelta(phrase, interaction, "toggle");
 }
 
 // --- Teardown phase -------------------------------------------------------

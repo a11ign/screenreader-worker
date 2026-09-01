@@ -78,3 +78,47 @@ test("a missing or malformed phrase is not a crash", () => {
   assert.equal(probeKindFor(undefined as never, ACTION), null);
   assert.equal(probeKindFor("", ACTION), null);
 });
+
+test("a checkbox and a radio button are operated under probeForms, and not without it", () => {
+  // 4.1.3 asks whether a status message is announced, and a live region updated by a CHECKBOX was
+  // structurally unreachable — real filters, consent toggles and "show prices including VAT" controls are
+  // checkboxes far more often than buttons. Decided in SECURITY.md: the line is not how destructive a
+  // control might be, it is whether activating it can NAVIGATE.
+  assert.equal(probeKindFor("Show prices including VAT, check box, not checked", { probeForms: true }), "toggle");
+  assert.equal(probeKindFor("Standard delivery, radio button, not checked", { probeForms: true }), "toggle");
+  // And nothing happens where the operator has not said they own the page. `probeForms` is off in the CLI,
+  // which is what makes this a widening INSIDE an existing consent rather than the granting of one.
+  assert.equal(probeKindFor("Show prices including VAT, check box, not checked", { probeForms: false }), null);
+});
+
+test("no task word is required for a toggle, deliberately", () => {
+  // Requiring one would reproduce the gap this closes: a filter checkbox is named for the thing it
+  // filters, never for the task. The consent a BUTTON's name carries is doing different work — activating
+  // a button is its whole purpose, so the name is the only thing between a probe and *Delete account*.
+  assert.equal(probeKindFor("Include VAT, check box, not checked", { probeForms: true, task: "book a room" }),
+    "toggle");
+  // The button rule is untouched by that, and this is the assertion that proves it.
+  assert.equal(probeKindFor("Delete account, button", { probeForms: true, task: "book a room" }), null);
+});
+
+test("a radio is classified as a toggle, not fumbled into the button rules", () => {
+  // NVDA announces a radio as "radio button", so `\bbutton\b` matches it. Whichever pattern reads it first
+  // decides what it is: tested before the button test, it is a toggle; after, it falls through to the
+  // submit/task rules and is silently rejected for having no task word. That is this repo's "one element
+  // announced with TWO roles" defect, and the fix is an ORDER rather than a cleverer pattern.
+  //
+  // Mutation-checked: moving TOGGLE_RE below the button test makes this the assertion that fails.
+  assert.equal(probeKindFor("Standard delivery, radio button", { probeForms: true, task: "unrelated" }),
+    "toggle");
+});
+
+test("a combo box is still caught by the DISCLOSURE rule, ungated — a fact, not an endorsement", () => {
+  // Pinned because writing SECURITY.md is what found it: a `<select>` announces as "combo box, collapsed",
+  // so rule 1 has always activated it WITHOUT `probeForms`. The first draft of that document asserted the
+  // opposite, and running this function refuted it in one line.
+  //
+  // The exposure is smaller than it looks and the reason is checkable: the disclosure probe presses Enter,
+  // and Enter does not change a select's value — arrow keys do, and the jump-menu idiom fires on `change`.
+  // Asserted here so a future change to the disclosure rule cannot alter it silently.
+  assert.equal(probeKindFor("Sort by, combo box, collapsed", { probeForms: false }), "disclosure");
+});

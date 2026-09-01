@@ -533,6 +533,18 @@ export function notObserved(why) {
 }
 
 /**
+ * Controls whose activation TOGGLES STATE and cannot navigate — see rule 5 and `SECURITY.md`.
+ *
+ * `radio button` is matched before the plain-button test on purpose: NVDA announces a radio as
+ * "radio button", so whichever pattern reads it first decides what it is.
+ *
+ * `check box` is NVDA's spelling, two words. Written from real announcements rather than from the HTML
+ * element name -- `announcement.ts` exists because seven partial regexes each guessed at NVDA's grammar,
+ * and `checkbox` matches nothing it says.
+ */
+const TOGGLE_RE = /\b(check box|radio button)\b/i;
+
+/**
  * WHICH probe an announced control earns — the safety gate on what this tool presses.
  *
  * Here rather than in `capture-core` because this is the decision that has to be TESTABLE.
@@ -550,10 +562,24 @@ export function notObserved(why) {
  * 4. Any other button only if its name shares a meaningful word with the user's task — so "show only
  *    bags" presses *Bags* and never *Delete account*. Role and state words are excluded from that match,
  *    or every button would match a task containing the word "button".
+ * 5. A CHECKBOX or RADIO BUTTON under `probeForms`, with no name test — added 2026-09-01, decided in
+ *    `SECURITY.md`. 4.1.3 asks whether a status message is announced, and a live region updated by a
+ *    checkbox was structurally unreachable: real filters and consent toggles are checkboxes far more
+ *    often than buttons.
+ *
+ * NO NAME TEST ON RULE 5, AND THAT IS THE DECISION RATHER THAN AN OVERSIGHT. Requiring a task word would
+ * reproduce the gap it closes — a filter checkbox is named for the thing it filters, not for the task —
+ * and the consent a button's name carries is doing different work there: activating a button IS its
+ * purpose, so the name is the only thing standing between a probe and *Delete account*. A checkbox has no
+ * such semantics to consent to; toggling it is the archetypal act of using a page.
+ *
+ * A `<select>`/combo box is DELIBERATELY NOT HERE. The jump-menu idiom sets `location.href` from an
+ * `onchange`, so changing a select can navigate — the same reason rule 2 excludes links, and navigation is
+ * what separates "we observed the page" from "we left it". `probeNavigation` is separately opt-in for that.
  *
  * @param {string} phrase the control as the screen reader announced it
  * @param {{ probeForms?: boolean, task?: string }} options
- * @returns {"disclosure" | "submit" | "task" | null}
+ * @returns {"disclosure" | "submit" | "task" | "toggle" | null}
  */
 export function probeKindFor(phrase, { probeForms, task }) {
   // Coerced ONCE. This runs per announced control on every capture, and `taskNamesControl` calls
@@ -561,7 +587,13 @@ export function probeKindFor(phrase, { probeForms, task }) {
   // records as the page announcing nothing, and that is a real finding's signature.
   const announced = String(phrase ?? "");
   if (/\bcollapsed\b/i.test(announced)) return "disclosure";
-  if (!probeForms || !/\bbutton\b/i.test(announced)) return null;
+  if (!probeForms) return null;
+  // BEFORE the button test, because NVDA announces a radio as "radio button" -- so `\bbutton\b` matches it
+  // and it would otherwise fall through to the submit/task rules and be silently rejected for having no
+  // task word. Order is the whole of it: the same string is two roles depending on which pattern reads it
+  // first, which is this repo's "one element announced with TWO roles" defect from 2026-08-25.
+  if (TOGGLE_RE.test(announced)) return "toggle";
+  if (!/\bbutton\b/i.test(announced)) return null;
   if (SUBMIT_RE.test(announced)) return "submit";
   if (taskNamesControl(announced, task ?? "")) return "task";
   return null;
