@@ -3654,6 +3654,21 @@ async function probeDialogEscape({ interaction, deadline, diag }) {
     // `press`, never `perform(exitFocusMode)`. Both are Escape on paper and only `press` worked, measured
     // -- `anchorToTop` has used it for this since before anyone understood why.
     const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "dialogEscape")) || []).length;
+    // TWICE, and the second press is the one that asks the question.
+    //
+    // The focus probe leaves NVDA in FOCUS MODE -- `autoPassThroughOnFocusChange` is true by default and
+    // `shouldPassThrough` returns True for State.EDITABLE, so tabbing into a dialog's text field switches
+    // it on. Escape is flagged `ignoreTreeInterceptorPassThrough` precisely so it stays reachable there,
+    // which means NVDA CONSUMES it to leave focus mode and the page never sees it.
+    //
+    // Measured, and this is the pair of observations that establishes it rather than an inference from
+    // the source: with a document-level handler, `anchorToTop`'s Escape (browse mode, focus on the body)
+    // DID reach the page and released the trap; the same handler scoped to the dialog, pressed here after
+    // the focus probe, did not fire at all. Same page, same handler, two modes, two outcomes.
+    //
+    // So the first press pays NVDA's toll and the second reaches the application. A page that responds to
+    // neither has genuinely ignored Escape.
+    await withTimeout(nvda.press("Escape"), NAV_TIMEOUT_MS, "dialogEscape").catch(() => undefined);
     await withTimeout(nvda.press("Escape"), NAV_TIMEOUT_MS, "dialogEscape").catch(() => undefined);
     const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "dialogEscape")) || [];
     const announced = log.slice(before).map((/** @type {unknown} */ x) => String(x).trim())
