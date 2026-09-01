@@ -3768,6 +3768,14 @@ async function restoreBrowseMode(label, diag) {
   // out, and `press` rather than `perform(exitFocusMode)`, measured -- and then `Control+End`, which is
   // exactly where the sweep expects the caret. Quick navigation cannot reach an element the caret is ON,
   // so leaving the caret mid-page silently costs the sweep one element of each type.
+  // AND REBUILD THE BUFFER. `anchorToTop` restores the MODE and the caret; it does not rebuild NVDA's
+  // browse-mode buffer, which belongs to the window and which focus mode leaves stale.
+  //
+  // Measured 2026-09-01 with the anchor alone: the sweep ran and NVDA was SILENT in both directions --
+  // `observed.headings.stop = {prev: "silent", next: "silent"}`, 0 headings and 0 form fields on a page
+  // that has both. That is not a mode that failed to restore, it is a buffer with nothing in it, and
+  // `refreshBrowseBuffer` is this file's existing remedy for exactly that.
+  await refreshBrowseBuffer(diag);
   await anchorToTop();
   // MARKED WHENEVER IT RUNS, so "did not need to restore" and "never ran" can never be the same silence --
   // the `refreshBrowseBuffer` rule, which sat inert through three green runs for want of exactly this.
