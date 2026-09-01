@@ -3582,6 +3582,26 @@ async function waitForAnnouncement(before, kind) {
   return log;
 }
 
+/**
+ * Is everything heard so far the CONTROL's own state rather than the PAGE's answer?
+ *
+ * NVDA speaks "checked" for a checkbox and "expanded" for a disclosure whatever the page does, so those
+ * phrases are the screen reader describing the control, not the page responding to it. `case-matrix.mjs`
+ * makes the same distinction on the reading side in `pageResponseTo`; this is the capture side, and the
+ * two are pinned by `toggle-state-parity.test.ts`.
+ *
+ * Empty counts as "only state", because a page that has said nothing has certainly not answered yet.
+ */
+const CONTROL_OWN_STATE = /^(?:not\s+)?(?:checked|pressed|selected|expanded|collapsed)$/i;
+
+/** @param {unknown[]} phrases */
+function onlyControlState(phrases) {
+  return phrases.every((phrase) => {
+    const text = String(phrase ?? "").trim();
+    return text === "" || CONTROL_OWN_STATE.test(text);
+  });
+}
+
 /** @param {string} phrase @param {Record<string, any>} interaction @param {string} kind */
 async function activateAndCaptureDelta(phrase, interaction, kind) {
   try {
@@ -3617,7 +3637,26 @@ async function activateAndCaptureDelta(phrase, interaction, kind) {
     }
     const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, kind)) || []).length;
     await withTimeout(nvda.act(), ACT_TIMEOUT_MS, kind); // Enter on the control under the cursor
-    const log = await waitForAnnouncement(before, kind);
+    let log = await waitForAnnouncement(before, kind);
+    // A CONTROL THAT ANNOUNCES ITS OWN STATE STARTS THE SETTLE CLOCK, and a polite live region loses the
+    // race to it. MEASURED 2026-09-01, six repeats of one unchanged page: the region reached the delta
+    // 2 times in 6, and `gate:stability` reported `VARIES formChanges counts 1,1,1,1,1,1` -- the count
+    // never moved, only the CONTENT, which is precisely the rot a count-based check cannot see.
+    //
+    // The mechanism is exact rather than suspected. `waitForAnnouncement` waits for the first phrase and
+    // then for quiet; a BUTTON announces nothing of its own, so the first phrase IS the live region and
+    // `filter-status-silent` has always been reliable. A checkbox says "checked" first, which satisfies
+    // "something was said" and starts the quiet window -- and `aria-live="polite"` means *speak when
+    // idle*, so the region deliberately waits for the silence that ends that window.
+    //
+    // So when everything heard so far is the control's OWN state, nothing has been heard FROM THE PAGE
+    // yet and the wait is not finished. Asking again is a condition, not a longer sleep: a page that
+    // truly says nothing pays one more quiet window and still reports the empty delta that IS the
+    // finding.
+    if (onlyControlState(log.slice(before))) {
+      const second = await waitForAnnouncement(log.length, kind);
+      if (second.length > log.length) log = second;
+    }
     const after = log.slice(before).map((/** @type {unknown} */ s) => String(s).trim()).filter(Boolean).join(" | ");
     interaction.sweepLog.push(`${kind} ${JSON.stringify(phrase.slice(0, 40))} -> ${JSON.stringify(after)}`);
     // `kind` travels with the evidence, because criteria mean different things per activation.
