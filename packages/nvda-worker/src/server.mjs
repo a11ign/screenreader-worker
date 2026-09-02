@@ -30,7 +30,8 @@ import { configuredBrowser, browserProfileDir, resolveBrowser } from "./browsers
 import { CAPTURE_HARD_TIMEOUT_DEFAULT_MS } from "./capture-pure.mjs";
 import { isLocallyRecoverable } from "./worker-recovery.mjs";
 import { codeVersion } from "./code-version.mjs";
-import { listBlockingDialogs, dismissBlockingDialogs, probeWindowOwner } from "./desktop-dialogs.mjs";
+import { listBlockingDialogs, dismissBlockingDialogs, probeWindowOwner, foregroundBlocker }
+  from "./desktop-dialogs.mjs";
 import { faultCode } from "./capture-faults.mjs";
 import { createResultStore, isValidCaptureId, storedResultResponse } from "./capture-results.mjs";
 import { edgePolicy, guestDiagnostics, processCounts, screenReaderState, treeSize } from "./diagnostics.mjs";
@@ -707,6 +708,19 @@ function warmUpOnceIfNeeded() {
 /** @type {{ at: number, dialogs: null | { handle: string, title: string, message: string, owner: string }[] }} */
 let dialogCache = { at: 0, dialogs: null };
 
+/**
+ * The foreground owner, sampled beside the dialogs and for the same reason one sample serves both.
+ *
+ * A MODAL is not the only thing that stops a capture. A notification toast holds the foreground without
+ * being a dialog at all, so `listBlockingDialogs` returns nothing, `noBlockingDialog` stays true, and the
+ * worker reports itself ready while Edge can never take focus. Measured on a11y-worker-6, 2026-09-02:
+ * 3.5 hours of exactly that, with every readiness check green.
+ *
+ * `null` means NOT SAMPLED and never means fine — the same contract `dialogCache` carries.
+ * @type {{ at: number, foreground: null | {title:string,owner:string,ok:boolean} }}
+ */
+let foregroundCache = { at: 0, foreground: null };
+
 async function sampleDesktopDialogs() {
   const dialogs = await listBlockingDialogs((reason) => log(`could not enumerate desktop dialogs: ${reason}`));
   dialogCache = { at: Date.now(), dialogs };
@@ -714,6 +728,10 @@ async function sampleDesktopDialogs() {
     log(`  desktop is blocked by ${dialogs.length} dialog(s): `
       + dialogs.map((d) => `${d.title}: ${d.message}`).join(" | "));
   }
+  const foreground = await probeWindowOwner((reason) => log(`could not read the foreground window: ${reason}`));
+  foregroundCache = { at: Date.now(), foreground };
+  const blocker = foregroundBlocker(foreground);
+  if (blocker) log(`  the foreground is held by ${blocker.owner} (${blocker.title}) — Edge cannot take focus`);
 }
 
 // NOT on a timer. The first version sampled every 30 s, and on a 3 GB guest that is a PowerShell process
@@ -747,6 +765,12 @@ async function readiness() {
     // window rather than restarting NVDA, so this cannot rebuild the restart loop the comment below warns
     // about. `null` until the first sample lands, and null never fails the gate.
     noBlockingDialog: dialogs === null ? null : dialogs.length === 0,
+    // A MODAL blocks input; a foreground holder blocks FOCUS, and only the first was checked. The two
+    // fail identically from outside — every capture wedges — but a toast is not a dialog, so the check
+    // built for one could not see the other. `null` until sampled, and null never fails the gate.
+    noForegroundBlocker: foregroundCache.foreground === null
+      ? null
+      : foregroundBlocker(foregroundCache.foreground) === null,
     warmedUp: warm.ok,
   };
   // What actually PREVENTS a capture.
@@ -766,6 +790,8 @@ async function readiness() {
       if (name === "foregroundLockTimeout") return typeof value === "number" && value !== 0;
       // Not sampled yet is not a fault — same reasoning as foregroundLockTimeout's unreadable case.
       if (name === "noBlockingDialog") return value === false;
+      // Same contract: not sampled is not a fault, and an unreadable probe must not sideline a worker.
+      if (name === "noForegroundBlocker") return value === false;
       return !value;
     })
     .map(([name]) => name);
@@ -783,6 +809,10 @@ async function readiness() {
     // ago" is a different claim from "no dialogs now", and conflating them is how a stale check reads as a
     // fresh one.
     dialogsCheckedMsAgo: dialogCache.at ? Date.now() - dialogCache.at : null,
+    // WHO holds the foreground, not merely that something does. "not ready: noForegroundBlocker" names
+    // the check and not the fault, which is the distinction `blockingDialogs` above already makes.
+    foregroundBlockedBy: foregroundBlocker(foregroundCache.foreground),
+    foregroundCheckedMsAgo: foregroundCache.at ? Date.now() - foregroundCache.at : null,
     // The message, not just the failed check name: "not ready: browserConfigured" says nothing about
     // WHICH value was wrong, and the whole point of catching it was to make it diagnosable.
     browserConfigError: BROWSER_CONFIG_ERROR,
@@ -1002,6 +1032,53 @@ function releaseOnAbandon(/** @type {any} */ req) {
 let inFlight = null;
 
 /**
+ * Clear whatever is standing between this capture and the desktop, and record what was there.
+ *
+ * Extracted from `runCapture` when it crossed the physical-line budget, and it earns its own name rather
+ * than merely shortening its caller: it does ONE thing at ONE level of abstraction -- make the desktop
+ * usable, and say what was in the way. Two mechanisms, because a modal blocks INPUT and a foreground
+ * holder blocks FOCUS, and a capture needs both cleared.
+ *
+ * A diagnostic mark carries whatever its EVENT needs beyond the two common fields — `desktopDialogsDismissed`
+ * carries the dialogs, `foregroundBlocked` carries the owner and title — so the parameter is typed for the
+ * shape they share rather than for one event's payload. Narrowing it to `{event, atMs}` made every mark
+ * that says something a type error, which is the sink refusing the only thing it exists to carry.
+ *
+ * @param {Record<string, unknown>[]} marks
+ */
+async function prepareDesktop(marks) {
+  const cleared = await dismissBlockingDialogs((reason) => log(`could not dismiss desktop dialogs: ${reason}`));
+  if (cleared.dismissed.length) {
+    log(`  dismissed ${cleared.dismissed.length} blocking dialog(s) before capturing: `
+      + cleared.dismissed.map((d) => `${d.title}: ${d.message}`).join(" | "));
+    marks.push({ event: "desktopDialogsDismissed", atMs: 0, dialogs: cleared.dismissed });
+  }
+  // UNCONDITIONALLY, and that is the fix rather than a tidy-up.
+  //
+  // `sampleDesktopDialogs`'s own comment says "the sample that matters is the one at the START OF A
+  // CAPTURE" -- and there was no such sample. The only call is at boot, and this cache was refreshed only
+  // when something had been DISMISSED, so a guest that never had a dialog reported its boot-time answer
+  // for as long as it stayed up. Measured on the fleet: workers up six days were serving
+  // `dialogsCheckedMsAgo` of ~8,640 minutes, which is `/health` saying "no dialogs, as of last week".
+  //
+  // `dismissBlockingDialogs` has already enumerated by this point, so the current state is known for free:
+  // whatever it found is now closed, and if it found nothing the desktop was clear anyway. Recording that
+  // costs nothing and makes the comment true. "Dismissed none" and "never looked" were the same state,
+  // which is this repo's oldest defect wearing a cache.
+  dialogCache = { at: Date.now(), dialogs: [] };
+  // And the foreground, which is the half no dialog check can see. One PowerShell call beside one that
+  // already happens here, once per ~12 s capture -- paid at the only moment it answers a question, which
+  // is the reasoning `sampleDesktopDialogs` gives for not putting it on a timer.
+  const foreground = await probeWindowOwner((reason) => log(`could not read the foreground window: ${reason}`));
+  foregroundCache = { at: Date.now(), foreground };
+  const holding = foregroundBlocker(foreground);
+  if (holding) {
+    log(`  the foreground is held by ${holding.owner} (${holding.title}) — Edge may not take focus`);
+    marks.push({ event: "foregroundBlocked", atMs: 0, ...holding });
+  }
+}
+
+/**
  * Drive one capture and answer with it. `busy` was claimed by the caller and is released here.
  *
  * Every response goes through `answer`, which REMEMBERS it before sending. That ordering is the whole
@@ -1027,14 +1104,7 @@ async function runCapture(/** @type {any} */ res, /** @type {any} */ { url, opts
   // this capture is about to send, so the capture would run its full budget and be abandoned with no
   // explanation — which is precisely what happened repeatedly before this existed. Recorded as a mark rather
   // than done silently, because a remedy that leaves no trace is how a recurring fault stays invisible.
-  const cleared = await dismissBlockingDialogs((reason) => log(`could not dismiss desktop dialogs: ${reason}`));
-  if (cleared.dismissed.length) {
-    log(`  dismissed ${cleared.dismissed.length} blocking dialog(s) before capturing: `
-      + cleared.dismissed.map((d) => `${d.title}: ${d.message}`).join(" | "));
-    marks.push({ event: "desktopDialogsDismissed", atMs: 0, dialogs: cleared.dismissed });
-    // The cached readiness answer is now stale, and the next poll should see a clear desktop.
-    dialogCache = { at: Date.now(), dialogs: [] };
-  }
+  await prepareDesktop(marks);
   try {
     const result = await captureWithLocalRecovery(url, { ...opts, diagnosticsSink: marks });
     const environment = currentEnvironment();

@@ -228,6 +228,51 @@ export async function probeWindowOwner(onError) {
 }
 
 /**
+ * Foreground owners that HOLD focus and will not yield it to a launching browser.
+ *
+ * A list, and a deliberate one. The tempting predicate -- "the foreground does not belong to Edge" --
+ * takes every IDLE worker offline, because an idle guest's foreground legitimately belongs to explorer
+ * and a capture launches Edge into the foreground perfectly well from there. What breaks a capture is a
+ * window that refuses the transition, and only some windows do that.
+ *
+ * `ShellExperienceHost` is here because it cost 3.5 hours on a11y-worker-6 on 2026-09-02: a notification
+ * toast held the foreground, Edge could never take focus, and because a toast is NOT A MODAL the
+ * `noBlockingDialog` check stayed true and the worker advertised itself ready for the whole outage. From
+ * outside that is indistinguishable from a slow page, so the run waited on it and a corpus recapture made
+ * no progress at all.
+ *
+ * The others are the same class of shell surface -- Windows search and the Start menu both take the
+ * foreground and hold it. They are INFERRED from sharing the mechanism, not observed here, and the
+ * distinction is kept on purpose: only the first entry has an incident behind it.
+ */
+export const FOREGROUND_BLOCKERS = Object.freeze([
+  "ShellExperienceHost",
+  "SearchHost",
+  "StartMenuExperienceHost",
+]);
+
+/**
+ * Is the desktop's foreground held by something a capture cannot take it from?
+ *
+ * `null` for FINE and `null` for UNREADABLE. That looks like the ambiguity this repo refuses everywhere
+ * and is deliberately the opposite: an unreadable diagnostic must never take a worker offline. It is the
+ * rule `foregroundLockTimeout` and `noBlockingDialog` already follow, and breaking it here would let a
+ * PowerShell probe that timed out on a busy guest sideline a healthy machine -- trading a fault that
+ * happened once for one that happens under load.
+ *
+ * @param {{title:string,owner:string,ok:boolean}|null|undefined} sample
+ * @returns {null | {owner:string,title:string}}
+ */
+export function foregroundBlocker(sample) {
+  if (!sample || !sample.ok) return null;
+  // Windows reports the owner with and without the extension depending on how it was resolved, and the
+  // comparison is case-insensitive because the shell promises no casing.
+  const owner = String(sample.owner || "").replace(/\.exe$/i, "").toLowerCase();
+  if (!FOREGROUND_BLOCKERS.some((blocker) => blocker.toLowerCase() === owner)) return null;
+  return { owner: sample.owner, title: sample.title };
+}
+
+/**
  * Close every visible dialog, and report what was there.
  *
  * Returns the dialogs it tried to close, so the caller can record WHICH fault was blocking the desktop. That
