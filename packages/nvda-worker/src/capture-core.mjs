@@ -3918,14 +3918,23 @@ async function probeTypedFeedback({ interaction, deadline, diag }) {
     });
     if (!focusBefore) {
       mark({ typed: false, why: "no edit field on this page" });
-      return { typed: false, focusBefore: "", echoed: "", announced: "" };
+      // NULL, not "", for the titles: this probe never ran, and an empty string would read as a title
+      // that did not change -- which is the conformant answer to a question nobody asked.
+      return { typed: false, focusBefore: "", echoed: "", announced: "", titleBefore: null, titleAfter: null };
     }
     // The role test is on the ANNOUNCEMENT, because that is the only thing this layer has. NVDA says
     // "edit" for a text input and "edit, multi line" for a textarea; both are places typing belongs.
     if (!/\bedit\b/i.test(String(focusBefore ?? ""))) {
       mark({ typed: false, why: "focus is not in an editable control", focusBefore });
-      return { typed: false, focusBefore, echoed: "", announced: "" };
+      return { typed: false, focusBefore, echoed: "", announced: "", titleBefore: null, titleAfter: null };
     }
+    // 3.2.2 On Input: the page's TITLE either side of the keystrokes. A change of context is the thing
+    // that criterion is about, and the title is the part of it a screen reader can see -- NVDA reports it
+    // on demand and `probeRouteChange` already reads it the same way for 2.4.2.
+    //
+    // Read HERE rather than at the top of the probe, so it brackets the typing and nothing else: the
+    // landing above navigates, and a title read before that would be measuring the navigation too.
+    const titleBefore = await reportedTitle(diag);
     const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "typing")) || []).length;
     await withTimeout(nvda.type(TYPED_PROBE_TEXT), NAV_TIMEOUT_MS, "typing").catch(() => undefined);
     // WAIT FOR SPEECH TO SETTLE, do not read the log the instant `type` returns. The first version did,
@@ -3944,8 +3953,12 @@ async function probeTypedFeedback({ interaction, deadline, diag }) {
     const sent = new Set(TYPED_PROBE_TEXT.split(""));
     const echoed = spoken.filter((/** @type {string} */ phrase) => sent.has(phrase));
     const announced = spoken.filter((/** @type {string} */ phrase) => !sent.has(phrase)).join(" | ");
-    mark({ typed: true, echoed: echoed.length, announced: announced.slice(0, 120), focusBefore });
-    return { typed: true, focusBefore, echoed: echoed.join(" "), announced };
+    // AFTER the speech has settled, or the title read races the page's own announcement and returns the
+    // OLD title on a page that did change context -- reporting conformance for the failure.
+    const titleAfter = await reportedTitle(diag);
+    mark({ typed: true, echoed: echoed.length, announced: announced.slice(0, 120), focusBefore,
+      titleBefore, titleAfter });
+    return { typed: true, focusBefore, echoed: echoed.join(" "), announced, titleBefore, titleAfter };
   } catch (e) {
     // RECORDED, never dropped. A probe that threw and a page that said nothing while being typed into are
     // opposite findings, and this file has already paid a corpus for making them the same silence.
