@@ -224,6 +224,24 @@ import { setTimeout as sleep } from "node:timers/promises";
 // the defect: a consumer reading `observed.links?.asked` gets a fact on some records and `undefined` on
 // others, and `undefined` is the ambiguity this whole field removes. Bumping makes the corpus provably
 // homogeneous for the price of 46 captures nobody has used.
+// 13 -> 14, 2026-09-02: the last two screen-reader-reachable criteria, bundled for the reason 11 gives.
+//
+//   `interaction.focusContext`   the page title either side of FOCUSING the first control. 3.2.1 On Focus
+//                                asks whether a control changes the user's context merely by receiving
+//                                focus, and nothing here could ask it.
+//   `typedFeedback.title*`       the same pair either side of TYPING. 3.2.2 is 3.2.1 on change rather
+//                                than focus, which is how `criterion-coverage.ts` has described it since
+//                                long before either was built.
+//
+// TAKEN TOGETHER because 11's note is explicit that a bump should carry more than one addition: each is
+// individually too small to justify ~4.5 h of fleet time and taking them separately pays it twice. These
+// two are the whole of what `known-gaps.md` §23 listed as remaining, so the bundle is also the end of it.
+//
+// The MEANING changes, which is what makes this a bump rather than an additive field: a page that renames
+// itself on focus now produces evidence it could not produce before, and two captures of one page must
+// never disagree about whether that question was asked. `observed.focusContext` appears on every capture
+// taken from here, and `undefined` on every one before — the split the key exists to prevent.
+//
 // 10 -> 11, 2026-09-01: THREE additions, bundled, because the recapture is the cost and it is paid once.
 //
 // Bundling is the whole point of this bump rather than an economy on it. Each of the three is individually
@@ -274,7 +292,7 @@ import { setTimeout as sleep } from "node:timers/promises";
  */
 const TYPED_PROBE_TEXT = "123456";
 
-export const CAPTURE_PROTOCOL_VERSION = 13;
+export const CAPTURE_PROTOCOL_VERSION = 14;
 
 // Re-exported for callers that had these from `capture-core` before the split.
 export {
