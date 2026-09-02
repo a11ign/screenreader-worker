@@ -4010,15 +4010,18 @@ async function fillFormState({ formState, interaction, deadline, diag }) {
 
 /**
  * One step of the form-field quick-nav, reporting what NVDA said about where it landed.
- * BACKWARDS, and that is the whole correctness of this walk.
+ * FORWARD, and the reason is measured rather than reasoned — the first version of this comment argued
+ * the opposite and was wrong.
  *
  * `anchorToTop` is named for the mode it restores, not the position: it presses Escape and then
- * **Control+End**, leaving the caret at the END of the document, which is exactly where the sweep wants
- * it. Forward quick-navigation from there finds nothing, so a walk that anchored and then asked for the
- * NEXT form field examined an empty page. Measured on a W3C tutorial page carrying eight form fields:
- * the fill walk stopped `exhausted` at step 2 and the submit walk reported the button "not found", while
- * the sweep in the same capture listed all eight. `collectByType` sweeps previous-then-next for this
- * reason; this follows the proven half.
+ * **Control+End**, so the caret sits at the END of the document. That reads like an argument for walking
+ * BACKWARDS, and it is not: NVDA's quick navigation WRAPS, so `moveToNextFormField` from the end lands on
+ * the first field and walks the page in reading order. Switching to `moveToPreviousFormField` was tried on
+ * a W3C tutorial page with eight form fields and filled ZERO, against one for the forward walk.
+ *
+ * The lesson is the change itself. Two things were altered at once — the direction and the re-anchoring
+ * below — and the result got worse, which made neither attributable. The re-anchoring was the fix that had
+ * actually been diagnosed; the direction was a guess riding along with it.
  *
  * The command is read off `nvda` here rather than passed in: guidepup owns that type, and describing it
  * at this boundary would be a second spelling of somebody else's contract.
@@ -4028,7 +4031,7 @@ async function fillFormState({ formState, interaction, deadline, diag }) {
  */
 async function advanceToNextField(label) {
   const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label).catch(() => [])) || []).length;
-  await withTimeout(nvda.perform(nvda.keyboardCommands.moveToPreviousFormField), NAV_TIMEOUT_MS, label)
+  await withTimeout(nvda.perform(nvda.keyboardCommands.moveToNextFormField), NAV_TIMEOUT_MS, label)
     .catch(() => undefined);
   const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label).catch(() => [])) || [];
   return log.slice(before).map((/** @type {unknown} */ x) => String(x).trim()).filter(Boolean).join(" ");
