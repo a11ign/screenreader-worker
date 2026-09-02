@@ -456,6 +456,11 @@ function captureOptions(/** @type {any} */ parsed) {
     // Opt-in: it TYPES into the focused field, which changes the page under measurement.
     probeTyping: parsed.probeTyping ?? false,
     probeFocusContext: parsed.probeFocusContext ?? false,
+    // ONE declared state per capture (ADR 0024). Not a flag: it carries the author's own values, and the
+    // consent to submit is the fact that they supplied them. Shape-checked only for the two fields this
+    // worker dispatches on — the CLI validated it against the schema before sending, and re-deriving the
+    // rules here would be the second spelling of a contract that already exists.
+    formState: formStateOf(parsed.formState),
     probeDialog: parsed.probeDialog ?? false,
     // Which order the two position-dependent probes run in. A NAME, never a caller-supplied list — see
     // `probeSequence`. Absent means the order that has always run, so no cached capture is affected.
@@ -720,6 +725,29 @@ let dialogCache = { at: 0, dialogs: null };
  * @type {{ at: number, foreground: null | {title:string,owner:string,ok:boolean} }}
  */
 let foregroundCache = { at: 0, foreground: null };
+
+/**
+ * Is this a form state this worker can act on?
+ *
+ * Deliberately shallow. It checks the two things the worker DISPATCHES on — a submit control to activate
+ * and a list of fields to walk — and nothing else. The CLI parsed this against the full schema and
+ * refused a bad file there, with a sentence naming the problem; repeating those rules here would put two
+ * validators on one contract and they would drift, which is this repo's most-repeated defect.
+ *
+ * What it does prevent is the worker acting on something structurally absent, where the failure would be
+ * a capture that quietly filled nothing.
+ */
+/**
+ * @param {unknown} value
+ * @returns {{state?: string, submit: string, fields: unknown[]}|undefined}
+ */
+function formStateOf(value) {
+  const candidate = /** @type {{submit?: unknown, fields?: unknown}} */ (
+    value && typeof value === "object" ? value : {});
+  const usable = typeof candidate.submit === "string" && candidate.submit !== ""
+    && Array.isArray(candidate.fields) && candidate.fields.length > 0;
+  return usable ? /** @type {{state?: string, submit: string, fields: unknown[]}} */ (value) : undefined;
+}
 
 async function sampleDesktopDialogs() {
   const dialogs = await listBlockingDialogs((reason) => log(`could not enumerate desktop dialogs: ${reason}`));

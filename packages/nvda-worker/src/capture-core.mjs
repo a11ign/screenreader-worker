@@ -99,6 +99,7 @@ import { installSpeechChannelShim } from "./speech-channel.mjs";
  *   green. A declared shape makes that a compile error rather than an empty field.
  */
 import { parkPointer } from "./pointer.mjs";
+import { matchesFieldName, matchesWithin, fillActionFor } from "./field-match.mjs";
 import { browserAlive, currentPageUrl, launchReusable, navigateExisting, navigationOutcome, reusableArgs,
   mediaCensus, structuralCensus, domCensus, truncatedAnnouncements,
   bringPageToFront,
@@ -645,6 +646,10 @@ async function runCapturePhases(url, opts, diag) {
     probeArrows: !!opts.probeArrows,
     probeTyping: !!opts.probeTyping,
     probeFocusContext: !!opts.probeFocusContext,
+    // NOT a boolean, and the only capture option that is not: it carries the author's values. Passed
+    // through rather than normalised here because the CLI validated it against the schema before it was
+    // sent — a second, looser validation at this boundary is how two spellings of one contract begin.
+    formState: opts.formState,
     probeElementsList: !!opts.probeElementsList,
     probeOrder: opts.probeOrder === "focus-first" ? "focus-first" : undefined,
     task: opts.task,
@@ -2237,10 +2242,12 @@ function probePasses(ctx) {
  *           probeNavigation?: boolean, probeElementsList?: boolean, probeOrder?: string,
  *           probeDialog?: boolean, probeArrows?: boolean, probeTyping?: boolean,
  *           probeFocusContext?: boolean,
+ *           formState?: {state: string, submit: string,
+ *             fields: {field: string, within?: string, nth?: number}[]},
  *           task?: string }} ctx
  */
 async function navigateByStructure({ deadline, diag, probeForms, probeFocus, probeTables, probeNavigation,
-  probeDialog, probeArrows, probeTyping, probeFocusContext: probeFocusContext_,
+  formState, probeDialog, probeArrows, probeTyping, probeFocusContext: probeFocusContext_,
   probeElementsList, probeOrder, task }) {
   // BOTH ACCUMULATORS ARE DECLARED, because both are filled in by probes that run later and elsewhere.
   // An inferred type here describes only the fields present at construction -- `never[]` for each array,
@@ -2262,7 +2269,15 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   // reads exactly like an unasked one.
   /** @type {Record<string, Observation>} */
   const observed = {};
-  const onFormField = (/** @type {string} */ phrase) => operateControl(phrase, { probeForms, deadline, interaction, task });
+  // A CONFIGURED form REPLACES the opportunistic probe rather than running beside it.
+  //
+  // `operateControl` activates whatever submit-like control the sweep happens to walk past. With a
+  // `formState` in hand that is actively wrong: it would press submit part-way through filling, so the
+  // form would be submitted in a state the config does not describe and the evidence would be attributed
+  // to a state that never existed. The configured pass fills every field first and then activates the
+  // control the author NAMED.
+  const onFormField = (/** @type {string} */ phrase) =>
+    (formState ? Promise.resolve() : operateControl(phrase, { probeForms, deadline, interaction, task }));
 
   // THE TWO POSITION-DEPENDENT PROBES, SEQUENCED RATHER THAN HARD-CODED — see `probeSequence`.
   //
@@ -2279,6 +2294,10 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
     probeDialog, probeArrows, probeTyping, probeFocusContext: probeFocusContext_, deadline, diag, trips,
   });
   await runProbeSequence({ probeOrder, diag, runSweep, runFocus });
+  // AFTER the sweep, because the sweep is what establishes where the fields are and reads them in browse
+  // mode — and because filling changes the page, so a sweep afterwards would describe a document the
+  // author's values had already altered.
+  if (formState) await probeConfiguredForm({ formState, interaction, deadline, diag });
   // READ AFTER THE PROBES RUN, and the order is the whole of it. Destructured before `runProbeSequence`
   // -- which is where the extraction first put it -- every field binds to its INITIAL value and the
   // capture reports empty interaction evidence on every page. That is `postSubmitFields: []` on all 2,122
@@ -3910,6 +3929,232 @@ async function restoreBrowseMode(label, diag) {
   // MARKED WHENEVER IT RUNS, so "did not need to restore" and "never ran" can never be the same silence --
   // the `refreshBrowseBuffer` rule, which sat inert through three green runs for want of exactly this.
   diag.mark(label + "BrowseRestored", { via: "anchorToTop" });
+}
+
+/**
+ * Drive a form into the state a config declared, then submit it — ADR 0024's states model, in the worker.
+ *
+ * ONE state per capture, and the host issues one capture per state. That is forced rather than chosen: an
+ * error submission leaves a dirty form and an error banner, and a success submission may navigate away,
+ * so a second state cannot start from the first. It also keeps the evidence channels FLAT — nesting
+ * per-state evidence inside one capture would reshape the arrays that 28 files read.
+ *
+ * WHAT IT REPORTS IS THE POINT. `filled` and `unbound` are both recorded, because a field the config named
+ * and the page did not offer is not a no-op: it may be a page that changed, or a name that drifted, or a
+ * control with no accessible name — which is the 4.1.2 finding the whole addressing scheme turns on. A
+ * silent skip would make a half-filled form indistinguishable from a filled one.
+ *
+ * @param {{formState: {state: string, submit: string, fields: {field: string, within?: string, nth?: number}[]},
+ *   interaction: Record<string, unknown>, deadline: number,
+ *   diag: Diag}} args
+ */
+async function fillFormState({ formState, interaction, deadline, diag }) {
+  const wanted = (formState.fields || []).map((field, index) => ({ ...field, index, done: false }));
+  const filled = [];
+  const seenPerName = new Map();
+
+  await anchorToTop();
+  let previous = "";
+  for (let step = 0; step < MAX_FILL_STOPS; step += 1) {
+    if (Date.now() > deadline) { diag.mark("formFill", { stopped: "deadline", step }); break; }
+    if (wanted.every((field) => field.done)) break;
+    const announced = await advanceToNextField("formFill");
+    // NVDA announces the end of a page rather than going silent, so an unchanged phrase is the terminus.
+    // The sweep learned this the expensive way: stopping on silence guessed, and a log delta proves
+    // movement where repetition only suggests it.
+    if (!announced || announced === previous) { diag.mark("formFill", { stopped: "exhausted", step }); break; }
+    previous = announced;
+
+    const match = nextMatchFor(announced, wanted, seenPerName);
+    if (!match) continue;
+    const fill = fillActionFor(match);
+    if (!fill) { diag.mark("formFill", { skipped: "no verb", field: match.field }); continue; }
+    await applyFill(fill, "formFill", diag);
+    match.done = true;
+    filled.push({ field: match.field, action: fill.action });
+  }
+
+  const unbound = wanted.filter((field) => !field.done).map((field) => field.field);
+  interaction.formFill = { state: formState.state, filled, unbound };
+  diag.mark("formFill", { state: formState.state, filled: filled.length, unbound });
+  return { filled, unbound };
+}
+
+/**
+ * One step of the form-field quick-nav, reporting what NVDA said about where it landed.
+ * The command is read off `nvda` here rather than passed in: guidepup owns that type, and describing it
+ * at this boundary would be a second spelling of somebody else's contract.
+ *
+ * @param {string} label
+ * @returns {Promise<string>}
+ */
+async function advanceToNextField(label) {
+  const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label).catch(() => [])) || []).length;
+  await withTimeout(nvda.perform(nvda.keyboardCommands.moveToNextFormField), NAV_TIMEOUT_MS, label)
+    .catch(() => undefined);
+  const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label).catch(() => [])) || [];
+  return log.slice(before).map((/** @type {unknown} */ x) => String(x).trim()).filter(Boolean).join(" ");
+}
+
+/**
+ * Which unfilled spec, if any, this announcement satisfies — including the `nth` bookkeeping.
+ *
+ * `nth` counts the controls matching that NAME as they are ENCOUNTERED, which is the only counting a
+ * one-pass walk can do and is also how the draft assigned the numbers. Kept here rather than inline so the
+ * loop above reads as a narrative and this fiddly part is nameable.
+ */
+/**
+ * @param {string} announced
+ * @param {({field: string, within?: string, nth?: number, done: boolean}
+ *   & {value?: string, choose?: string, check?: boolean})[]} wanted
+ * @param {Map<string, number>} seenPerName
+ * @returns {({field: string, within?: string, nth?: number, done: boolean}
+ *   & {value?: string, choose?: string, check?: boolean})|null}
+ */
+function nextMatchFor(announced, wanted, seenPerName) {
+  for (const field of wanted) {
+    if (field.done) continue;
+    if (!matchesFieldName(announced, field.field)) continue;
+    if (!matchesWithin(announced, field.within)) continue;
+    if (field.nth === undefined) return field;
+    const seen = (seenPerName.get(field.field) ?? 0) + 1;
+    seenPerName.set(field.field, seen);
+    if (seen === field.nth) return field;
+    // Counted but not ours: a LATER spec for the same name may want this one, so the walk continues
+    // rather than consuming the landing.
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Fill a form as the config declared, then activate the control it named — one declared state, end to end.
+ *
+ * The submit is SEPARATE from the fill and deliberately so: a fill that bound nothing must not go on to
+ * press submit. An empty form submitted looks exactly like a configured form whose names all drifted, and
+ * the evidence would then be attributed to a state nobody described — the failure this whole states model
+ * exists to remove.
+ */
+/**
+ * @param {{formState: {state: string, submit: string, fields: {field: string, within?: string, nth?: number}[]},
+ *   interaction: Record<string, unknown>, deadline: number,
+ *   diag: Diag}} args
+ */
+async function probeConfiguredForm({ formState, interaction, deadline, diag }) {
+  const { filled, unbound } = await fillFormState({ formState, interaction, deadline, diag });
+  if (filled.length === 0) {
+    // Not an error, and not a submit either. It is REPORTED, because "no field the config named exists on
+    // this page" is a real answer — a page that changed, a name that drifted, or a control with no
+    // accessible name, which is the 4.1.2 finding the addressing scheme turns on.
+    diag.mark("configuredForm", { submitted: false, why: "no configured field was found on this page", unbound });
+    interaction.formFill = { ...(interaction.formFill || {}), submitted: false };
+    return;
+  }
+  await anchorToTop();
+  for (let step = 0; step < MAX_FILL_STOPS; step += 1) {
+    if (Date.now() > deadline) { diag.mark("configuredForm", { submitted: false, why: "deadline" }); return; }
+    const announced = await advanceToNextField("configuredSubmit");
+    if (!announced) break;
+    if (!matchesFieldName(announced, formState.submit)) continue;
+    // The SAME delta machinery the opportunistic probe uses, so a configured submission and an
+    // opportunistic one produce evidence of identical shape. Two spellings of "what happened after
+    // submit" is the fact-stated-twice defect, and a rule reading one would silently ignore the other.
+    await activateAndCaptureDelta(announced, interaction, "submit");
+    diag.mark("configuredForm", { submitted: true, via: formState.submit, filled: filled.length, unbound });
+    interaction.formFill = { ...(interaction.formFill || {}), submitted: true };
+    return;
+  }
+  diag.mark("configuredForm", { submitted: false, why: "the named submit control was not found", submit: formState.submit });
+  interaction.formFill = { ...(interaction.formFill || {}), submitted: false };
+}
+
+/**
+ * How many form fields to walk while filling. The sweep's own cap, for the same reason.
+ *
+ * A page with a hundred fields is real, and a bound that is too small silently fills SOME of a form —
+ * which submits a half-filled form and reports whatever that produced, an answer worse than refusing.
+ */
+const MAX_FILL_STOPS = 150;
+
+/**
+ * Put ONE control into the state the config asked for.
+ *
+ * Focus mode is entered for the keystrokes and browse mode restored afterwards, every time, and that is
+ * not defensive tidying: focus mode makes NVDA's single-letter quick-nav keys TYPE THEMSELVES INTO THE
+ * PAGE, which ran for 2,122 captures with every check green. `restoreBrowseMode` is the proven route out.
+ *
+ * @param {{action: string, text?: string, option?: string, to?: boolean}} fill
+ */
+/**
+ * @param {{action: string, text?: string, option?: string, to?: boolean}} fill
+ * @param {string} label
+ * @param {Diag} diag
+ */
+async function applyFill(fill, label, diag) {
+  const K = nvda.keyboardCommands;
+  await withTimeout(nvda.perform(K.toggleBetweenBrowseAndFocusMode), NAV_TIMEOUT_MS, label)
+    .catch(() => undefined);
+  try {
+    if (fill.action === "type") {
+      // Select-all first, because a field may carry a value already — a browser-restored entry, or one
+      // this run typed in an earlier state. Appending to it would submit something the config does not
+      // describe, and an EMPTY value is the whole point of an error state: "clear this field" is how a
+      // validation error is produced, and it cannot be expressed by typing nothing into a full field.
+      await withTimeout(nvda.press("Control+a"), NAV_TIMEOUT_MS, label).catch(() => undefined);
+      await withTimeout(nvda.press("Delete"), NAV_TIMEOUT_MS, label).catch(() => undefined);
+      if (fill.text !== "") {
+        await withTimeout(nvda.type(String(fill.text)), NAV_TIMEOUT_MS, label).catch(() => undefined);
+      }
+    } else if (fill.action === "toggle") {
+      // Space toggles a checkbox and selects a radio. The config says which STATE it wants, and the
+      // control announces the state it is in, so `toggleIfNeeded` reads it rather than pressing blindly —
+      // pressing Space on a checkbox already checked turns it OFF, and the config would then describe the
+      // opposite of what was submitted.
+      await toggleIfNeeded(Boolean(fill.to), label, diag);
+    } else if (fill.action === "choose") {
+      // Typing the option's first characters is how a combo box is driven from the keyboard, and it is
+      // what a keyboard user does. Arrowing blindly would depend on the option ORDER, which is a fact
+      // about the page rather than about the config.
+      await withTimeout(nvda.type(String(fill.option)), NAV_TIMEOUT_MS, label).catch(() => undefined);
+      await withTimeout(nvda.press("Enter"), NAV_TIMEOUT_MS, label).catch(() => undefined);
+    }
+  } finally {
+    // ALWAYS, even when the keystrokes threw. A capture left in focus mode types its own sweep commands
+    // into the page, and that is the most expensive defect this project has had.
+    await restoreBrowseMode(label, diag);
+  }
+}
+
+/**
+ * Press Space only when the control is not already in the state we want.
+ *
+ * NVDA announces `checked` / `not checked` as a state on the control, so the current value is readable and
+ * a blind press is unnecessary. It is also wrong: pressing Space on an already-checked box unchecks it, so
+ * a config asking for `check: true` would submit `false` and the report would describe a form that was
+ * never filled that way.
+ */
+/**
+ * @param {boolean} want
+ * @param {string} label
+ * @param {Diag} diag
+ */
+async function toggleIfNeeded(want, label, diag) {
+  const announced = String((await withTimeout(nvda.lastSpokenPhrase(), QUERY_TIMEOUT_MS, label)
+    .catch(() => "")) || "");
+  // `not checked` must be tested BEFORE `checked`, because it contains it. Getting that order wrong is
+  // the same shape as a role list where a shorter role shadows a longer one.
+  const isOn = /\bnot (?:checked|selected|pressed)\b/i.test(announced)
+    ? false
+    : /\b(?:checked|selected|pressed)\b/i.test(announced) ? true : null;
+  if (isOn === want) {
+    diag.mark("formFillToggle", { skipped: "already in the requested state", want });
+    return;
+  }
+  // `null` means the state was not announced. Press anyway and RECORD the uncertainty, rather than
+  // skipping: a control whose state we cannot read is more likely to need the press than not, and the
+  // mark is what lets a reader tell that case from a confident one.
+  if (isOn === null) diag.mark("formFillToggle", { stateUnreadable: true, announced: announced.slice(0, 60) });
+  await withTimeout(nvda.press("Space"), NAV_TIMEOUT_MS, label).catch(() => undefined);
 }
 
 /**

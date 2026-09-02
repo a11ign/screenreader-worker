@@ -31,6 +31,9 @@ export const WORKER_FILES = [
   "nvda-logging.mjs",
   "speech-channel.mjs",
   "desktop-dialogs.mjs",
+  // The forms-config matcher (ADR 0024). capture-core imports it, so a guest without it cannot start —
+  // which is exactly what `worker-files.test.ts` caught when this line was missing.
+  "field-match.mjs",
   "powershell.mjs",
   "window-focus.mjs",
   "windows-trim.mjs",
