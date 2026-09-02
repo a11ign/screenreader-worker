@@ -434,6 +434,7 @@ function captureOptions(/** @type {any} */ parsed) {
     probeArrows: parsed.probeArrows ?? false,
     // Opt-in: it TYPES into the focused field, which changes the page under measurement.
     probeTyping: parsed.probeTyping ?? false,
+    probeFocusContext: parsed.probeFocusContext ?? false,
     probeDialog: parsed.probeDialog ?? false,
     // Which order the two position-dependent probes run in. A NAME, never a caller-supplied list — see
     // `probeSequence`. Absent means the order that has always run, so no cached capture is affected.

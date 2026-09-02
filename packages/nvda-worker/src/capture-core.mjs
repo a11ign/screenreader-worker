@@ -619,6 +619,7 @@ async function runCapturePhases(url, opts, diag) {
     probeDialog: !!opts.probeDialog,
     probeArrows: !!opts.probeArrows,
     probeTyping: !!opts.probeTyping,
+    probeFocusContext: !!opts.probeFocusContext,
     probeElementsList: !!opts.probeElementsList,
     probeOrder: opts.probeOrder === "focus-first" ? "focus-first" : undefined,
     task: opts.task,
@@ -2026,6 +2027,13 @@ const FOCUS_DEPENDENT_PROBES = Object.freeze({
     ownReason: "probeTyping is opt-in: it enters characters into a field, changing the page under measurement",
     withoutFocus: "probeTyping was asked WITHOUT probeFocus, and typing in browse mode sends quick-nav COMMANDS",
   },
+  focusContext: {
+    flag: "probeFocusContext",
+    ownReason: "probeFocusContext is opt-in: it moves focus, and a page that navigates on focus is changed by "
+      + "the asking",
+    withoutFocus: "probeFocusContext was asked WITHOUT probeFocus, and Tab in browse mode moves the BROWSE "
+      + "cursor rather than DOM focus, so nothing would be focused to change context",
+  },
 });
 
 /**
@@ -2041,7 +2049,8 @@ const FOCUS_DEPENDENT_PROBES = Object.freeze({
  *
  * @param {{ observed: Record<string, Observation>, probeForms?: boolean, probeFocus?: boolean,
  *           probeNavigation?: boolean, probeDialog?: boolean, probeArrows?: boolean,
- *           probeTyping?: boolean, interaction: { formChanges: AnnouncedChange[] } }} ctx
+ *           probeTyping?: boolean, probeFocusContext?: boolean,
+ *           interaction: { formChanges: AnnouncedChange[] } }} ctx
  */
 function recordWhatWasAsked({ observed, probeForms, probeFocus, interaction, ...flags }) {
   observed.formChanges = probeForms
@@ -2123,11 +2132,13 @@ function interactionEvidence({
  */
 function probePasses(ctx) {
   const { structure, interaction, observed, onFormField, probeForms, probeTables, probeFocus,
-    probeDialog, probeArrows, probeTyping, deadline, diag, trips } = ctx;
+    probeDialog, probeArrows, probeTyping, probeFocusContext: probeFocusContext_,
+    deadline, diag, trips } = ctx;
   /** @type {{postSubmitFields: string[], focusOrder: string[], dialogEscape: any,
-   *           arrowNavigation: any, typedFeedback: any}} */
+   *           arrowNavigation: any, typedFeedback: any, focusContext: any}} */
   const results = {
     postSubmitFields: [], focusOrder: [], dialogEscape: null, arrowNavigation: null, typedFeedback: null,
+    focusContext: null,
   };
   const runSweep = async () => {
     await sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips, observed });
@@ -2163,6 +2174,14 @@ function probePasses(ctx) {
     // LAST of the three that ride the focus probe, because it is the only one that CHANGES THE PAGE'S
     // CONTENT. Escape and an arrow leave the field as they found it; six digits do not, and a later probe
     // reading a form this one has filled in is measuring our own input.
+    // BEFORE the typing probe, because that one fills the form in. 3.2.1 asks what merely FOCUSING does,
+    // and a field already carrying six digits is not the state a first focus finds.
+    results.focusContext = probeFocusContext_ && probeFocus
+      ? await probeFocusContext({ interaction, deadline, diag })
+      : null;
+    // LAST of the four that ride the focus probe, because it is the only one that CHANGES THE PAGE'S
+    // CONTENT. Escape, an arrow and a Tab leave the field as they found it; six digits do not, and a later
+    // probe reading a form this one has filled in is measuring our own input.
     results.typedFeedback = probeTyping && probeFocus
       ? await probeTypedFeedback({ interaction, deadline, diag })
       : null;
@@ -2174,10 +2193,11 @@ function probePasses(ctx) {
  * @param {{ deadline: number, diag: Diag, probeForms?: boolean, probeFocus?: boolean, probeTables?: boolean,
  *           probeNavigation?: boolean, probeElementsList?: boolean, probeOrder?: string,
  *           probeDialog?: boolean, probeArrows?: boolean, probeTyping?: boolean,
+ *           probeFocusContext?: boolean,
  *           task?: string }} ctx
  */
 async function navigateByStructure({ deadline, diag, probeForms, probeFocus, probeTables, probeNavigation,
-  probeDialog, probeArrows, probeTyping,
+  probeDialog, probeArrows, probeTyping, probeFocusContext: probeFocusContext_,
   probeElementsList, probeOrder, task }) {
   // BOTH ACCUMULATORS ARE DECLARED, because both are filled in by probes that run later and elsewhere.
   // An inferred type here describes only the fields present at construction -- `never[]` for each array,
@@ -2213,7 +2233,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   // observations, and making it visible is the point of the option.
   const { runSweep, runFocus, results } = probePasses({
     structure, interaction, observed, onFormField, probeForms, probeTables, probeFocus,
-    probeDialog, probeArrows, probeTyping, deadline, diag, trips,
+    probeDialog, probeArrows, probeTyping, probeFocusContext: probeFocusContext_, deadline, diag, trips,
   });
   await runProbeSequence({ probeOrder, diag, runSweep, runFocus });
   // READ AFTER THE PROBES RUN, and the order is the whole of it. Destructured before `runProbeSequence`
@@ -3882,6 +3902,54 @@ async function landOnControl({ to, label, interaction, diag }) {
   const focused = await reportFocusedControlWithRetry(interaction);
   diag.mark(label + "Landing", { landed: landed.slice(0, 80), focused });
   return focused;
+}
+
+/**
+ * 3.2.1 On Focus — does merely FOCUSING a control change the page's context?
+ *
+ * WCAG's failure is a control that navigates, opens a window or moves focus elsewhere the moment it
+ * receives focus, with no action from the user. The part a screen reader can observe is the page TITLE,
+ * read exactly as `probeRouteChange` reads it for 2.4.2 and as `probeTypedFeedback` now reads it for
+ * 3.2.2 — the sibling criterion, on input rather than focus.
+ *
+ * ONE Tab, deliberately, and not a walk. `probeFocusOrder` already walks the tab order and its channel is
+ * a list of strings that 28 files read; adding a title per stop would change that shape for all of them.
+ * This asks a different question of the first control instead, which is where a page that does this
+ * usually does it — and keeps the cost to two title reads rather than one per stop.
+ *
+ * The title is read AFTER the focus announcement settles. Reading it immediately races the page's own
+ * navigation and returns the OLD title on a page that did change context, which reports conformance for
+ * the failure — the same trap `probeTypedFeedback`'s comment records.
+ *
+ * @param {{ interaction: Record<string, any>, deadline: number, diag: any }} ctx
+ */
+async function probeFocusContext({ interaction, deadline, diag }) {
+  const mark = (/** @type {Record<string, unknown>} */ fields) => diag.mark("focusContext", fields);
+  try {
+    if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
+    await anchorToTop();
+    const titleBefore = await reportedTitle(diag);
+    await withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, "focusContext").catch(() => undefined);
+    const control = await reportFocusedControl();
+    if (!control) {
+      // NOTHING FOCUSABLE is not "the context did not change" — nothing was focused, so the question was
+      // never asked. Nulls, for the reason every absence in this file is a null rather than an empty
+      // string: an empty title reads as a title that stayed the same, which is the conformant answer.
+      mark({ focused: false, why: "nothing focusable on this page" });
+      return { focused: false, control: "", titleBefore: null, titleAfter: null };
+    }
+    const titleAfter = await reportedTitle(diag);
+    mark({ focused: true, control, titleBefore, titleAfter });
+    return { focused: true, control, titleBefore, titleAfter };
+  } catch (e) {
+    // A probe that threw and a page that changed nothing are opposite findings, and this file has paid a
+    // corpus for making them the same silence.
+    mark({ error: errMsg(e) });
+    interaction.sweepLog.push(`focusContext ERROR ${errMsg(e)}`);
+    return null;
+  } finally {
+    await restoreBrowseMode("focusContext", diag);
+  }
 }
 
 /**
