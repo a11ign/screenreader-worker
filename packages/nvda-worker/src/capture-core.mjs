@@ -290,6 +290,13 @@ import { setTimeout as sleep } from "node:timers/promises";
  * no quick-navigation script. Named because it is compared against the speech log to separate NVDA's echo
  * from the page's own announcement -- a literal here and a character class there would drift apart.
  */
+// How far 3.2.1 walks the tab order looking for a control that changes context on focus.
+//
+// Bounded because every stop costs a title read, and unbounded would make a page with a long nav bar the
+// most expensive capture in the corpus. Eight is past the furniture `page()` adds — a skip link and a
+// six-item list — and into the page's own controls, which is where the criterion's failure lives.
+const FOCUS_CONTEXT_STOPS = 8;
+
 const TYPED_PROBE_TEXT = "123456";
 
 export const CAPTURE_PROTOCOL_VERSION = 14;
@@ -3947,8 +3954,29 @@ async function probeFocusContext({ interaction, deadline, diag }) {
     if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
     await anchorToTop();
     const titleBefore = await reportedTitle(diag);
-    await withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, "focusContext").catch(() => undefined);
-    const control = await reportFocusedControl();
+    // WALK THE TAB ORDER, do not press Tab once.
+    //
+    // The first version pressed once and every one of its 28 corpus cases came back BLIND. The reason is
+    // this file's own most-repeated lesson: the FIRST focusable thing on a page is almost never the
+    // control you mean. `page()` gives every corpus page furniture — a skip link, a nav list — so one Tab
+    // lands there and the field's `focus` handler never runs. `capture-real-pages` records the same fact
+    // about `probeNavigation`: "on essentially every real page the first link IS the skip link".
+    //
+    // Walking is also the truer reading of the criterion. 3.2.1 is about ANY control that changes context
+    // on focus, not about the first one, so stopping at one stop would under-report by construction.
+    let control = "";
+    let titleAfter = titleBefore;
+    let stops = 0;
+    for (; stops < FOCUS_CONTEXT_STOPS; stops += 1) {
+      await withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, "focusContext").catch(() => undefined);
+      const focused = await reportFocusedControl();
+      if (!focused) break;
+      control = focused;
+      titleAfter = await reportedTitle(diag);
+      // Stop at the FIRST change. Carrying on would report the last control rather than the one that
+      // moved the user, and the evidence has to name which control did it.
+      if (titleAfter !== titleBefore) break;
+    }
     if (!control) {
       // NOTHING FOCUSABLE is not "the context did not change" — nothing was focused, so the question was
       // never asked. Nulls, for the reason every absence in this file is a null rather than an empty
@@ -3956,8 +3984,7 @@ async function probeFocusContext({ interaction, deadline, diag }) {
       mark({ focused: false, why: "nothing focusable on this page" });
       return { focused: false, control: "", titleBefore: null, titleAfter: null };
     }
-    const titleAfter = await reportedTitle(diag);
-    mark({ focused: true, control, titleBefore, titleAfter });
+    mark({ focused: true, control, stops, titleBefore, titleAfter });
     return { focused: true, control, titleBefore, titleAfter };
   } catch (e) {
     // A probe that threw and a page that changed nothing are opposite findings, and this file has paid a
