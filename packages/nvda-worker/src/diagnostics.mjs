@@ -598,6 +598,17 @@ export function guestDiagnostics({ edgeProfile, logPath }) {
     disk: diskSpace(edgeProfile),
     serverLog: treeSize(logPath),
     serverLogTail: serverLogTail(logPath),
+    // BOTH LOGS, because they answer different questions and each has ONE writer as of 2026-09-02.
+    //
+    // `logPath` is the LAUNCHER's: lifecycle (`[run-server] starting`, `node exited with N`) and any
+    // crash at IMPORT time, which happens before the worker's own logger exists. This one is the
+    // worker's runtime — warm-ups, faults, recoveries — and it is the one that was missing entirely
+    // while both processes wrote to a single file (known-gaps §24).
+    //
+    // Reported even when absent. A worker predating the split has no `worker.log`, and `serverLogTail`
+    // returns `{ error }` for that rather than an empty list — which keeps "this worker is too old to
+    // have one" distinct from "it ran and said nothing", the distinction this whole endpoint exists for.
+    workerLogTail: serverLogTail(resolve(process.cwd(), "worker.log")),
     processes: processCounts(WATCHED_PROCESSES),
     topProcesses: topProcessesByMemory(),
     committedMemory: committedMemory(),

@@ -58,7 +58,27 @@ const IS_MAIN = import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
 
 
 const PORT = Number(process.env.A11Y_PORT || 8765);
-const LOG_PATH = process.env.A11Y_SERVER_LOG || "server.log";
+// `worker.log`, NOT `server.log`, and the split is the whole point.
+//
+// `run-server.cmd` line 96 is `node server.mjs 2>> server.log`, so cmd.exe holds a write handle on that
+// file for node's ENTIRE lifetime — and this process was appending to the same path. Measured 2026-09-02
+// across all five boxes: a 40-line tail spanning ten restarts over two days contained only launcher
+// output, the ForegroundLockTimeout script and node's DEP0190 warning. Not one line from this logger,
+// although it demonstrably works — `warming up NVDA` and `warm: NVDA is up and answering` appear on the
+// console the same day.
+//
+// `createLogWriter` wraps its append and falls back to the console — "the console is the file's fallback"
+// — so a refused write is invisible BY DESIGN. That is what let this persist, and it is why the fix is to
+// stop two processes writing one file rather than to make the failure louder.
+//
+// The cost of not having it: a capture held `busy` from 03:00 to 06:32 and stalled a corpus recapture for
+// three and a half hours. Both bounded timeouts that should have ended it did not fire, and the log that
+// would say which contained nothing from the period. That fault is still undiagnosed for this reason
+// alone — see known-gaps §24.
+//
+// The launcher keeps `server.log` and every comment in it stays true: it owns lifecycle and IMPORT-time
+// crashes, which happen before this logger exists. This owns runtime. One writer each.
+const LOG_PATH = process.env.A11Y_SERVER_LOG || "worker.log";
 
 // Log to the console AND the file, from here rather than by redirecting the launcher.
 //
