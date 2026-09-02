@@ -2111,11 +2111,11 @@ function recordWhatWasAsked({ observed, probeForms, probeFocus, interaction, ...
  * @param {{ structure: CapturedStructure, interaction: {stateChanges: AnnouncedChange[],
  *           formChanges: AnnouncedChange[], navigatedOnSubmit?: unknown, postSubmitNames?: string[]},
  *           postSubmitFields: string[], focusOrder: string[], routeChange: unknown, dialogEscape: unknown,
- *           arrowNavigation: unknown, typedFeedback: unknown }} ctx
+ *           arrowNavigation: unknown, typedFeedback: unknown, focusContext: unknown }} ctx
  */
 function interactionEvidence({
   structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape, arrowNavigation,
-  typedFeedback,
+  typedFeedback, focusContext,
 }) {
   return {
     controls: structure.formFields,
@@ -2136,6 +2136,9 @@ function interactionEvidence({
     // Absent unless asked for. Absent and "we typed and the page said nothing" must stay distinguishable:
     // the second IS the 3.3.1 finding, and it is the whole reason this probe exists.
     ...(typedFeedback ? { typedFeedback } : {}),
+    // Absent unless asked for. Absent and "we walked the tab order and the title never moved" must stay
+    // distinguishable: the second is the CONFORMANT answer to 3.2.1, the first is no answer at all.
+    ...(focusContext ? { focusContext } : {}),
     // Absent (rather than false) when the submit did not navigate, so "we did not check" and "it did not
     // navigate" stay distinguishable.
     ...(interaction.navigatedOnSubmit ? { navigatedOnSubmit: interaction.navigatedOnSubmit } : {}),
@@ -2157,8 +2160,13 @@ function interactionEvidence({
  */
 function probePasses(ctx) {
   const { structure, interaction, observed, onFormField, probeForms, probeTables, probeFocus,
-    probeDialog, probeArrows, probeTyping, probeFocusContext: probeFocusContext_,
-    deadline, diag, trips } = ctx;
+    probeDialog, probeArrows, probeTyping, deadline, diag, trips } = ctx;
+  // READ from ctx, NOT destructured-and-renamed. Renaming it out of the object removed it from the
+  // `...flags` that `recordWhatWasAsked` spreads, so `observed.focusContext` reported `asked: false` while
+  // the probe was demonstrably running — its own diagnostic mark sat in the same capture saying
+  // `focused: true`. Two records of one fact disagreeing is this repo's most-recorded defect, and the
+  // rename existed only to dodge a name collision with the function.
+  const probeFocusContext_ = ctx.probeFocusContext;
   /** @type {{postSubmitFields: string[], focusOrder: string[], dialogEscape: any,
    *           arrowNavigation: any, typedFeedback: any, focusContext: any}} */
   const results = {
@@ -2182,6 +2190,21 @@ function probePasses(ctx) {
   // caret inside a dialog for Escape to leave. Riding with it also means the pair stays together under
   // `focus-first`, where the sweep has not run at all.
   const runFocus = async () => {
+    // FIRST, BEFORE `probeFocusOrder`, and this ordering is the whole correctness of the probe.
+    //
+    // 3.2.1 asks what happens the FIRST time a control is focused. `probeFocusOrder` walks the entire tab
+    // order, so by the time it has finished, every control on the page has already been focused once — and
+    // a page that renames itself on focus has already renamed itself. Measured 2026-09-02: the probe ran
+    // second and read `titleBefore: "Results for the reference you typed"`, which is the CHANGED title, so
+    // it compared the failure against itself and reported no change on all 28 cases.
+    //
+    // That is this file's rule that a probe's precondition is established by ANOTHER probe, so where it
+    // sits in the sequence is part of its correctness — the same rule `anchorToTop`'s Escape and the
+    // dialog probe are already here for. `probeFocusOrder` anchors to the top itself, so it is unaffected
+    // by running second.
+    results.focusContext = probeFocusContext_ && probeFocus
+      ? await probeFocusContext({ interaction, deadline, diag })
+      : null;
     results.focusOrder = probeFocus
       ? await probeFocusOrder({ deadline, diag, controlsOnPage: structure.formFields.length })
       : [];
@@ -2199,11 +2222,6 @@ function probePasses(ctx) {
     // LAST of the three that ride the focus probe, because it is the only one that CHANGES THE PAGE'S
     // CONTENT. Escape and an arrow leave the field as they found it; six digits do not, and a later probe
     // reading a form this one has filled in is measuring our own input.
-    // BEFORE the typing probe, because that one fills the form in. 3.2.1 asks what merely FOCUSING does,
-    // and a field already carrying six digits is not the state a first focus finds.
-    results.focusContext = probeFocusContext_ && probeFocus
-      ? await probeFocusContext({ interaction, deadline, diag })
-      : null;
     // LAST of the four that ride the focus probe, because it is the only one that CHANGES THE PAGE'S
     // CONTENT. Escape, an arrow and a Tab leave the field as they found it; six digits do not, and a later
     // probe reading a form this one has filled in is measuring our own input.
@@ -2266,7 +2284,8 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   // capture reports empty interaction evidence on every page. That is `postSubmitFields: []` on all 2,122
   // captures, reproduced exactly: an empty field is not a malformed one, no count moves, and every gate
   // stays green. Caught by reading, because `capture-core` imports guidepup and no test can reach here.
-  const { postSubmitFields, focusOrder, dialogEscape, arrowNavigation, typedFeedback } = results;
+  const { postSubmitFields, focusOrder, dialogEscape, arrowNavigation, typedFeedback,
+    focusContext } = results;
 
   // LAST of the three, because it is the only probe that can leave the page under measurement: it activates
   // a link. Everything position-dependent has finished by here, so navigating away costs nothing.
@@ -2275,12 +2294,18 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
     : null;
   if (probeElementsList) await crossCheckAgainstElementsList({ structure, deadline, diag });
   recordWhatWasAsked({
-    observed, probeForms, probeFocus, probeNavigation, probeDialog, probeArrows, probeTyping, interaction,
+    // EVERY probe flag, named. This call is the one that made `observed.focusContext` say `asked: false`
+    // while the probe's own mark in the same capture said `focused: true` — the flag simply was not passed.
+    // The list is hand-written, which is the "six hand-written hops" shape the manifest hop was fixed for;
+    // it survives here because these are the DOCUMENTED interface and a reader should see them, so the
+    // guard against forgetting one is `observation-parity.test.ts` rather than a spread.
+    observed, probeForms, probeFocus, probeNavigation, probeDialog, probeArrows, probeTyping,
+    probeFocusContext: probeFocusContext_, interaction,
   });
 
   const result = interactionEvidence({
     structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape, arrowNavigation,
-    typedFeedback,
+    typedFeedback, focusContext,
   });
   diag.mark("interaction", {
     controls: result.controls.length,
