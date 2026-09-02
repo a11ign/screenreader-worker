@@ -2114,7 +2114,8 @@ function recordWhatWasAsked({ observed, probeForms, probeFocus, interaction, ...
  * related reason, and an omission here looks exactly like a page with nothing to report.
  *
  * @param {{ structure: CapturedStructure, interaction: {stateChanges: AnnouncedChange[],
- *           formChanges: AnnouncedChange[], navigatedOnSubmit?: unknown, postSubmitNames?: string[]},
+ *           formChanges: AnnouncedChange[], navigatedOnSubmit?: unknown, postSubmitNames?: string[],
+ *           formFill?: unknown},
  *           postSubmitFields: string[], focusOrder: string[], routeChange: unknown, dialogEscape: unknown,
  *           arrowNavigation: unknown, typedFeedback: unknown, focusContext: unknown }} ctx
  */
@@ -2146,6 +2147,15 @@ function interactionEvidence({
     ...(focusContext ? { focusContext } : {}),
     // Absent (rather than false) when the submit did not navigate, so "we did not check" and "it did not
     // navigate" stay distinguishable.
+    // WHAT A CONFIGURED FORM ACTUALLY DID — filled, unbound, submitted (ADR 0024).
+    //
+    // Missing from this list on its first real run, and the symptom is the one this repo names most
+    // often: the marks carried `filled: 1, submitted: true` while `interaction.formFill` came back NULL,
+    // so the evidence existed in the debug channel and not in the channel a rule reads. `unbound` is the
+    // half that matters most — a field the config named and the page did not offer may be a control with
+    // no accessible name, which is the 4.1.2 finding the addressing scheme turns on, and dropping it here
+    // would make a half-filled form indistinguishable from a filled one.
+    ...(interaction.formFill ? { formFill: interaction.formFill } : {}),
     ...(interaction.navigatedOnSubmit ? { navigatedOnSubmit: interaction.navigatedOnSubmit } : {}),
     // Same rule, same reason: absent when no submit happened, so "no submit was probed" cannot be read as
     // "the page showed nothing after submitting". 3.3.1 depends on telling those apart.
