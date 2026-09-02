@@ -3965,7 +3965,8 @@ async function fillFormState({ formState, interaction, deadline, diag }) {
 
   await anchorToTop();
   let previous = "";
-  for (let step = 0; step < MAX_FILL_STOPS; step += 1) {
+  let step = 0;
+  for (; step < MAX_FILL_STOPS; step += 1) {
     if (Date.now() > deadline) { diag.mark("formFill", { stopped: "deadline", step }); break; }
     if (wanted.every((field) => field.done)) break;
     const announced = await advanceToNextField("formFill");
@@ -3982,8 +3983,25 @@ async function fillFormState({ formState, interaction, deadline, diag }) {
     await applyFill(fill, "formFill", diag);
     match.done = true;
     filled.push({ field: match.field, action: fill.action });
+    // RE-ANCHOR AND RESTART, because `applyFill` ends in `restoreBrowseMode`, which anchors — so the
+    // caret is back at the end of the document and this walk's position is gone. Resuming from there
+    // would silently re-examine the tail and miss everything before it, which is how the first version
+    // filled one field of two and reported the other `unbound`.
+    //
+    // Restarting is O(fields x stops) and that is the right trade: the walk is a few keystrokes per stop
+    // against a capture already measured in minutes, and a fill that quietly skips a field submits a form
+    // in a state the config does not describe.
+    await anchorToTop();
+    previous = "";
+    seenPerName.clear();
   }
 
+  // RAN OUT OF STEPS and RAN OUT OF PAGE must not be the same evidence, and the loop bound alone makes
+  // them so: both leave fields `unbound`. The budget is a TOTAL across restarts — each fill re-anchors and
+  // re-walks — so a form with many fields can reach it while every field it named still exists. Saying
+  // which happened is the difference between "your config names a field this page does not have" and
+  // "this tool gave up", and those need opposite fixes.
+  if (step >= MAX_FILL_STOPS) diag.mark("formFill", { stopped: "budget", steps: step, cap: MAX_FILL_STOPS });
   const unbound = wanted.filter((field) => !field.done).map((field) => field.field);
   interaction.formFill = { state: formState.state, filled, unbound };
   diag.mark("formFill", { state: formState.state, filled: filled.length, unbound });
@@ -3992,6 +4010,16 @@ async function fillFormState({ formState, interaction, deadline, diag }) {
 
 /**
  * One step of the form-field quick-nav, reporting what NVDA said about where it landed.
+ * BACKWARDS, and that is the whole correctness of this walk.
+ *
+ * `anchorToTop` is named for the mode it restores, not the position: it presses Escape and then
+ * **Control+End**, leaving the caret at the END of the document, which is exactly where the sweep wants
+ * it. Forward quick-navigation from there finds nothing, so a walk that anchored and then asked for the
+ * NEXT form field examined an empty page. Measured on a W3C tutorial page carrying eight form fields:
+ * the fill walk stopped `exhausted` at step 2 and the submit walk reported the button "not found", while
+ * the sweep in the same capture listed all eight. `collectByType` sweeps previous-then-next for this
+ * reason; this follows the proven half.
+ *
  * The command is read off `nvda` here rather than passed in: guidepup owns that type, and describing it
  * at this boundary would be a second spelling of somebody else's contract.
  *
@@ -4000,7 +4028,7 @@ async function fillFormState({ formState, interaction, deadline, diag }) {
  */
 async function advanceToNextField(label) {
   const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label).catch(() => [])) || []).length;
-  await withTimeout(nvda.perform(nvda.keyboardCommands.moveToNextFormField), NAV_TIMEOUT_MS, label)
+  await withTimeout(nvda.perform(nvda.keyboardCommands.moveToPreviousFormField), NAV_TIMEOUT_MS, label)
     .catch(() => undefined);
   const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label).catch(() => [])) || [];
   return log.slice(before).map((/** @type {unknown} */ x) => String(x).trim()).filter(Boolean).join(" ");
