@@ -36,7 +36,7 @@ import { faultCode } from "./capture-faults.mjs";
 import { createResultStore, isValidCaptureId, storedResultResponse } from "./capture-results.mjs";
 import { edgePolicy, guestDiagnostics, processCounts, screenReaderState, treeSize } from "./diagnostics.mjs";
 import { killStrayBrowsers, pruneEdgeProfile, reportBrowserPolicyDrift } from "./browser-profile.mjs";
-import { applyRequestedLogLevel } from "./nvda-logging.mjs";
+import { applyRequestedLogLevel, applyCaptureSettings, CAPTURE_SETTINGS } from "./nvda-logging.mjs";
 import { trimAlreadyDone } from "./windows-trim.mjs";
 import { createLogWriter, silenceStreamErrors } from "./server-log.mjs";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -151,13 +151,12 @@ async function tidyBrowserAtBoot() {
     reportBrowserPolicyDrift(edgePolicy(), log);
     // Opt-in, and at boot so it is in force before NVDA warms up. Unset by default: NVDA writes a lot at
     // DEBUG and this pipeline measures per-capture timing.
-    applyRequestedLogLevel(
-      (screenReaderState({
-        nvdaRoot: process.env.GUIDEPUP_SCREEN_READERS_PATH ||
-          (process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "guidepup") : null),
-        tempDir: process.env.TEMP || process.env.TMP || ".",
-        tailLines: 1,
-      }).config ?? []).map((c) => c.path), log);
+    // NOT opt-in, unlike the log level below, and the difference is what each costs. Debug logging changes
+    // TIMING on a pipeline that measures timing. This changes what NVDA SAYS — the thing being measured —
+    // so it must hold for every capture, or the corpus carries two kinds of evidence.
+    const nvdaConfigs = nvdaConfigPaths();
+    applyCaptureSettings(nvdaConfigs, log);
+    applyRequestedLogLevel(nvdaConfigs, log);
     // Only OUR browser's strays. Killing every Chromium image would take out a browser somebody had open
     // on the guest for a reason, and at boot we can only justify killing what a previous worker left.
     const image = BROWSER.image.replace(/\.exe$/i, "");
@@ -372,6 +371,18 @@ function runtimeEnvironment() {
     browser: BROWSER.name,
     browserVersion: browserPath ? fileProductVersion(browserPath, { log }) : "unknown",
     guidepupVersion: packageVersion("@guidepup/guidepup"),
+    // WHICH NVDA SETTINGS THIS GUEST CAPTURES UNDER, as a digest — a cache-key input for the same reason
+    // `browserVersion` is one, and the reason is not that defaults are sacred.
+    //
+    // `reportLanguage` is ON by decision (see `CAPTURE_SETTINGS`): at NVDA's default, a 3.1.2 failure is
+    // announced as a CHANGE OF VOICE and no text, so a pipeline capturing speech as text cannot see it.
+    // Turning it on makes NVDA speak the language. That CHANGES WHAT NVDA SAYS, which is the definition of
+    // an evidence change — so two guests disagreeing about it must never share a cache entry, and a
+    // capture taken before it must never be reused after it.
+    //
+    // A digest rather than the settings themselves: the key wants one comparable value, and the full
+    // settings are already on `/diagnostics.screenReaderSettings` for anyone asking what changed.
+    screenReaderSettings: captureSettingsDigest(),
     nodeVersion: process.version,
     // Memoised, and the reason is the cache key rather than the ~200 ms. This value is half of the key's
     // `os` field, and `powershellValue` answers "unknown" when PowerShell exceeds its 5 s bound -- which
@@ -747,6 +758,41 @@ function formStateOf(value) {
   const usable = typeof candidate.submit === "string" && candidate.submit !== ""
     && Array.isArray(candidate.fields) && candidate.fields.length > 0;
   return usable ? /** @type {{state?: string, submit: string, fields: unknown[]}} */ (value) : undefined;
+}
+
+/**
+ * Every `nvda.ini` this guest has, so a setting is applied to all of them.
+ *
+ * ALL of them, not the first: guidepup 0.30+ writes a SESSION config beside the base one, and anything
+ * assuming a single `nvda.ini` is wrong — CLAUDE.md records that as a consequence of the 0.31 upgrade.
+ * Named because two callers need it and the lookup was written inline for one of them.
+ *
+ * @returns {string[]}
+ */
+function nvdaConfigPaths() {
+  return (screenReaderState({
+    nvdaRoot: process.env.GUIDEPUP_SCREEN_READERS_PATH ||
+      (process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "guidepup") : null),
+    tempDir: process.env.TEMP || process.env.TMP || ".",
+    tailLines: 1,
+  }).config ?? []).map((/** @type {{path: string}} */ c) => c.path);
+}
+
+/**
+ * The settings this guest captures under, as one comparable value for the cache key.
+ *
+ * Derived from `CAPTURE_SETTINGS` rather than hand-written, so adding a setting cannot fail to move the
+ * key — which is the failure that would matter: a new setting changing the evidence while every old
+ * capture stays reusable. The `why` is deliberately NOT in the digest; the digest answers "is this the
+ * same evidence", and a reworded comment is not a different capture.
+ *
+ * @returns {string}
+ */
+function captureSettingsDigest() {
+  return CAPTURE_SETTINGS
+    .map((setting) => `${setting.section}.${setting.key}=${setting.value}`)
+    .sort()
+    .join(",");
 }
 
 async function sampleDesktopDialogs() {

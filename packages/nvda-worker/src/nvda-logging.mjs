@@ -30,16 +30,34 @@ const LEVELS = new Set(["DEBUG", "INFO", "WARNING", "ERROR", "OFF", "DEBUGWARNIN
  * @returns {string | null}
  */
 export function withLogLevel(body, level) {
-  if (!LEVELS.has(level)) return null;
-  if (new RegExp(`^\\s*logLevel\\s*=\\s*${level}\\s*$`, "mi").test(body)) return null; // already set
-  if (/^\s*logLevel\s*=/mi.test(body)) {
-    return body.replace(/^\s*logLevel\s*=.*$/mi, `\tlogLevel = ${level}`);
-  }
-  // NVDA's ini is section-based; logLevel belongs under [general], which guidepup's config always has.
-  if (/^\[general\]/mi.test(body)) {
-    return body.replace(/^\[general\]/mi, `[general]\n\tlogLevel = ${level}`);
-  }
-  return `[general]\n\tlogLevel = ${level}\n${body}`;
+  return LEVELS.has(level) ? withIniSetting(body, "general", "logLevel", level) : null;
+}
+
+/**
+ * Set one key in one section of an NVDA ini, or return null when it already says that.
+ *
+ * Extracted from `withLogLevel` when a SECOND setting needed writing, and generalised rather than copied:
+ * editing the file that decides whether NVDA starts at all is the risky part, and two hand-written
+ * versions of that edit is this repo's most-repeated defect aimed at a config parser.
+ *
+ * Handles the three states a section-based ini can be in — the key exists, the section exists without the
+ * key, and neither exists. Returning `null` for "already correct" is what keeps the caller idempotent: a
+ * boot that rewrites the file every time is a boot that can corrupt it every time.
+ *
+ * @param {string} body current file contents
+ * @param {string} section without brackets, e.g. "general"
+ * @param {string} key e.g. "reportLanguage"
+ * @param {string} value written verbatim, so the caller owns NVDA's spelling ("True", not "true")
+ * @returns {string | null}
+ */
+export function withIniSetting(body, section, key, value) {
+  const already = new RegExp(`^\\s*${key}\\s*=\\s*${value}\\s*$`, "mi");
+  if (already.test(body)) return null;
+  const anyValue = new RegExp(`^\\s*${key}\\s*=.*$`, "mi");
+  if (anyValue.test(body)) return body.replace(anyValue, `\t${key} = ${value}`);
+  const header = new RegExp(`^\\[${section}\\]`, "mi");
+  if (header.test(body)) return body.replace(header, `[${section}]\n\t${key} = ${value}`);
+  return `[${section}]\n\t${key} = ${value}\n${body}`;
 }
 
 /**
@@ -68,4 +86,87 @@ export function applyRequestedLogLevel(configPaths, log) {
   }
   if (changed.length) log(`NVDA logLevel set to ${level} in ${changed.length} config(s); restart NVDA to apply`);
   return changed;
+}
+
+/**
+ * Settings this project deliberately turns ON, because a default hides evidence a real user can see.
+ *
+ * **`reportLanguage` is here by a product decision taken 2026-09-03, and the reasoning is worth keeping
+ * because it overturned a rule this repo had been applying too broadly.**
+ *
+ * WCAG 3.1.2 fails when a passage in another language carries no `lang`. At NVDA's defaults that failure
+ * is announced by a CHANGE OF VOICE and no text at all — so a pipeline that captures speech as text is
+ * structurally blind to it, and 3.1.2 was recorded as out of reach. With Report Language on, NVDA speaks
+ * the language and it lands in the transcript like anything else.
+ *
+ * The rule that had blocked it — *"record settings; do not tune them, because NVDA's defaults are what a
+ * real user experiences"* — is **wrong as stated**, and that is the decision. Screen reader users are
+ * heavy configurers: speech rate, verbosity, punctuation and symbol level are all routinely moved far
+ * from default, and a tool that only ever describes an unconfigured user is not describing a real one.
+ * What matters is not whether a setting is default, but whether the evidence it produces is DECLARED and
+ * cannot silently blend with evidence produced under a different setting.
+ *
+ * So the real rule, and the one this list is governed by: **a setting that changes what NVDA SAYS is a
+ * cache-key input.** `screenReaderSettingsDigest` carries it into `environmentKey`, and
+ * `fleet-consistency` treats it as MUST_MATCH, exactly as `browserVersion` and `guidepupVersion` are —
+ * for the identical reason, which is that two guests disagreeing about it produce two kinds of evidence
+ * that must never share a cache entry.
+ *
+ * **And turning it on is what makes it recordable.** Measured 2026-09-02: `getSettings()` returns only
+ * sections NVDA has actually WRITTEN, so at defaults there is no `documentFormatting` section and "off"
+ * is indistinguishable from "never asked" — you cannot record the setting without first setting it.
+ * Writing it resolves that: the value becomes readable, so every capture can state what it was taken
+ * under rather than assuming.
+ *
+ * NVDA's own spelling, verbatim — the ini takes `True`, not `true`.
+ */
+export const CAPTURE_SETTINGS = Object.freeze([
+  { section: "documentFormatting", key: "reportLanguage", value: "True",
+    why: "3.1.2 Language of Parts is announced as a VOICE change and no text unless this is on" },
+]);
+
+/**
+ * Apply `CAPTURE_SETTINGS` to every nvda.ini found, at boot.
+ *
+ * Not opt-in, unlike the log level above, and the difference is what each one costs. Debug logging
+ * changes TIMING on a pipeline that measures timing, so it is set only while diagnosing. This changes
+ * what NVDA SAYS, which is the thing being measured — so it must be on for every capture or the corpus
+ * holds two kinds of evidence, and it must be in the cache key so it cannot blend with the old kind.
+ *
+ * @param {string[]} configPaths from diagnostics.screenReaderState
+ * @param {(line: string) => void} log
+ */
+export function applyCaptureSettings(configPaths, log) {
+  const changed = configPaths.flatMap((path) =>
+    CAPTURE_SETTINGS.flatMap((setting) => applyOne(path, setting, log)));
+  if (changed.length) {
+    log(`NVDA capture settings applied (${[...new Set(changed)].join(", ")}); NVDA restarts to pick them up`);
+  }
+  return changed;
+}
+
+/**
+ * One setting into one file. Split out so the loop above reads as what it does rather than as four
+ * levels of nesting, and so the failure of one setting cannot skip the others.
+ *
+ * @param {string} path
+ * @param {{section: string, key: string, value: string}} setting
+ * @param {(line: string) => void} log
+ * @returns {string[]} what changed — empty when it already said that, and empty when it could not be written
+ */
+function applyOne(path, setting, log) {
+  try {
+    const updated = withIniSetting(readFileSync(path, "utf8"), setting.section, setting.key, setting.value);
+    if (!updated) return [];
+    writeFileSync(path, updated, "utf8");
+    return [`${setting.section}.${setting.key}`];
+  } catch (error) {
+    // RECORDED, never swallowed. A setting that failed to write means this guest captures under different
+    // conditions from its peers, and `screenReaderSettings` in the cache key would then be a claim the
+    // file does not support — so the log line is the only thing that can explain a fleet reading
+    // INCONSISTENT afterwards.
+    log(`could not set NVDA ${setting.section}.${setting.key} in ${path}: `
+      + `${error instanceof Error ? error.message : String(error)}`);
+    return [];
+  }
 }
