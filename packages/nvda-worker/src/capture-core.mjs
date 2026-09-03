@@ -2117,7 +2117,7 @@ function probePasses(ctx) {
   const runSweep = async () => {
     await sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips, observed });
     if (probeForms) diag.mark("formProbe", { activated: interaction.formChanges.length });
-    results.postSubmitFields = await rescanFormFieldsAfterSubmit({ interaction, probeForms, deadline, diag, trips });
+    results.postSubmitFields = await rescanFormFieldsAfterSubmit({ interaction, deadline, diag, trips });
   };
   // THE DIALOG PROBE RIDES WITH THE FOCUS PROBE, and it took a capture to find out why.
   //
@@ -2233,7 +2233,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   // AFTER the sweep, because the sweep is what establishes where the fields are and reads them in browse
   // mode — and because filling changes the page, so a sweep afterwards would describe a document the
   // author's values had already altered.
-  if (formState) await probeConfiguredForm({ formState, interaction, deadline, diag });
+  if (formState) await runConfiguredForm({ formState, interaction, results, deadline, diag, trips });
   // READ AFTER THE PROBES RUN, and the order is the whole of it. Destructured before `runProbeSequence`
   // -- which is where the extraction first put it -- every field binds to its INITIAL value and the
   // capture reports empty interaction evidence on every page. That is `postSubmitFields: []` on all 2,122
@@ -2297,6 +2297,33 @@ function assembleAndMark({ structure, interaction, postSubmitFields, focusOrder,
     sweepLog: interaction.sweepLog,
   });
   return result;
+}
+
+/**
+ * Submit the author's declared form, then re-read the fields — in that order, which is the whole of it.
+ *
+ * `rescanFormFieldsAfterSubmit` sits at the end of `runSweep`, and that is correct for the OPPORTUNISTIC
+ * probe: it activates DURING the sweep, so by the sweep's end there is something to re-read. A configured
+ * form is deliberately later — it fills every field first and only then presses the control the author
+ * named, because pressing part-way through would attribute the evidence to a state that never existed. So
+ * at the moment the sweep re-read, nothing had been submitted.
+ *
+ * **Fixing the re-read's `probeForms` gate alone would not have been enough**, and that is worth stating
+ * because it looks like it would: the remedy would then be correct, reachable, and applied at the wrong
+ * MOMENT — a fourth shape of this repo's most expensive defect, after "wrong call site", "trigger never
+ * set" and "one of several paths". `postSubmitFields` would still have been `[]` on every configured
+ * capture, and `build-realism` masks 4.1.3 on exactly that.
+ *
+ * Guarded on the field being empty, so a capture that ran BOTH paths is never re-read twice.
+ *
+ * @param {{ formState: any, interaction: any, results: { postSubmitFields: string[] }, deadline: number,
+ *           diag: Diag, trips: { count: number } }} ctx
+ */
+async function runConfiguredForm({ formState, interaction, results, deadline, diag, trips }) {
+  await probeConfiguredForm({ formState, interaction, deadline, diag });
+  if (results.postSubmitFields.length === 0 && interaction.formChanges.length > 0) {
+    results.postSubmitFields = await rescanFormFieldsAfterSubmit({ interaction, deadline, diag, trips });
+  }
 }
 
 /**
@@ -2398,7 +2425,7 @@ async function sweepEveryStructuralType({ structure, onFormField, probeTables, d
  * @param {{ interaction: Record<string, any>, probeForms?: boolean, deadline: number,
  *           diag: Diag, trips: { count: number } }} ctx
  */
-async function rescanFormFieldsAfterSubmit({ interaction, probeForms, deadline, diag, trips }) {
+async function rescanFormFieldsAfterSubmit({ interaction, deadline, diag, trips }) {
   const K = nvda.keyboardCommands;
   // After a form was submitted in place during the sweep above, re-scan the
   // form fields to capture their now-persistent state. An accessible form marks
@@ -2408,7 +2435,17 @@ async function rescanFormFieldsAfterSubmit({ interaction, probeForms, deadline, 
   // live-region text in formChanges.after (which some NVDA builds don't emit).
   /** @type {string[]} */
   let postSubmitFields = [];
-  if (probeForms && interaction.formChanges.length > 0) {
+  // GATED ON AN ACTIVATION HAVING HAPPENED, never on `probeForms`. This is the SECOND call site of the
+  // defect fixed in `recordWhatWasAsked` the same day, and finding one and not the other is this repo's
+  // most expensive recurring shape -- `anchorToTop`, `ensureSpeechChannel`, `waitForAnnouncement`.
+  //
+  // `capture-real-pages` sends `probeForms: false` with a `formState`: the configured pass fills the
+  // page owner's declared values and presses the control they named, which submits the form. With the
+  // old gate this re-read simply did not run, so `postSubmitFields` was `[]` on every configured capture
+  // -- and `build-realism`'s `EVIDENCE_BY_CRITERION["4.1.3"]` is `postSubmitFields.length > 0`, so the
+  // criterion stayed masked and `4.1.3: 0 of 37` would not have moved. The whole point of the configured
+  // form is to move it.
+  if (interaction.formChanges.length > 0) {
     try {
       // Re-read the form fields' state after the submit. anchorToTop() handles
       // two NVDA facts that defeat a naive re-scan: an accessible form moves focus
