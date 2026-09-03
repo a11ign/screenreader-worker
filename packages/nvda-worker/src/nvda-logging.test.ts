@@ -30,8 +30,14 @@ test("an unrecognised level is refused rather than written into the config", () 
   assert.equal(withLogLevel(INI, ""), null);
 });
 
-test("a config with no [general] section still gets a valid one", () => {
+test("a config with no [general] section still gets a valid one, APPENDED", () => {
+  // APPENDED, where this used to assert PREPENDED — a deliberate change, made when the patcher was
+  // generalised to write any section and scoped to write inside it.
+  //
+  // Prepending a header puts it above everything, and any key at the top of the file that belonged to no
+  // section would silently become part of the new one. That cannot happen in guidepup's config today, and
+  // "cannot happen today" is how a config writer acquires a latent bug. Appending re-parents nothing.
   const updated = withLogLevel("[speech]\n\tsynth = oneCore\n", "DEBUG")!;
-  assert.match(updated, /^\[general\]\n\tlogLevel = DEBUG/);
-  assert.match(updated, /synth = oneCore/);
+  assert.match(updated, /\[general\]\n\tlogLevel = DEBUG/);
+  assert.match(updated, /^\[speech\]\n\tsynth = oneCore/, "what was there must stay where it was");
 });

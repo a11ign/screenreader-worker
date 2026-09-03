@@ -33,6 +33,31 @@ test("replaces an existing value rather than adding a second line", () => {
     "two values for one key is a config NVDA may read either way");
 });
 
+test("THE SAME KEY IN ANOTHER SECTION IS A DIFFERENT SETTING", () => {
+  // The bug this file exists to prevent recurring, and it shipped twice before being caught.
+  //
+  // The first patcher searched for `key = ...` ANYWHERE in the file. On a guest already carrying
+  // `[documentFormatting] reportLanguage = True` from an earlier mistake, asking for
+  // `[speech] reportLanguage = True` found the wrong one, rewrote it in place, and reported success —
+  // so the setting stayed inert while every check said it was applied.
+  //
+  // A key name means nothing without its section: `reportLanguage` is a real setting in `[speech]` and a
+  // dead letter anywhere else.
+  const stale = "[documentFormatting]\n\treportLanguage = True\n[speech]\n\tsynth = oneCore\n";
+  const out = withIniSetting(stale, "speech", "reportLanguage", "True") ?? "";
+  assert.match(out, /\[speech\]\n\treportLanguage = True/,
+    "it must write into [speech], which is where NVDA reads it");
+  assert.match(out, /\[documentFormatting\]\n\treportLanguage = True/,
+    "and leave the other section alone rather than moving its key");
+  assert.match(out, /synth = oneCore/, "the section's existing keys must survive");
+});
+
+test("adds the section at the END when it is missing, without disturbing what is there", () => {
+  const out = withIniSetting("[general]\n\tlogLevel = INFO\n", "speech", "reportLanguage", "True") ?? "";
+  assert.match(out, /\[speech\]\n\treportLanguage = True/);
+  assert.match(out, /\[general\]\n\tlogLevel = INFO/, "the existing section must be untouched");
+});
+
 test("returns null when it already says that — the applier must be idempotent", () => {
   // A boot that rewrites the file every time is a boot that can corrupt it every time, and this runs on
   // every guest at every start.

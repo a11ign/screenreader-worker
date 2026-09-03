@@ -51,13 +51,40 @@ export function withLogLevel(body, level) {
  * @returns {string | null}
  */
 export function withIniSetting(body, section, key, value) {
-  const already = new RegExp(`^\\s*${key}\\s*=\\s*${value}\\s*$`, "mi");
-  if (already.test(body)) return null;
+  // SCOPED TO THE SECTION, and the first version was not — which shipped an inert setting twice over.
+  //
+  // It searched for `key = ...` anywhere in the file. On a guest that already carried
+  // `[documentFormatting] reportLanguage = True` from an earlier mistake, asking for
+  // `[speech] reportLanguage = True` FOUND THE WRONG ONE, rewrote it in place, and reported success. The
+  // ini is section-based and a key name means nothing without its section: `reportLanguage` is a real
+  // setting in `[speech]` and a dead letter anywhere else, and NVDA carries several names that appear in
+  // more than one section.
+  const bounds = sectionBounds(body, section);
+  if (!bounds) return `${body}${body.endsWith("\n") || body === "" ? "" : "\n"}[${section}]\n\t${key} = ${value}\n`;
+  const [start, end] = bounds;
+  const within = body.slice(start, end);
+  if (new RegExp(`^\\s*${key}\\s*=\\s*${value}\\s*$`, "mi").test(within)) return null;
   const anyValue = new RegExp(`^\\s*${key}\\s*=.*$`, "mi");
-  if (anyValue.test(body)) return body.replace(anyValue, `\t${key} = ${value}`);
-  const header = new RegExp(`^\\[${section}\\]`, "mi");
-  if (header.test(body)) return body.replace(header, `[${section}]\n\t${key} = ${value}`);
-  return `[${section}]\n\t${key} = ${value}\n${body}`;
+  const updated = anyValue.test(within)
+    ? within.replace(anyValue, `\t${key} = ${value}`)
+    : within.replace(new RegExp(`^\\[${section}\\]`, "mi"), `[${section}]\n\t${key} = ${value}`);
+  return body.slice(0, start) + updated + body.slice(end);
+}
+
+/**
+ * Where one section's text starts and ends — the header line through to the next header, or the end.
+ *
+ * @param {string} body
+ * @param {string} section
+ * @returns {[number, number] | null}
+ */
+function sectionBounds(body, section) {
+  const header = new RegExp(`^\\[${section}\\]\\s*$`, "mi");
+  const found = header.exec(body);
+  if (!found) return null;
+  const next = /^\[[^\]]+\]\s*$/m.exec(body.slice(found.index + found[0].length));
+  const end = next ? found.index + found[0].length + next.index : body.length;
+  return [found.index, end];
 }
 
 /**
