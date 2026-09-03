@@ -608,6 +608,25 @@ const DOM_CENSUS_EXPRESSION = `(() => {
     return {
       heading: all("h1, h2, h3, h4, h5, h6, [role='heading']").length,
       link: all("a[href], [role='link']").length,
+      // WHICH LANGUAGES THE PAGE DECLARES, for 3.1.2 Language of Parts.
+      //
+      // The screen reader alone cannot decide 3.1.2 and the reason is an asymmetry: with
+      // \`[speech] reportLanguage\` on, NVDA announces a language when the document language CHANGES, so an
+      // announcement CONFIRMS a passage was marked — but silence is equally what a correct monolingual
+      // page produces, which is almost every page on the web. A rule firing on silence would accuse every
+      // English page of hiding a French one. Deciding needs the text, and the text is here.
+      //
+      // The DOCUMENT language and the set of OVERRIDES, separately. 3.1.1 asks whether the document
+      // declares one at all; 3.1.2 asks whether passages that differ from it say so — and the second is
+      // only answerable against the first.
+      documentLang: (document.documentElement?.getAttribute("lang") || "").trim().toLowerCase(),
+      // Capped and COUNTED, the way \`unnamedGraphics\` is: a truncated list that reads as complete is the
+      // defect one layer on. Deduplicated, because a page marking forty quotations in French is one fact.
+      partLangs: [...new Set(all("[lang]")
+        .filter((el) => el !== document.documentElement)
+        .map((el) => (el.getAttribute("lang") || "").trim().toLowerCase())
+        .filter(Boolean))].slice(0, 10),
+      partLangCount: all("[lang]").filter((el) => el !== document.documentElement).length,
       graphic: graphics.length,
       // Capped, and the cap SAYS so — a truncated list that reads as complete is the defect one layer on.
       unnamedGraphics: graphics.filter((el) => !named(el)).slice(0, 5).map(describe),

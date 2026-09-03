@@ -69,11 +69,23 @@ function elementWithoutVisibilityApi(tag: string, attrs: Record<string, string>)
  * lets the other return `[]` and assert nothing. That is how `tabbable` could have been added, tested,
  * and never once executed.
  */
-function runAgainst(graphics: El[], tabbable: El[] = []): Record<string, unknown> {
+function runAgainst(
+  graphics: El[], tabbable: El[] = [],
+  lang: { documentLang?: string; parts?: El[] } = {},
+): Record<string, unknown> {
+  // `documentElement` is a real object here, not a stub returning nothing, because the census compares
+  // AGAINST it: a `[lang]` on <html> is the document's language, not a part's, and a harness where the
+  // comparison can never be true would let that filter be wrong and assert nothing.
+  const documentElement = {
+    getAttribute: () => lang.documentLang ?? null,
+    closest: () => null,
+  } as unknown as El;
   const document = {
+    documentElement,
     querySelectorAll: (selector: string) => {
       if (selector.startsWith("img")) return graphics;
       if (selector.startsWith("a[href]")) return tabbable;
+      if (selector === "[lang]") return lang.parts ?? [];
       return [];
     },
   };
@@ -193,4 +205,55 @@ test("a browser without checkVisibility still counts its controls, rather than r
     elementWithoutVisibilityApi("button", {}),
   ]);
   assert.equal(census.tabbable, 2);
+});
+
+
+// --- 3.1.2 Language of Parts. Added 2026-09-03, and the existing harness refused the change until the
+// --- stub could actually answer the questions the census now asks.
+
+/**
+ * An element carrying a `lang`, with the `closest` the census filters on.
+ *
+ * `closest` is not optional decoration: `all()` filters through `visible`, which is
+ * `!el.closest("[aria-hidden='true']")`. The first version of this stub had only `getAttribute` and every
+ * lang test threw inside the expression — the harness refusing an element that could not answer what the
+ * census asks, which is the same reason the file's own comment gives for serving two selectors.
+ */
+const langEl = (value: string | null): El => ({
+  getAttribute: (name: string) => (name === "lang" ? value : null),
+  closest: () => null,
+}) as unknown as El;
+
+test("the DOCUMENT language and the PARTS are separate answers", () => {
+  // 3.1.1 asks whether the document declares a language at all; 3.1.2 asks whether passages that DIFFER
+  // from it say so. The second is only answerable against the first, so they are never one field.
+  const out = runAgainst([], [], { documentLang: "en", parts: [langEl("fr"), langEl("de")] });
+  assert.equal(out.documentLang, "en");
+  assert.deepEqual(out.partLangs, ["fr", "de"]);
+});
+
+test("the <html> element is not counted as a PART of itself", () => {
+  // A page declaring `<html lang="en">` and nothing else has ZERO language parts. Counting the document
+  // element among them would make every correctly-declared page look like it marks a passage.
+  const out = runAgainst([], [], { documentLang: "en", parts: [] });
+  assert.deepEqual(out.partLangs, []);
+  assert.equal(out.partLangCount, 0);
+});
+
+test("part languages are DEDUPLICATED, and normalised for comparison", () => {
+  // A page marking forty quotations in French is one fact. And `FR` and `fr` are the same language: BCP-47
+  // is case-insensitive, and a comparison that treats them as different would report a change that a
+  // screen reader does not make.
+  const out = runAgainst([], [], { documentLang: "EN", parts: [langEl("fr"), langEl("FR"), langEl(" fr ")] });
+  assert.deepEqual(out.partLangs, ["fr"]);
+  assert.equal(out.documentLang, "en");
+  // The COUNT is not deduplicated — three elements carry a lang, and that is a different question from
+  // how many languages appear. Same split as `unnamedGraphics` beside `unnamedGraphicCount`.
+  assert.equal(out.partLangCount, 3);
+});
+
+test("a page with no lang anywhere says so, rather than throwing", () => {
+  const out = runAgainst([], [], {});
+  assert.equal(out.documentLang, "");
+  assert.deepEqual(out.partLangs, []);
 });
