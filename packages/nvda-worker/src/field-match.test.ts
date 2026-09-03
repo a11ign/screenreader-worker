@@ -44,6 +44,42 @@ const REAL_ANNOUNCEMENTS = [
   "Greenest City, grouping, cities of the world, combo box, collapsed, select a city from this list",
 ];
 
+test("whatever the GRAMMAR names as a CONTAINER, `within:` can find", () => {
+  // THE SIBLING PROPERTY, and it was not pinned until 2026-09-03 while the test below implied it was.
+  //
+  // The draft emitter fills `within:` from `parsed.containers[last].name` whenever two fields share a
+  // name — the disambiguator an author never has to write. `matchesWithin` then looks for that string as
+  // a whole comma-segment of the announcement. Two independent readings of the same text, so they can
+  // disagree, and the shape of the disagreement is specific: the grammar splits a container into name and
+  // ROLE, so `"main landmark"` yields the name `"main"` while the announcement's segment is
+  // `"main landmark"`. Were that to happen for a NAMED container, `within:` would match nothing.
+  //
+  // The consequence is the reason this is worth a test rather than a reading. A `within:` that matches
+  // nothing fills ZERO fields, and this tool reports an unfillable field as `unbound` — a 4.1.2 FINDING
+  // ABOUT THE USER'S PAGE. Our own drafting bug, presented as their accessibility defect. That is the
+  // U+FFFC lesson exactly: the measuring tool's artefact read as evidence.
+  //
+  // Measured on these fixtures: every named container round-trips, because the grammar reports
+  // `{name: "Shipping Address:", role: "grouping"}` and the name IS a whole segment. An UNNAMED container
+  // (`main landmark`) yields `""`, which the drafter turns into `undefined` — no constraint, rather than a
+  // constraint nothing can satisfy.
+  let checked = 0;
+  for (const announced of REAL_ANNOUNCEMENTS) {
+    const containers = parseAnnouncement(announced, "sweep").containers;
+    const innermost = containers.length ? containers[containers.length - 1] : undefined;
+    // `|| undefined` is the drafter's own rule, reproduced: an unnamed container is NO disambiguator.
+    const within = innermost?.name || undefined;
+    if (!within) continue;
+    checked += 1;
+    assert.ok(matchesWithin(announced, within),
+      `the grammar named the container ${JSON.stringify(within)} in ${JSON.stringify(announced)}, and `
+      + "`matchesWithin` cannot find it. A drafted config using that as `within:` would fill zero fields, "
+      + "and every one would be reported as an unbound 4.1.2 finding about the page.");
+  }
+  assert.ok(checked >= 4,
+    `only ${checked} fixture(s) carry a NAMED container, so this examined almost nothing — add one`);
+});
+
 test("whatever the GRAMMAR names, the worker's matcher can find", () => {
   // The contract between the draft emitter and the worker, asserted over real evidence rather than over
   // examples chosen to pass. A failure here means a config this tool GENERATED names a field this tool
