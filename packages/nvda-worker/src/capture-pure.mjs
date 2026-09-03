@@ -533,6 +533,117 @@ export function notObserved(why) {
 }
 
 /**
+ * WHICH probes needing DOM FOCUS were asked for — stated once, as data.
+ *
+ * Three channels share one precondition and it was written three times: Escape, an arrow and a typed
+ * character all measure the DOCUMENT rather than a control unless `probeFocusOrder` has put real focus
+ * somewhere first, because a sweep is browse mode and never moves DOM focus. That fact cost the dialog
+ * probe three captures to discover, and repeating it per channel is three chances for the fourth one to
+ * be added without it.
+ *
+ * `why` names WHICH precondition was missing, because "nobody asked" and "asked without the probe that
+ * makes it meaningful" need opposite fixes and a bare `false` sends you to the wrong one.
+ */
+const FOCUS_DEPENDENT_PROBES = Object.freeze({
+  dialogEscape: {
+    flag: "probeDialog",
+    ownReason: "probeDialog is opt-in: it presses Escape, which changes state on a page we do not own",
+    withoutFocus: "probeDialog was asked WITHOUT probeFocus, and Escape from the browse caret measures the document",
+  },
+  arrowNavigation: {
+    flag: "probeArrows",
+    ownReason: "probeArrows is opt-in: it presses keys inside whatever widget focus last landed on",
+    withoutFocus: "probeArrows was asked WITHOUT probeFocus, and an arrow in browse mode navigates the DOCUMENT",
+  },
+  typedFeedback: {
+    flag: "probeTyping",
+    ownReason: "probeTyping is opt-in: it enters characters into a field, changing the page under measurement",
+    withoutFocus: "probeTyping was asked WITHOUT probeFocus, and typing in browse mode sends quick-nav COMMANDS",
+  },
+  focusContext: {
+    flag: "probeFocusContext",
+    ownReason: "probeFocusContext is opt-in: it moves focus, and a page that navigates on focus is changed by "
+      + "the asking",
+    withoutFocus: "probeFocusContext was asked WITHOUT probeFocus, and Tab in browse mode moves the BROWSE "
+      + "cursor rather than DOM focus, so nothing would be focused to change context",
+  },
+});
+
+/**
+ * What this capture ASKED about the OPT-IN channels — the half `collectByType` cannot record for itself.
+ *
+ * The sweeps record their own observation as they run, because only they know how they ended. These are
+ * decided by a FLAG rather than by a walk, so they are recorded in one place at the end: a chain of `if`s
+ * scattered through the caller is a chance for the next probe to be added without one.
+ *
+ * `activated` separates the two states the boolean cannot — asked and something happened, asked and the
+ * page had nothing to activate. That is what `formProbe: {activated: 0}` on the focus cases turned out to
+ * mean: not a failure, but a page with no submit control, which is a fact about the page.
+ *
+ * **THERE WAS NO GUARD ON THIS, AND A COMMENT SAID THERE WAS.** The call site in `capture-core` named
+ * `observation-parity.test.ts`, which tests the corpus-side and rules-side predicates for arrows and
+ * Escape and nothing about these flags. A comment naming a guard that guards something else is worse than
+ * no comment: it stops the next reader looking, and `formState` was omitted for as long as configured
+ * forms have existed. This function lives HERE rather than in `capture-core` so a test can reach it at
+ * all — that file imports guidepup, which throws at module load where no screen reader exists.
+ *
+ * `formState` is NOT a probe flag, and its presence is what tells this function a control was activated
+ * while `probeForms` stayed false. Typed as the shape's presence rather than its contents: nothing here
+ * reads a field or a value, only whether the caller declared one.
+ *
+ * @param {{ observed: Record<string, {asked: boolean, why?: string, activated?: number,
+ *                                     configured?: boolean}>,
+ *           probeForms?: boolean, probeFocus?: boolean,
+ *           probeNavigation?: boolean, probeDialog?: boolean, probeArrows?: boolean,
+ *           probeTyping?: boolean, probeFocusContext?: boolean,
+ *           formState?: {state: string, submit: string, fields: unknown[]} | null,
+ *           interaction: { formChanges: {control: string, after: string}[] } }} ctx
+ */
+export function recordWhatWasAsked({ observed, probeForms, probeFocus, formState, interaction, ...flags }) {
+  // A CONFIGURED FORM IS AN ACTIVATION, and this function did not know it.
+  //
+  // `capture-real-pages` sends `probeForms: false` with a `formState` -- deliberately, and that posture is
+  // right: the opportunistic probe presses whatever submit-like control the sweep walks past, on a page we
+  // do not own, while a `formState` is the page owner's own example recorded in the corpus (ADR 0024). But
+  // `probeForms` was the only thing consulted here, so every configured capture recorded *"probeForms is
+  // off for this capture, so no control was activated"* about a control it HAD activated, and
+  // *"probeForms is off"* about a form it HAD submitted and re-read.
+  //
+  // That is not a cosmetic wrong `why`. `observed` is what the featurizer crosses `formChanges` and
+  // `postSubmitFields` against, and absent or `asked: false` is the "never asked" row -- so the real-page
+  // captures carrying the ONLY 3.3.1 and 4.1.3 evidence this corpus has would have been marked as never
+  // having looked for it. The field that exists to separate "the page has none" from "we could not ask"
+  // said the second about the one capture that did ask.
+  //
+  // So the question is "was a control activated", not "was the opportunistic probe on". `configured` is
+  // reported so a reader can tell WHICH probe did the asking without inferring it from the flags.
+  const activated = probeForms || Boolean(formState);
+  observed.formChanges = activated
+    ? { asked: true, activated: interaction.formChanges.length, configured: Boolean(formState) }
+    : notObserved("probeForms is off and no formState was configured, so no control was activated");
+  observed.postSubmitFields = activated && interaction.formChanges.length > 0
+    ? { asked: true, configured: Boolean(formState) }
+    : notObserved(activated
+      ? (formState
+        ? "a formState was configured but activated nothing -- no field matched, or the submit was not "
+          + "found -- so there was no submit to re-read after"
+        : "probeForms ran and activated nothing, so there was no submit to re-read after")
+      : "probeForms is off and no formState was configured");
+  observed.focusOrder = probeFocus
+    ? { asked: true }
+    : notObserved("probeFocus is opt-in -- ~8s on a ~12s capture -- and this case did not ask");
+  for (const [channel, { flag, ownReason, withoutFocus }] of Object.entries(FOCUS_DEPENDENT_PROBES)) {
+    const asked = /** @type {Record<string, boolean|undefined>} */ (flags)[flag];
+    observed[channel] = asked && probeFocus
+      ? { asked: true }
+      : notObserved(asked ? withoutFocus : ownReason);
+  }
+  observed.routeChange = flags.probeNavigation
+    ? { asked: true }
+    : notObserved("probeNavigation is opt-in: it ACTIVATES A LINK and can leave the page under measurement");
+}
+
+/**
  * Controls whose activation TOGGLES STATE and cannot navigate — see rule 5 and `SECURITY.md`.
  *
  * `radio button` is matched before the plain-button test on purpose: NVDA announces a radio as

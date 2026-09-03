@@ -52,6 +52,7 @@ import {
   samePath,
   sweepObservation,
   notObserved,
+  recordWhatWasAsked,
 } from "./capture-pure.mjs";
 import { installSpeechChannelShim } from "./speech-channel.mjs";
 
@@ -2029,81 +2030,6 @@ async function navigateByStructureThenAudit(options) {
  * Reads as the order the phases must run in, and that order is load-bearing rather than incidental — each
  * phase below says which cursor state it leaves behind and therefore why it cannot move.
  */
-/**
- * WHICH probes needing DOM FOCUS were asked for — stated once, as data.
- *
- * Three channels share one precondition and it was written three times: Escape, an arrow and a typed
- * character all measure the DOCUMENT rather than a control unless `probeFocusOrder` has put real focus
- * somewhere first, because a sweep is browse mode and never moves DOM focus. That fact cost the dialog
- * probe three captures to discover, and repeating it per channel is three chances for the fourth one to
- * be added without it.
- *
- * `why` names WHICH precondition was missing, because "nobody asked" and "asked without the probe that
- * makes it meaningful" need opposite fixes and a bare `false` sends you to the wrong one.
- */
-const FOCUS_DEPENDENT_PROBES = Object.freeze({
-  dialogEscape: {
-    flag: "probeDialog",
-    ownReason: "probeDialog is opt-in: it presses Escape, which changes state on a page we do not own",
-    withoutFocus: "probeDialog was asked WITHOUT probeFocus, and Escape from the browse caret measures the document",
-  },
-  arrowNavigation: {
-    flag: "probeArrows",
-    ownReason: "probeArrows is opt-in: it presses keys inside whatever widget focus last landed on",
-    withoutFocus: "probeArrows was asked WITHOUT probeFocus, and an arrow in browse mode navigates the DOCUMENT",
-  },
-  typedFeedback: {
-    flag: "probeTyping",
-    ownReason: "probeTyping is opt-in: it enters characters into a field, changing the page under measurement",
-    withoutFocus: "probeTyping was asked WITHOUT probeFocus, and typing in browse mode sends quick-nav COMMANDS",
-  },
-  focusContext: {
-    flag: "probeFocusContext",
-    ownReason: "probeFocusContext is opt-in: it moves focus, and a page that navigates on focus is changed by "
-      + "the asking",
-    withoutFocus: "probeFocusContext was asked WITHOUT probeFocus, and Tab in browse mode moves the BROWSE "
-      + "cursor rather than DOM focus, so nothing would be focused to change context",
-  },
-});
-
-/**
- * What this capture ASKED about the OPT-IN channels — the half `collectByType` cannot record for itself.
- *
- * The sweeps record their own observation as they run, because only they know how they ended. These are
- * decided by a FLAG rather than by a walk, so they are recorded in one place at the end: a chain of `if`s
- * scattered through the caller is a chance for the next probe to be added without one.
- *
- * `activated` separates the two states the boolean cannot — asked and something happened, asked and the
- * page had nothing to activate. That is what `formProbe: {activated: 0}` on the focus cases turned out to
- * mean: not a failure, but a page with no submit control, which is a fact about the page.
- *
- * @param {{ observed: Record<string, Observation>, probeForms?: boolean, probeFocus?: boolean,
- *           probeNavigation?: boolean, probeDialog?: boolean, probeArrows?: boolean,
- *           probeTyping?: boolean, probeFocusContext?: boolean,
- *           interaction: { formChanges: AnnouncedChange[] } }} ctx
- */
-function recordWhatWasAsked({ observed, probeForms, probeFocus, interaction, ...flags }) {
-  observed.formChanges = probeForms
-    ? { asked: true, activated: interaction.formChanges.length }
-    : notObserved("probeForms is off for this capture, so no control was activated");
-  observed.postSubmitFields = probeForms && interaction.formChanges.length > 0
-    ? { asked: true }
-    : notObserved(probeForms
-      ? "probeForms ran and activated nothing, so there was no submit to re-read after"
-      : "probeForms is off for this capture");
-  observed.focusOrder = probeFocus
-    ? { asked: true }
-    : notObserved("probeFocus is opt-in -- ~8s on a ~12s capture -- and this case did not ask");
-  for (const [channel, { flag, ownReason, withoutFocus }] of Object.entries(FOCUS_DEPENDENT_PROBES)) {
-    const asked = /** @type {Record<string, boolean|undefined>} */ (flags)[flag];
-    observed[channel] = asked && probeFocus
-      ? { asked: true }
-      : notObserved(asked ? withoutFocus : ownReason);
-  }
-  observed.routeChange = flags.probeNavigation
-    ? { asked: true }
-    : notObserved("probeNavigation is opt-in: it ACTIVATES A LINK and can leave the page under measurement");
-}
 
 /**
  * Assemble the interaction evidence, naming every field that survives.
@@ -2326,12 +2252,39 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
     // EVERY probe flag, named. This call is the one that made `observed.focusContext` say `asked: false`
     // while the probe's own mark in the same capture said `focused: true` — the flag simply was not passed.
     // The list is hand-written, which is the "six hand-written hops" shape the manifest hop was fixed for;
-    // it survives here because these are the DOCUMENTED interface and a reader should see them, so the
-    // guard against forgetting one is `observation-parity.test.ts` rather than a spread.
+    // it survives here because these are the DOCUMENTED interface and a reader should see them. The guard
+    // is `record-what-was-asked.test.ts` — this comment used to name a test that checks something else.
     observed, probeForms, probeFocus, probeNavigation, probeDialog, probeArrows, probeTyping,
     probeFocusContext: probeFocusContext_, interaction,
+    // NOT a probe flag, and passed for exactly that reason — see `recordWhatWasAsked`.
+    formState,
   });
 
+  return { structure, interaction: assembleAndMark({
+    structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape, arrowNavigation,
+    typedFeedback, focusContext, diag,
+  }), observed };
+}
+
+/**
+ * Build the interaction evidence and record what it came to — one phase, and the only one after the probes.
+ *
+ * Extracted when `navigateByStructure` went one line over its physical-line budget. That budget is a real
+ * check rather than a formality: ESLint's `max-lines-per-function` runs with `skipComments: true`, so a
+ * comment-dense function here can be twice its 70-line limit and still pass — and this file is deliberately
+ * comment-dense, because almost every line records a screen-reader behaviour that cost something to learn.
+ *
+ * It is a phase and not a name restating its code: assembling the evidence and marking what was assembled
+ * belong together, and `interactionEvidence` REBUILDS the object from named fields, so the mark is the only
+ * record of what survived that rebuild. `postSubmitFields: []` on all 2,122 captures is what an unmarked
+ * rebuild looks like.
+ *
+ * @param {{ structure: CapturedStructure, interaction: any, postSubmitFields: string[],
+ *           focusOrder: string[], routeChange: unknown, dialogEscape: unknown, arrowNavigation: unknown,
+ *           typedFeedback: unknown, focusContext: unknown, diag: Diag }} ctx
+ */
+function assembleAndMark({ structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape,
+  arrowNavigation, typedFeedback, focusContext, diag }) {
   const result = interactionEvidence({
     structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape, arrowNavigation,
     typedFeedback, focusContext,
@@ -2343,7 +2296,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
     postSubmit: postSubmitFields.length,
     sweepLog: interaction.sweepLog,
   });
-  return { structure, interaction: result, observed };
+  return result;
 }
 
 /**
