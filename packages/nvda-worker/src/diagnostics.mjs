@@ -21,6 +21,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, statfsSync, statSync } from "node:fs";
+import { inflateRawSync } from "node:zlib";
 import { join, resolve } from "node:path";
 import { ALL_BROWSER_IMAGES } from "./browsers.mjs";
 
@@ -479,6 +480,79 @@ function readNvdaConfig(path) {
  * silenced synthesiser runs perfectly, answers every keystroke, and says nothing.
  */
 /**
+ * Read ONE named file out of a zip, without a dependency.
+ *
+ * NVDA ships as a BUILT application, so `configSpec.py` is inside `library.zip` rather than on disk —
+ * measured 2026-09-03, when the file search answered `found: false` on all five workers. That is the only
+ * reason this exists: the worker takes `@guidepup/guidepup` and nothing else, deliberately, because it is
+ * git-cloned onto Windows boxes and runs under plain node with no build step. Adding a zip library to that
+ * dependency list to read one diagnostic file would be the wrong trade.
+ *
+ * Everything needed is in node: the central directory is a fixed-layout scan, and `zlib.inflateRawSync`
+ * handles the only compression method a zip of Python sources uses. Scoped to exactly that — this is not a
+ * zip library, it finds one file and inflates it.
+ *
+ * @param {string} zipPath
+ * @param {(name: string) => boolean} wanted
+ * @returns {string | null}
+ */
+function readFromZip(zipPath, wanted) {
+  let buf;
+  try {
+    buf = readFileSync(zipPath);
+  } catch {
+    return null;
+  }
+  // The End of Central Directory record is last and variable-length (it can carry a comment), so it is
+  // found by scanning backwards for its signature rather than by assuming it sits at a fixed offset.
+  const EOCD = 0x06054b50;
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= 0 && i > buf.length - 66000; i -= 1) {
+    if (buf.readUInt32LE(i) === EOCD) { eocd = i; break; }
+  }
+  if (eocd < 0) return null;
+  let offset = buf.readUInt32LE(eocd + 16);
+  const entries = buf.readUInt16LE(eocd + 10);
+  for (let i = 0; i < entries; i += 1) {
+    if (buf.readUInt32LE(offset) !== 0x02014b50) return null;
+    const nameLen = buf.readUInt16LE(offset + 28);
+    const extraLen = buf.readUInt16LE(offset + 30);
+    const commentLen = buf.readUInt16LE(offset + 32);
+    const name = buf.toString("utf8", offset + 46, offset + 46 + nameLen);
+    if (wanted(name)) return inflateEntry(buf, buf.readUInt32LE(offset + 42));
+    offset += 46 + nameLen + extraLen + commentLen;
+  }
+  return null;
+}
+
+/**
+ * Inflate one local entry. The local header repeats the name and extra lengths and they can DIFFER from
+ * the central directory's, which is the classic way a hand-rolled zip reader reads from the wrong offset.
+ *
+ * @param {Buffer} buf
+ * @param {number} localOffset
+ * @returns {string | null}
+ */
+function inflateEntry(buf, localOffset) {
+  if (buf.readUInt32LE(localOffset) !== 0x04034b50) return null;
+  const method = buf.readUInt16LE(localOffset + 8);
+  const compressed = buf.readUInt32LE(localOffset + 18);
+  const nameLen = buf.readUInt16LE(localOffset + 26);
+  const extraLen = buf.readUInt16LE(localOffset + 28);
+  const start = localOffset + 30 + nameLen + extraLen;
+  const body = buf.subarray(start, start + compressed);
+  try {
+    // 0 = stored, 8 = deflate. Anything else is a zip feature this does not claim to support, and saying
+    // so with `null` keeps it distinct from "the file was not in there".
+    if (method === 0) return body.toString("utf8");
+    if (method === 8) return inflateRawSync(body).toString("utf8");
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * NVDA's OWN DEFAULTS for the settings that decide what it announces — read from `configSpec.py`.
  *
  * The question this answers, asked 2026-09-03: **which NVDA defaults are hiding evidence?**
@@ -500,15 +574,26 @@ function readNvdaConfig(path) {
  * @returns {{found: boolean, path?: string, sections?: Record<string, Record<string, string>>}}
  */
 export function screenReaderDefaults(nvdaRoot) {
-  const spec = nvdaRoot ? findFile(nvdaRoot, "configSpec.py", 0) : null;
-  if (!spec) return { found: false };
+  if (!nvdaRoot) return { found: false };
+  const spec = findFile(nvdaRoot, "configSpec.py", 0);
+  // A SOURCE checkout has the file; a BUILT NVDA has it inside library.zip, and the fleet runs the latter
+  // — measured, after the loose-file search answered `found: false` on all five workers. Both are tried
+  // rather than one assumed, because guidepup's install layout is not this project's to promise.
+  const zip = spec ? null : findFile(nvdaRoot, "library.zip", 0);
+  const path = spec ?? zip;
+  if (!path) return { found: false };
   let body;
   try {
-    body = readFileSync(spec, "utf8");
+    body = spec
+      ? readFileSync(spec, "utf8")
+      : readFromZip(/** @type {string} */ (zip), (name) => name.endsWith("config/configSpec.py"));
   } catch {
-    // `found: false` WITH the path: "we located the spec and could not read it" is a different fault from
-    // "there is no spec here", and the path is what tells them apart.
-    return { found: false, path: spec };
+    body = null;
+  }
+  if (body === null || body === undefined) {
+    // `found: false` WITH the path: "we located NVDA and could not read the spec out of it" is a different
+    // fault from "there is no spec here", and the path is what tells them apart.
+    return { found: false, path };
   }
   /** @type {Record<string, Record<string, string>>} */
   const sections = {};
@@ -521,7 +606,7 @@ export function screenReaderDefaults(nvdaRoot) {
     const entry = /^\s*([A-Za-z_][\w]*)\s*=\s*\w+\([^)]*default\s*=\s*([^,)]+)/.exec(line);
     if (entry && current) sections[current][entry[1]] = entry[2].trim().replace(/^["']|["']$/g, "");
   }
-  return { found: true, path: spec, sections };
+  return { found: true, path, sections };
 }
 
 /**
