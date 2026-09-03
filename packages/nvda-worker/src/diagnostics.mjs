@@ -479,6 +479,27 @@ function readNvdaConfig(path) {
  * `synth` is the first thing to compare between a healthy guest and a mute one: NVDA with a broken or
  * silenced synthesiser runs perfectly, answers every keystroke, and says nothing.
  */
+/** A source checkout: the spec is a file. @param {string} spec @returns {{body: string|null, path: string|null}} */
+function readLooseSpec(spec) {
+  try {
+    return { body: readFileSync(spec, "utf8"), path: spec };
+  } catch {
+    return { body: null, path: spec };
+  }
+}
+
+/** A built NVDA: the spec is inside one of several archives. @param {string} nvdaRoot @returns {{body: string|null, path: string|null}} */
+function readSpecFromArchives(nvdaRoot) {
+  const zips = findFiles(nvdaRoot, "library.zip", 0);
+  for (const zip of zips) {
+    const body = readFromZip(zip, (name) => name.endsWith("config/configSpec.py"));
+    if (body !== null) return { body, path: zip };
+  }
+  // No archive held it: report the LAST place looked rather than nothing, so the next reader can see the
+  // search ran and how wide it was.
+  return { body: null, path: zips[zips.length - 1] ?? null };
+}
+
 /**
  * Read ONE named file out of a zip, without a dependency.
  *
@@ -579,18 +600,17 @@ export function screenReaderDefaults(nvdaRoot) {
   // A SOURCE checkout has the file; a BUILT NVDA has it inside library.zip, and the fleet runs the latter
   // — measured, after the loose-file search answered `found: false` on all five workers. Both are tried
   // rather than one assumed, because guidepup's install layout is not this project's to promise.
-  const zip = spec ? null : findFile(nvdaRoot, "library.zip", 0);
-  const path = spec ?? zip;
+  // EVERY library.zip, not the first. Measured 2026-09-03: the first match on a real guest was
+  // `synthDriverHost-runtime\library.zip` — a synth driver's own runtime, which has no configSpec in it —
+  // so a reader taking the first match reported `found: false` while NVDA's spec sat in a sibling. The
+  // right predicate is not "which path looks right" but "which archive CONTAINS the file", and searching
+  // them all is both simpler and immune to a layout change.
+  //
+  // It was diagnosable in one look ONLY because the failure carried its path. A bare `found: false` would
+  // have read as "NVDA does not ship the spec" and sent the next person to fetch it from the vendor.
+  const { body, path } = spec ? readLooseSpec(spec) : readSpecFromArchives(nvdaRoot);
   if (!path) return { found: false };
-  let body;
-  try {
-    body = spec
-      ? readFileSync(spec, "utf8")
-      : readFromZip(/** @type {string} */ (zip), (name) => name.endsWith("config/configSpec.py"));
-  } catch {
-    body = null;
-  }
-  if (body === null || body === undefined) {
+  if (body === null) {
     // `found: false` WITH the path: "we located NVDA and could not read the spec out of it" is a different
     // fault from "there is no spec here", and the path is what tells them apart.
     return { found: false, path };
@@ -607,6 +627,31 @@ export function screenReaderDefaults(nvdaRoot) {
     if (entry && current) sections[current][entry[1]] = entry[2].trim().replace(/^["']|["']$/g, "");
   }
   return { found: true, path, sections };
+}
+
+/**
+ * EVERY match for a filename, depth-bounded — because "the first one" was the wrong one.
+ *
+ * @param {string} dir
+ * @param {string} name
+ * @param {number} depth
+ * @returns {string[]}
+ */
+function findFiles(dir, name, depth) {
+  if (depth > 8) return [];
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isFile() && entry.name === name) out.push(full);
+    else if (entry.isDirectory()) out.push(...findFiles(full, name, depth + 1));
+  }
+  return out;
 }
 
 /**
