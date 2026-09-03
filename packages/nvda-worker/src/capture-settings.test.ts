@@ -49,7 +49,11 @@ test("the log level still works, so generalising did not break its caller", () =
 test("reportLanguage is on, and NVDA's spelling is used verbatim", () => {
   const language = CAPTURE_SETTINGS.find((s) => s.key === "reportLanguage");
   assert.ok(language, "3.1.2 is unobservable without it — see the module header for the decision");
-  assert.equal(language.section, "documentFormatting");
+  // `[speech]`, and this assertion exists because the first version said `documentFormatting` — where
+  // NVDA does NOT read it, so the setting was inert while `getSettings()` reported it as present. Read
+  // from NVDA's own configSpec: `[speech] reportLanguage = boolean(default=false)`.
+  assert.equal(language.section, "speech",
+    "NVDA reads reportLanguage from [speech]; writing it elsewhere is a setting that looks applied and does nothing");
   // `True`, not `true`. NVDA's ini is Python's configobj and the value is written verbatim, so the
   // casing is the contract rather than a preference.
   assert.equal(language.value, "True");

@@ -121,7 +121,21 @@ export function applyRequestedLogLevel(configPaths, log) {
  * NVDA's own spelling, verbatim — the ini takes `True`, not `true`.
  */
 export const CAPTURE_SETTINGS = Object.freeze([
-  { section: "documentFormatting", key: "reportLanguage", value: "True",
+  // `[speech]`, NOT `[documentFormatting]` — and the first version of this line had it wrong, which is
+  // the reason `screenReaderDefaults` was built rather than a nicety.
+  //
+  // Written to `documentFormatting` it LOOKED applied: `getSettings()` returned
+  // `documentFormatting.reportLanguage: True`, read back off a live guest. NVDA reads it from `[speech]`,
+  // so the setting was inert — a remedy that is present, reported, and does nothing, which is exactly
+  // `refreshBrowseBuffer` guarding on a flag nobody set. **Verifying that a setting was WRITTEN is not
+  // verifying it is IN EFFECT**, and the two look identical from the outside.
+  //
+  // It also invalidated the measurement taken from it. The before/after capture that came back
+  // byte-identical was read as "reportLanguage is evidence-neutral on monolingual content". The simpler
+  // explanation was that nothing had changed at all.
+  //
+  // Read from NVDA's own `configSpec.py` — `[speech] reportLanguage = boolean(default=false)`.
+  { section: "speech", key: "reportLanguage", value: "True",
     why: "3.1.2 Language of Parts is announced as a VOICE change and no text unless this is on" },
 ]);
 
