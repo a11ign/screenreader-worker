@@ -488,16 +488,41 @@ function readLooseSpec(spec) {
   }
 }
 
-/** A built NVDA: the spec is inside one of several archives. @param {string} nvdaRoot @returns {{body: string|null, path: string|null}} */
+/**
+ * A built NVDA: the spec is inside one of several archives.
+ *
+ * The name test is DELIBERATELY LOOSE. Two guesses have already been wrong about where this file lives —
+ * a loose `.py` on disk, then `config/configSpec.py` inside the first archive found — and each cost a
+ * deploy to disprove. A packager may nest it differently, use backslashes, or compile to `.pyc`, so this
+ * matches the basename and reports what it DID see when it misses.
+ *
+ * @param {string} nvdaRoot
+ * @returns {{body: string|null, path: string|null, sawInstead?: string[]}}
+ */
 function readSpecFromArchives(nvdaRoot) {
   const zips = findFiles(nvdaRoot, "library.zip", 0);
+  /** @type {string[]} */
+  const near = [];
   for (const zip of zips) {
-    const body = readFromZip(zip, (name) => name.endsWith("config/configSpec.py"));
+    const body = readFromZip(zip, (name) => /(^|[/\\])configSpec\.pyc?$/.test(name));
     if (body !== null) return { body, path: zip };
+    // A MISS IS A DIAGNOSTIC, not a dead end. Reporting the config-ish entries turns "not found" into
+    // "found these instead", which is the difference between one more deploy and one more guess.
+    near.push(...listZipNames(zip).filter((n) => /config/i.test(n)).slice(0, 12));
   }
-  // No archive held it: report the LAST place looked rather than nothing, so the next reader can see the
-  // search ran and how wide it was.
-  return { body: null, path: zips[zips.length - 1] ?? null };
+  return { body: null, path: zips[zips.length - 1] ?? null, sawInstead: near.slice(0, 24) };
+}
+
+/**
+ * Every entry name in a zip — used only to explain a miss.
+ * @param {string} zipPath
+ * @returns {string[]}
+ */
+function listZipNames(zipPath) {
+  /** @type {string[]} */
+  const names = [];
+  readFromZip(zipPath, (name) => { names.push(name); return false; });
+  return names;
 }
 
 /**
@@ -592,7 +617,8 @@ function inflateEntry(buf, localOffset) {
  * look" must never be the same answer.
  *
  * @param {string | null} nvdaRoot
- * @returns {{found: boolean, path?: string, sections?: Record<string, Record<string, string>>}}
+ * @returns {{found: boolean, path?: string, sawInstead?: string[],
+ *   sections?: Record<string, Record<string, string>>}}
  */
 export function screenReaderDefaults(nvdaRoot) {
   if (!nvdaRoot) return { found: false };
@@ -608,12 +634,14 @@ export function screenReaderDefaults(nvdaRoot) {
   //
   // It was diagnosable in one look ONLY because the failure carried its path. A bare `found: false` would
   // have read as "NVDA does not ship the spec" and sent the next person to fetch it from the vendor.
-  const { body, path } = spec ? readLooseSpec(spec) : readSpecFromArchives(nvdaRoot);
+  const read = spec ? readLooseSpec(spec) : readSpecFromArchives(nvdaRoot);
+  const { body, path } = read;
   if (!path) return { found: false };
   if (body === null) {
-    // `found: false` WITH the path: "we located NVDA and could not read the spec out of it" is a different
-    // fault from "there is no spec here", and the path is what tells them apart.
-    return { found: false, path };
+    // `found: false` WITH the path AND with what was there instead: "we located NVDA and could not find
+    // the spec in it" is a different fault from "there is no spec here", and each new guess about the
+    // layout has cost a deploy to disprove. `sawInstead` is what ends that.
+    return { found: false, path, ...(read.sawInstead?.length ? { sawInstead: read.sawInstead } : {}) };
   }
   /** @type {Record<string, Record<string, string>>} */
   const sections = {};
