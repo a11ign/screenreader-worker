@@ -164,20 +164,17 @@ export const CAPTURE_SETTINGS = Object.freeze([
   // Read from NVDA's own `configSpec.py` — `[speech] reportLanguage = boolean(default=false)`.
   { section: "speech", key: "reportLanguage", value: "True",
     why: "3.1.2 Language of Parts is announced as a VOICE change and no text unless this is on" },
-  // 1.3.1 Info and Relationships. Read from NVDA's own configSpec:
-  // `[documentFormatting] reportEmphasis = boolean(default=false)`.
+  // NOT `documentFormatting.reportEmphasis`, and the reason is a browser limit rather than a decision.
   //
-  // It distinguishes SEMANTIC emphasis (`<em>`, `<strong>`) from text that merely LOOKS bold, which is
-  // exactly 1.3.1's question and a distinction no other channel here can make: to the sweep, to the DOM
-  // census and to a sighted reviewer the two render identically. Off, both halves of that pair are
-  // announced the same way and the case is BLIND.
+  // It was added here on 2026-09-03 with its corpus case, and the case came back CONTAMINATED: the signal
+  // fired on BOTH variants, because NVDA said "emphasised" on neither. NVDA's emphasis reporting is
+  // implemented only for the MSHTML rendering engine — Internet Explorer, or Edge in IE mode — and this
+  // project captures in Chromium Edge, where NVDA does not announce `<em>` or `<strong>` at all.
+  // See nvaccess/nvda#17216 and TPGi's "Screen Readers support for text level HTML semantics".
   //
-  // Landing with its corpus case rather than ahead of it. `reportLanguage` was turned on with nothing
-  // reading it and became its own backlog row; the order this list follows now is case and setting
-  // together where the SIGNAL depends on the setting, because a case whose signal cannot fire is
-  // reported BLIND and `check-signals` refuses the corpus.
-  { section: "documentFormatting", key: "reportEmphasis", value: "True",
-    why: "1.3.1 semantic emphasis is indistinguishable from visual bold unless this is on" },
+  // So it is a NO-OP here, and an inert entry in this list is worse than an absent one: it would move
+  // `screenReaderSettings`, which is a cache-key input, and invalidate every capture in exchange for
+  // nothing. The finding is recorded in known-gaps rather than the setting kept "in case".
 ]);
 
 /**
