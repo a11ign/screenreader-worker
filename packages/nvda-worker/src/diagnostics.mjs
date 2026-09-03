@@ -479,7 +479,11 @@ function readNvdaConfig(path) {
  * `synth` is the first thing to compare between a healthy guest and a mute one: NVDA with a broken or
  * silenced synthesiser runs perfectly, answers every keystroke, and says nothing.
  */
-/** A source checkout: the spec is a file. @param {string} spec @returns {{body: string|null, path: string|null}} */
+/**
+ * A source checkout: the spec is a file.
+ * @param {string} spec
+ * @returns {{body: string|null, path: string|null, sawInstead?: string[]}}
+ */
 function readLooseSpec(spec) {
   try {
     return { body: readFileSync(spec, "utf8"), path: spec };
