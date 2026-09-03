@@ -626,7 +626,7 @@ function inflateEntry(buf, localOffset) {
  */
 export function screenReaderDefaults(nvdaRoot) {
   if (!nvdaRoot) return { found: false };
-  const spec = findFile(nvdaRoot, "configSpec.py", 0);
+  const spec = findFiles(nvdaRoot, "configSpec.py", 0)[0] ?? null;
   // A SOURCE checkout has the file; a BUILT NVDA has it inside library.zip, and the fleet runs the latter
   // — measured, after the loose-file search answered `found: false` on all five workers. Both are tried
   // rather than one assumed, because guidepup's install layout is not this project's to promise.
@@ -664,6 +664,12 @@ export function screenReaderDefaults(nvdaRoot) {
 /**
  * EVERY match for a filename, depth-bounded — because "the first one" was the wrong one.
  *
+ * There was briefly a singular `findFile` beside this, written first and kept out of habit once the
+ * plural one existed. It was `findFiles(...)[0]`, and two depth-bounded tree walks in one file is how the
+ * caret rule came to be documented for landmarks and true of everything — a second copy is where a fix
+ * lands on one path and not the other. `server.mjs` has its own, and `screenReaderState` has a third
+ * inline as `findIni`; collapsing those needs a shared module and is not this change.
+ *
  * @param {string} dir
  * @param {string} name
  * @param {number} depth
@@ -684,35 +690,6 @@ function findFiles(dir, name, depth) {
     else if (entry.isDirectory()) out.push(...findFiles(full, name, depth + 1));
   }
   return out;
-}
-
-/**
- * Depth-bounded search for one filename, sharing `findIni`'s reasoning about NVDA's nesting.
- *
- * @param {string} dir
- * @param {string} name
- * @param {number} depth
- * @returns {string | null}
- */
-function findFile(dir, name, depth) {
-  if (depth > 8) return null;
-  // Read inside the try and return on failure: an unreadable directory is ordinary here (NVDA's tree has
-  // paths this process cannot open) and must not stop the search or take the worker down.
-  let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-  for (const entry of entries) {
-    const full = join(dir, entry.name);
-    if (entry.isFile() && entry.name === name) return full;
-    if (entry.isDirectory()) {
-      const hit = findFile(full, name, depth + 1);
-      if (hit) return hit;
-    }
-  }
-  return null;
 }
 
 /** @param {{ nvdaRoot: string | null, tempDir: string, tailLines?: number }} where */

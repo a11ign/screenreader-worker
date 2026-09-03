@@ -100,17 +100,14 @@ export function applyRequestedLogLevel(configPaths, log) {
     log(`A11Y_NVDA_LOG_LEVEL=${level} is not an NVDA log level; ignoring it`);
     return [];
   }
-  const changed = [];
-  for (const path of configPaths) {
-    try {
-      const updated = withLogLevel(readFileSync(path, "utf8"), level);
-      if (!updated) continue;
-      writeFileSync(path, updated, "utf8");
-      changed.push(path);
-    } catch (error) {
-      log(`could not set NVDA logLevel in ${path}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
+  // THROUGH `applyOne`, which was extracted for the capture settings and does exactly this: read, patch,
+  // write, and record the failure rather than swallow it. Two copies of "edit every nvda.ini safely" is
+  // the shape this file already fixed once at the patcher level — `withLogLevel` became a wrapper around
+  // `withIniSetting` — and leaving the loop duplicated would have kept half of it.
+  //
+  // `logLevel` lives under `[general]`, which is where `withLogLevel` has always put it.
+  const changed = configPaths.flatMap((path) =>
+    applyOne(path, { section: "general", key: "logLevel", value: level }, log));
   if (changed.length) log(`NVDA logLevel set to ${level} in ${changed.length} config(s); restart NVDA to apply`);
   return changed;
 }
