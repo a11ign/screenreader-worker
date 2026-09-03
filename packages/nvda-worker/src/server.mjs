@@ -1113,6 +1113,31 @@ function releaseOnAbandon(/** @type {any} */ req) {
 let inFlight = null;
 
 /**
+ * How long desktop preparation may take before the capture goes ahead without it.
+ *
+ * Three PowerShell calls. Measured on this fleet, one has taken 8 s and then 25 s on a loaded guest, so
+ * the bound is generous against that and still an order of magnitude under the capture's own 520 s —
+ * which is sized for reading a page, not for tidying a desktop.
+ */
+const DESKTOP_PREPARE_TIMEOUT_MS = 60_000;
+
+/**
+ * Reject if a promise has not settled in time, WITHOUT leaving a timer holding the process open.
+ *
+ * @param {Promise<any>} promise
+ * @param {number} ms
+ * @param {string} label
+ */
+function withTimeoutMs(promise, ms, label) {
+  /** @type {any} */
+  let timer;
+  const expire = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} exceeded ${ms} ms`)), ms);
+  });
+  return Promise.race([promise, expire]).finally(() => clearTimeout(timer));
+}
+
+/**
  * Clear whatever is standing between this capture and the desktop, and record what was there.
  *
  * Extracted from `runCapture` when it crossed the physical-line budget, and it earns its own name rather
@@ -1185,8 +1210,32 @@ async function runCapture(/** @type {any} */ res, /** @type {any} */ { url, opts
   // this capture is about to send, so the capture would run its full budget and be abandoned with no
   // explanation — which is precisely what happened repeatedly before this existed. Recorded as a mark rather
   // than done silently, because a remedy that leaves no trace is how a recurring fault stays invisible.
-  await prepareDesktop(marks);
   try {
+    // INSIDE THE TRY, AND BOUNDED — and it was outside both for as long as this function has existed.
+    //
+    // This is the 3.5-hour stall on a11y-worker-6, diagnosed 2026-09-03. `busy` is released in the
+    // `finally` below and the hard timeout wraps `captureWithNvda` INSIDE
+    // `captureWithLocalRecovery` — so desktop preparation sat outside every guard the capture path has.
+    // It spawns PowerShell three times (dialog enumeration, dismissal, the foreground probe), and this
+    // repo already records PowerShell timing out at 8 s and then 25 s on a loaded guest. One that never
+    // returns leaves `busy` set for ever with no capture running and nothing to time it out.
+    //
+    // From outside that is a worker answering `/health`, reporting `ready`, and never taking work — which
+    // is exactly what was observed for three and a half hours while every readiness check stayed green,
+    // and which the run reads as a slow page rather than a wedge.
+    //
+    // Its own bound, not the capture's: `CAPTURE_HARD_TIMEOUT_MS` is 520 s and is sized for a page read,
+    // whereas preparation is three PowerShell calls that are pathological past a few seconds. A remedy
+    // that took eight minutes to give up would still lose the run.
+    await withTimeoutMs(prepareDesktop(marks), DESKTOP_PREPARE_TIMEOUT_MS, "prepareDesktop")
+      .catch((error) => {
+        // RECORDED AND CONTINUED, never rethrown. A desktop we could not tidy is not a reason to refuse
+        // the capture — the dialogs it clears are usually absent, and the capture's own failure modes are
+        // better diagnosed than a refusal here. The mark is what separates "preparation was skipped" from
+        // "preparation found nothing", which is this repo's oldest distinction.
+        log(`  desktop preparation did not finish: ${error instanceof Error ? error.message : String(error)}`);
+        marks.push({ event: "desktopPrepareTimedOut", atMs: 0, afterMs: DESKTOP_PREPARE_TIMEOUT_MS });
+      });
     const result = await captureWithLocalRecovery(url, { ...opts, diagnosticsSink: marks });
     const environment = currentEnvironment();
     const after = (result.diagnostics || []).find((/** @type {any} */ e) => e.event === "afterStart");
