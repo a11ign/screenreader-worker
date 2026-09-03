@@ -478,6 +478,81 @@ function readNvdaConfig(path) {
  * `synth` is the first thing to compare between a healthy guest and a mute one: NVDA with a broken or
  * silenced synthesiser runs perfectly, answers every keystroke, and says nothing.
  */
+/**
+ * NVDA's OWN DEFAULTS for the settings that decide what it announces — read from `configSpec.py`.
+ *
+ * The question this answers, asked 2026-09-03: **which NVDA defaults are hiding evidence?**
+ * `documentFormatting.reportLanguage` defaults OFF, and because of that a WCAG 3.1.2 failure is
+ * announced as a change of VOICE with no text at all — so this project recorded 3.1.2 as out of reach for
+ * months on a premise nobody had checked. Nothing rules out a sibling, and the only way to know is to
+ * read the spec rather than to remember it.
+ *
+ * **`getSettings()` cannot answer this and that is why the file is read.** Measured: guidepup's
+ * `getSetting` is `getConfig()[key]` over the written ini, so a setting at its default has no key at all
+ * and "off" is indistinguishable from "never asked". The defaults live only in `configSpec.py`.
+ *
+ * Returns `{}` rather than throwing when the file is not found — an NVDA build that ships the spec inside
+ * `library.zip` is a real possibility, and a diagnostic that cannot read something must not take a worker
+ * down. `found: false` says which case it is, because "no settings default to false" and "we could not
+ * look" must never be the same answer.
+ *
+ * @param {string | null} nvdaRoot
+ * @returns {{found: boolean, path?: string, sections?: Record<string, Record<string, string>>}}
+ */
+export function screenReaderDefaults(nvdaRoot) {
+  const spec = nvdaRoot ? findFile(nvdaRoot, "configSpec.py", 0) : null;
+  if (!spec) return { found: false };
+  let body;
+  try {
+    body = readFileSync(spec, "utf8");
+  } catch {
+    // `found: false` WITH the path: "we located the spec and could not read it" is a different fault from
+    // "there is no spec here", and the path is what tells them apart.
+    return { found: false, path: spec };
+  }
+  /** @type {Record<string, Record<string, string>>} */
+  const sections = {};
+  let current = null;
+  for (const line of body.split(/\r?\n/)) {
+    const header = /^\s*\[([^\]]+)\]\s*$/.exec(line);
+    if (header) { current = header[1]; sections[current] = sections[current] ?? {}; continue; }
+    // `key = boolean(default=false)` and `key = integer(default=50)` are the two shapes that matter here;
+    // anything with a default is captured, so a future setting type is reported rather than dropped.
+    const entry = /^\s*([A-Za-z_][\w]*)\s*=\s*\w+\([^)]*default\s*=\s*([^,)]+)/.exec(line);
+    if (entry && current) sections[current][entry[1]] = entry[2].trim().replace(/^["']|["']$/g, "");
+  }
+  return { found: true, path: spec, sections };
+}
+
+/**
+ * Depth-bounded search for one filename, sharing `findIni`'s reasoning about NVDA's nesting.
+ *
+ * @param {string} dir
+ * @param {string} name
+ * @param {number} depth
+ * @returns {string | null}
+ */
+function findFile(dir, name, depth) {
+  if (depth > 8) return null;
+  // Read inside the try and return on failure: an unreadable directory is ordinary here (NVDA's tree has
+  // paths this process cannot open) and must not stop the search or take the worker down.
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isFile() && entry.name === name) return full;
+    if (entry.isDirectory()) {
+      const hit = findFile(full, name, depth + 1);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
 /** @param {{ nvdaRoot: string | null, tempDir: string, tailLines?: number }} where */
 export function screenReaderState({ nvdaRoot, tempDir, tailLines = 80 }) {
   const log = tail(join(tempDir, "nvda.log"), tailLines);

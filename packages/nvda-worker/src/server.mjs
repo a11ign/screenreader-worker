@@ -34,7 +34,7 @@ import { listBlockingDialogs, dismissBlockingDialogs, probeWindowOwner, foregrou
   from "./desktop-dialogs.mjs";
 import { faultCode } from "./capture-faults.mjs";
 import { createResultStore, isValidCaptureId, storedResultResponse } from "./capture-results.mjs";
-import { edgePolicy, guestDiagnostics, processCounts, screenReaderState, treeSize } from "./diagnostics.mjs";
+import { edgePolicy, guestDiagnostics, processCounts, screenReaderState, screenReaderDefaults, treeSize } from "./diagnostics.mjs";
 import { killStrayBrowsers, pruneEdgeProfile, reportBrowserPolicyDrift } from "./browser-profile.mjs";
 import { applyRequestedLogLevel, applyCaptureSettings, CAPTURE_SETTINGS } from "./nvda-logging.mjs";
 import { trimAlreadyDone } from "./windows-trim.mjs";
@@ -988,6 +988,13 @@ async function respondWithDiagnostics(/** @type {any} */ res) {
     return send(res, 200, {
       ...guestDiagnostics({ edgeProfile: browserProfileDir(BROWSER), logPath: LOG_PATH }),
       screenReaderSettings: screenReaderSettings(),
+      // NVDA'S OWN DEFAULTS, which `screenReaderSettings` above structurally cannot report: guidepup reads
+      // the WRITTEN ini, so a setting at its default has no key and "off" is indistinguishable from "never
+      // asked". `reportLanguage` defaulting off hid WCAG 3.1.2 for months on a premise nobody had checked,
+      // and this is how the next one gets found by reading rather than by remembering.
+      screenReaderDefaults: screenReaderDefaults(
+        process.env.GUIDEPUP_SCREEN_READERS_PATH
+          ?? (process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "guidepup") : null)),
       // WHAT IS IN FRONT OF THE DESKTOP, and whose it is. Worth having on its own -- a capture driven
       // against a guest whose foreground is not Edge is a capture measuring something else -- and it is
       // also the only thing that EXERCISES the owner resolution `blockingDialogs` reports with. That path
