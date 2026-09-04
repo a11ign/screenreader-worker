@@ -273,11 +273,43 @@ function isGeneratedContent(node) {
  * @param {Record<string, any>} census @param {any} node @param {Map<string, any>} byId
  */
 function recordUnnamedGraphic(census, node, byId) {
+  const found = nearestNamedAncestor(node, byId);
+  // 1.1.1'S CONTROLS/INPUT EXCEPTION, enforced 2026-09-04 rather than merely documented.
+  //
+  //   "If non-text content is a control or accepts user input, then it has a NAME that describes its
+  //    purpose."
+  //
+  // An image inside a NAMED control already satisfies 1.1.1 through that control's name -- `name` is
+  // defined as "text by which software can identify a component within web content to the user", which
+  // the image itself need not carry. Counting it is a false positive, and it WAS one: `rules-real-pages`
+  // refused two verdict runs on `1.1.1 cqc.org.uk/search/all?query=hospital`, and the capture's own
+  // detail says both nameless images sit inside a link named "The Care Quality Commission" -- the site's
+  // logo, marked up exactly as it should be.
+  //
+  // The criterion audit predicted this class from reading the text, hours before an instance arrived. The
+  // instance is what let it be FIXED rather than argued: a count could not tell "inside a named control"
+  // from "in no control at all", and those need opposite responses.
+  //
+  // NOT a blanket ancestor test. Only a CONTROL's name discharges the requirement, because that is what
+  // the exception says -- an image inside a named `region` or `article` is still an unnamed image the
+  // user meets, and is still a finding.
+  if (found.ancestorName && CONTROL_ROLES.has(found.ancestorRole)) return;
   census.graphicUnnamed += 1;
-  if (census.graphicUnnamedDetail.length < 12) {
-    census.graphicUnnamedDetail.push(nearestNamedAncestor(node, byId));
-  }
+  if (census.graphicUnnamedDetail.length < 12) census.graphicUnnamedDetail.push(found);
 }
+
+/**
+ * Roles whose accessible NAME can discharge 1.1.1 for an image inside them.
+ *
+ * The criterion's exception is "if non-text content is a CONTROL or ACCEPTS USER INPUT", so this is the
+ * set of things a user operates -- not every named ancestor. A named `region` or `figure` wrapping a
+ * nameless image leaves the image unidentifiable, which is the finding rather than an exception to it.
+ */
+const CONTROL_ROLES = new Set([
+  "link", "button", "checkbox", "radio", "menuitem", "menuitemcheckbox", "menuitemradio",
+  "option", "tab", "switch", "textbox", "combobox", "searchbox", "slider", "spinbutton",
+  "treeitem", "disclosuretriangle",
+]);
 
 /**
  * The closest ancestor of an unnamed node that HAS a name, with its role.
@@ -295,7 +327,9 @@ function recordUnnamedGraphic(census, node, byId) {
  */
 function nearestNamedAncestor(node, byId) {
   const role = String(node?.role?.value ?? "").toLowerCase();
-  let current = byId.get(String(node?.parentId));
+  // An ABSENT parentId is not a lookup key. Same reason as the map above: `String(undefined)` would find
+  // whatever happened to be stored under "undefined".
+  let current = node?.parentId == null ? undefined : byId.get(String(node.parentId));
   // Bounded rather than `while (current)`: a malformed tree with a parent cycle would hang the capture,
   // and this runs inside a page evaluation with no timeout of its own.
   for (let depth = 0; current && depth < 25; depth += 1) {
@@ -304,7 +338,7 @@ function nearestNamedAncestor(node, byId) {
       return { role, ancestorName: name.slice(0, 60),
         ancestorRole: String(current.role?.value ?? "").toLowerCase() };
     }
-    current = byId.get(String(current.parentId));
+    current = current.parentId == null ? undefined : byId.get(String(current.parentId));
   }
   return { role, ancestorName: null, ancestorRole: null };
 }
@@ -417,7 +451,14 @@ export function censusFromAXTree(nodes) {
   // orphans the annotation onto the wrong binding, which is the same slip made three times in one session
   // on `export-screenreader-dataset.mjs` and caught here by `tsc` rather than by reading.
   /** @type {Map<string, any>} */
-  const byId = new Map((nodes ?? []).map((/** @type {any} */ n) => [String(n?.nodeId), n]));
+  // ONLY nodes with a real id, and the omission was a live bug for an hour. `String(undefined)` is the
+  // string "undefined", so every node lacking a `nodeId` collided on one key and the last one won — then
+  // an image with no `parentId` looked it up and was ADOPTED by an unrelated node. In the test fixture
+  // that made a nameless image the child of a named link, so the Controls/Input exception fired and the
+  // count went to zero. Absent read as a value, which is this repo's oldest defect.
+  const byId = new Map((nodes ?? [])
+    .filter((/** @type {any} */ n) => n?.nodeId != null)
+    .map((/** @type {any} */ n) => [String(n.nodeId), n]));
   /** @type {{ landmark: number, heading: number, link: number, graphic: number,
    *           graphicUnnamed: number, graphicUnnamedDetail: object[], names: string[] }
    *           & Record<string, any>} */

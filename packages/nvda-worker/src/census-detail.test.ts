@@ -86,3 +86,80 @@ test("the census carries the detail, bounded", () => {
     "the detail list is unbounded — an unbounded list of strings on every capture is how a diagnostic "
     + "becomes a cost");
 });
+
+/**
+ * 1.1.1's CONTROLS/INPUT exception, enforced rather than documented.
+ *
+ * > "If non-text content is a control or accepts user input, then it has a NAME that describes its
+ * > purpose."
+ *
+ * An image inside a NAMED control satisfies 1.1.1 through that control's name — `name` is defined as
+ * "text by which software can identify a component within web content to the user", which the image need
+ * not carry itself. Counting it is a false positive, and it WAS one twice: `rules-real-pages` refused two
+ * verdict runs on `1.1.1 cqc.org.uk`, and the capture's own detail showed both nameless images inside a
+ * link named "The Care Quality Commission" — the site logo, marked up exactly as it should be.
+ */
+import { readFileSync as read2 } from "node:fs";
+import { resolve as resolve2 } from "node:path";
+
+const SRC = read2(resolve2(import.meta.dirname, "browser-session.mjs"), "utf8");
+
+function recordUnnamedGraphic(census: Record<string, unknown>, node: unknown, byId: Map<string, unknown>) {
+  const body = /function recordUnnamedGraphic\(census, node, byId\) \{([\s\S]*?)\n\}/.exec(SRC)?.[1];
+  assert.ok(body, "recordUnnamedGraphic is gone — this test examines nothing");
+  const helper = /function nearestNamedAncestor\(node, byId\) \{([\s\S]*?)\n\}/.exec(SRC)?.[1];
+  const roles = /const CONTROL_ROLES = new Set\(\[([\s\S]*?)\]\);/.exec(SRC)?.[1];
+  assert.ok(helper && roles, "the helper or the role set is gone");
+  new Function("census", "node", "byId", `
+    const CONTROL_ROLES = new Set([${roles}]);
+    function nearestNamedAncestor(node, byId) {${helper}}
+    ${body}
+  `)(census, node, byId);
+}
+
+const fresh = () => ({ graphicUnnamed: 0, graphicUnnamedDetail: [] as unknown[] });
+
+test("an image inside a NAMED CONTROL is not counted — the Controls/Input exception", () => {
+  const census = fresh();
+  const link = node("1", "link", "The Care Quality Commission");
+  recordUnnamedGraphic(census, node("2", "image", "", "1"), new Map([["1", link]]));
+  assert.equal(census.graphicUnnamed, 0,
+    "an image inside a named link conforms through that link's name; counting it accused cqc.org.uk twice");
+  assert.deepEqual(census.graphicUnnamedDetail, [], "and it is not listed as a finding either");
+});
+
+test("an image inside a named NON-control is still counted", () => {
+  // NOT a blanket ancestor test. The exception says "is a CONTROL or accepts user input" — a named
+  // `region` or `figure` wrapping a nameless image leaves the image unidentifiable, which IS the finding.
+  const census = fresh();
+  const region = node("1", "region", "Latest news");
+  recordUnnamedGraphic(census, node("2", "image", "", "1"), new Map([["1", region]]));
+  assert.equal(census.graphicUnnamed, 1,
+    "a named region does not discharge 1.1.1 — only a control's name does");
+});
+
+test("an image in NO control is still counted, with its detail", () => {
+  const census = fresh();
+  recordUnnamedGraphic(census, node("2", "image", ""), new Map());
+  assert.equal(census.graphicUnnamed, 1);
+  assert.deepEqual(census.graphicUnnamedDetail, [{ role: "image", ancestorName: null, ancestorRole: null }]);
+});
+
+test("a node with no id cannot ADOPT an image that has no parent", () => {
+  // `String(undefined)` is the string "undefined", so a map keyed without a guard puts every id-less node
+  // under one key and an image with no `parentId` then "finds" whichever landed there last. That made a
+  // nameless image the child of a named link in the census fixture, fired the Controls/Input exception,
+  // and took the count to zero — a false NEGATIVE introduced by the fix for a false positive.
+  //
+  // Absent read as a value, which is this repo's oldest defect, committed while enforcing an exception
+  // whose whole point is telling two absences apart.
+  const orphan = { nodeId: undefined, role: { value: "image" }, name: { value: "" } };
+  const namedLink = { nodeId: undefined, role: { value: "link" }, name: { value: "Home" } };
+  const census = fresh();
+  // Built the way the census builds it, so the guard is exercised rather than described.
+  const byId = new Map<string, unknown>(
+    [orphan, namedLink].filter((n) => n.nodeId != null).map((n) => [String(n.nodeId), n]));
+  recordUnnamedGraphic(census, orphan, byId);
+  assert.equal(census.graphicUnnamed, 1,
+    "an image with no parent must stay a finding — it was not adopted by the id-less link");
+});
