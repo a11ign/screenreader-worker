@@ -81,6 +81,11 @@ test("headings, links and graphics are counted for the other sweeps", () => {
     // Names are kept alongside the counts so a TRUNCATED announcement is detectable; a count
     // cross-check cannot see a control that is present but misnamed.
     names: ["A", "Read more", "A chart", "Another"],
+    // WHAT `graphicUnnamed` COUNTED, added 2026-09-04. Empty here because every graphic is named — and
+    // these two assertions are `deepEqual` on the WHOLE census precisely so a new field cannot appear
+    // unnoticed, which is what the census's own comment warns about: "an assertion on named fields cannot
+    // see a field that was ADDED".
+    graphicUnnamedDetail: [],
     // Every name here is unique, so distinct == raw. The case that matters is the next test.
     distinct: { landmark: 0, heading: 1, link: 1, graphic: 2, formControl: 0 },
   });
@@ -89,7 +94,7 @@ test("headings, links and graphics are counted for the other sweeps", () => {
 test("a malformed or empty tree yields zeros, not a throw", () => {
   // The oracle must never be the reason a capture fails.
   const empty = { landmark: 0, heading: 0, link: 0, graphicUnnamed: 0, graphic: 0, formControl: 0,
-    names: [],
+    names: [], graphicUnnamedDetail: [],
     distinct: { landmark: 0, heading: 0, link: 0, graphic: 0, formControl: 0 } };
   assert.deepEqual(censusFromAXTree([]), empty);
   assert.deepEqual(censusFromAXTree(undefined), empty);

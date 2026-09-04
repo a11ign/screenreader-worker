@@ -252,6 +252,63 @@ function isGeneratedContent(node) {
   return node.backendDOMNodeId == null;
 }
 
+/**
+ * Count an unnamed graphic AND record what was counted — "a count is where an investigation stops".
+ *
+ * Added 2026-09-04, and it cost a blocked pipeline to learn. `rules-real-pages` refused a run with one new
+ * 1.1.1 finding on cqc.org.uk, `graphicUnnamed=2`, and its own output says "Read the evidence for each
+ * before doing anything else". There was no evidence: the capture held the NUMBER and nothing about the
+ * two nodes, so neither it nor the live page could separate the rule's three causes. The live page cannot
+ * in principle — these are sites their publishers edit, so the page today is not the page captured.
+ *
+ * `ancestorName` is the field that decides the question the finding raises. 1.1.1's Controls/Input
+ * exception says "If non-text content is a control or accepts user input, then it has a NAME that
+ * describes its purpose", so an image inside a NAMED control already conforms through that control's name
+ * and counting it is a false positive — while an exposed unnamed image in NO control is a real finding.
+ * Opposite responses, and the count could not tell them apart.
+ *
+ * Bounded at 12: a diagnostic on a page with hundreds of unnamed images must not become the cost of the
+ * capture.
+ *
+ * @param {Record<string, any>} census @param {any} node @param {Map<string, any>} byId
+ */
+function recordUnnamedGraphic(census, node, byId) {
+  census.graphicUnnamed += 1;
+  if (census.graphicUnnamedDetail.length < 12) {
+    census.graphicUnnamedDetail.push(nearestNamedAncestor(node, byId));
+  }
+}
+
+/**
+ * The closest ancestor of an unnamed node that HAS a name, with its role.
+ *
+ * 1.1.1's Controls/Input exception turns on exactly this: "If non-text content is a control or accepts
+ * user input, then it has a NAME that describes its purpose." An image inside a named button or link
+ * already conforms through that control's name, so counting it as a missing text alternative is a false
+ * positive -- and until this existed, telling the two apart meant loading the live page, which is a
+ * different page from the one captured.
+ *
+ * Returns the node's own role either way, so a graphic with no named ancestor at all is still identifiable
+ * as "an exposed unnamed image in no control", which is a real 1.1.1 finding rather than an exception.
+ *
+ * @param {any} node @param {Map<string, any>} byId
+ */
+function nearestNamedAncestor(node, byId) {
+  const role = String(node?.role?.value ?? "").toLowerCase();
+  let current = byId.get(String(node?.parentId));
+  // Bounded rather than `while (current)`: a malformed tree with a parent cycle would hang the capture,
+  // and this runs inside a page evaluation with no timeout of its own.
+  for (let depth = 0; current && depth < 25; depth += 1) {
+    const name = String(current.name?.value ?? "").trim();
+    if (name) {
+      return { role, ancestorName: name.slice(0, 60),
+        ancestorRole: String(current.role?.value ?? "").toLowerCase() };
+    }
+    current = byId.get(String(current.parentId));
+  }
+  return { role, ancestorName: null, ancestorRole: null };
+}
+
 /** @param {Record<string, any> | null} node */
 function classifyAXNode(node) {
   // Ignored nodes are not in the tree a screen reader walks, so counting them would make the oracle demand
@@ -353,15 +410,25 @@ export function censusFromAXTree(nodes) {
   // TYPED, because `names: []` infers `never[]` and every push of a real name is then an error -- and
   // the bucket increment below indexes this object by a role string. The names array is the truncation
   // detector's input, so an empty inferred type would have made the one field added for that unusable.
+  // Every node by id, so an unnamed graphic can be walked back up to the control that names it. Built once
+  // rather than searched per node: the tree runs to thousands on a real page.
+  //
+  // ABOVE the census's `@type` annotation, not between it and the `const` — putting a declaration there
+  // orphans the annotation onto the wrong binding, which is the same slip made three times in one session
+  // on `export-screenreader-dataset.mjs` and caught here by `tsc` rather than by reading.
+  /** @type {Map<string, any>} */
+  const byId = new Map((nodes ?? []).map((/** @type {any} */ n) => [String(n?.nodeId), n]));
   /** @type {{ landmark: number, heading: number, link: number, graphic: number,
-   *           graphicUnnamed: number, names: string[] } & Record<string, any>} */
+   *           graphicUnnamed: number, graphicUnnamedDetail: object[], names: string[] }
+   *           & Record<string, any>} */
   // EVERY BUCKET NEEDS A TOP-LEVEL COUNTER, because the loop below does `census[bucket] += 1`. Adding
   // `formControl` to ROLE_BUCKET without one made that `undefined + 1` -> NaN, which `JSON.stringify`
   // writes as `null` — so a capture reported `"formControl": null` and it read as "not measured" rather
   // than as arithmetic on an absent field. Found on the first real capture after the deploy, not by a
   // test: the tests asserted the fields they knew about, and an assertion on named fields cannot see a
   // field that was ADDED. Same lesson as `browser-args.test.ts` asserting the whole command line.
-  const census = { landmark: 0, heading: 0, link: 0, graphic: 0, formControl: 0, graphicUnnamed: 0, names: [],
+  const census = { landmark: 0, heading: 0, link: 0, graphic: 0, formControl: 0, graphicUnnamed: 0,
+    graphicUnnamedDetail: [], names: [],
     // DISTINCT NAMES PER TYPE, because the raw element count is not comparable with what the sweep
     // produces and the cross-check was comparing them anyway.
     //
@@ -396,7 +463,7 @@ export function censusFromAXTree(nodes) {
     // very thing 1.1.1 and 4.1.2 are about.
     if (classified.named) seenByType[classified.bucket]?.add(classified.named);
     else if (classified.bucket in seenByType) census.distinct[classified.bucket] += 1;
-    if (classified.bucket === "graphic" && !classified.named) census.graphicUnnamed += 1;
+    if (classified.bucket === "graphic" && !classified.named) recordUnnamedGraphic(census, node, byId);
   }
   for (const type of Object.keys(seenByType)) census.distinct[type] += seenByType[type].size;
   return census;
