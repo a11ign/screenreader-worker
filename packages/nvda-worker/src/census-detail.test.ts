@@ -137,6 +137,21 @@ function recordUnnamedGraphic(census: Record<string, unknown>, node: unknown, by
   `)(census, node, byId);
 }
 
+test("the extraction found every piece it depends on, or this whole file proves nothing", () => {
+  // Every test below asks `nearestNamedAncestor`/`recordUnnamedGraphic` a QUESTION and asserts an ANSWER --
+  // and a regex that stops matching after a rename would make the helper THROW, not answer wrongly, so no
+  // single behavioural test above catches a silent extraction failure in general. This is the dedicated,
+  // always-run check: derive the subject from source text, the way CLAUDE.md says a test must not derive
+  // its EXPECTATIONS from source text -- and prove the derivation itself still finds something, the way a
+  // scrape that quietly matched nothing once let an assertion "pass" over an empty set.
+  const src = ancestorSource();
+  assert.ok(src.roles.length > 0, "CONTROL_ROLES extracted but empty");
+  assert.ok(src.noteAncestor.length > 0, "noteAncestor extracted but empty");
+  assert.ok(src.nearestNamedAncestor.length > 0, "nearestNamedAncestor extracted but empty");
+  assert.match(SOURCE, /function recordUnnamedGraphic\(census, node, byId\) \{[\s\S]*?\n\}/,
+    "recordUnnamedGraphic is gone or its signature changed — every test using it below examines nothing");
+});
+
 const fresh = () => ({
   graphicUnnamed: 0, graphicUnnamedDetail: [] as unknown[],
   graphicExempted: 0, graphicExemptedDetail: [] as unknown[],

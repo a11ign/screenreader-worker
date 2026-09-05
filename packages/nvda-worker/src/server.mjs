@@ -30,8 +30,8 @@ import { configuredBrowser, browserProfileDir, resolveBrowser } from "./browsers
 import { CAPTURE_HARD_TIMEOUT_DEFAULT_MS, PROBE_FLAGS } from "./capture-pure.mjs";
 import { isLocallyRecoverable } from "./worker-recovery.mjs";
 import { codeVersion } from "./code-version.mjs";
-import { listBlockingDialogs, dismissBlockingDialogs, probeWindowOwner, foregroundBlocker }
-  from "./desktop-dialogs.mjs";
+import { probeWindowOwner, foregroundBlocker } from "./desktop-dialogs.mjs";
+import { dialogCache, foregroundCache, sampleDesktopDialogs, prepareDesktop } from "./desktop-prepare.mjs";
 import { faultCode } from "./capture-faults.mjs";
 import { createResultStore, isValidCaptureId, storedResultResponse } from "./capture-results.mjs";
 import { edgePolicy, guestDiagnostics, processCounts, screenReaderState, screenReaderDefaults, treeSize } from "./diagnostics.mjs";
@@ -710,33 +710,10 @@ function warmUpOnceIfNeeded() {
     .catch((e) => log("warm-up threw: " + e.message));
 }
 
-/**
- * The last observed state of the desktop, sampled in the BACKGROUND.
- *
- * `/health` is polled by `worker-ctl.sh`, the pool lease and `doctor`, and it must never wait on a child
- * process — the first version of this called PowerShell from inside the readiness path and `/health` stopped
- * answering at all, which is the same defect `/diagnostics` has. So a timer samples, and the request only ever
- * reads memory. `dialogs: null` means "not sampled yet", which is deliberately NOT a failure: an unreadable
- * diagnostic must not take a worker offline, the rule `foregroundLockTimeout` already follows.
- */
-// `dialogs: null` means NOT SAMPLED, and every reader below depends on that being distinct from an
-// empty list -- `noBlockingDialog` answers null rather than true when nobody looked. Inferred from this
-// literal the field is `null` forever, so the sample that fills it is the type error.
-/** @type {{ at: number, dialogs: null | { handle: string, title: string, message: string, owner: string }[] }} */
-let dialogCache = { at: 0, dialogs: null };
-
-/**
- * The foreground owner, sampled beside the dialogs and for the same reason one sample serves both.
- *
- * A MODAL is not the only thing that stops a capture. A notification toast holds the foreground without
- * being a dialog at all, so `listBlockingDialogs` returns nothing, `noBlockingDialog` stays true, and the
- * worker reports itself ready while Edge can never take focus. Measured on a11y-worker-6, 2026-09-02:
- * 3.5 hours of exactly that, with every readiness check green.
- *
- * `null` means NOT SAMPLED and never means fine — the same contract `dialogCache` carries.
- * @type {{ at: number, foreground: null | {title:string,owner:string,ok:boolean} }}
- */
-let foregroundCache = { at: 0, foreground: null };
+// `dialogCache`/`foregroundCache`/`sampleDesktopDialogs`/`prepareDesktop` live in `desktop-prepare.mjs`,
+// imported above -- guidepup-free, so a test can reach them without importing this whole file. See that
+// module's own header for why. `readiness()` below reads the two caches as LIVE bindings; only
+// `desktop-prepare.mjs` itself ever reassigns them.
 
 /**
  * Is this a form state this worker can act on?
@@ -796,19 +773,6 @@ function captureSettingsDigest() {
     .join(",");
 }
 
-async function sampleDesktopDialogs() {
-  const dialogs = await listBlockingDialogs((reason) => log(`could not enumerate desktop dialogs: ${reason}`));
-  dialogCache = { at: Date.now(), dialogs };
-  if (dialogs.length) {
-    log(`  desktop is blocked by ${dialogs.length} dialog(s): `
-      + dialogs.map((d) => `${d.title}: ${d.message}`).join(" | "));
-  }
-  const foreground = await probeWindowOwner((reason) => log(`could not read the foreground window: ${reason}`));
-  foregroundCache = { at: Date.now(), foreground };
-  const blocker = foregroundBlocker(foreground);
-  if (blocker) log(`  the foreground is held by ${blocker.owner} (${blocker.title}) — Edge cannot take focus`);
-}
-
 // NOT on a timer. The first version sampled every 30 s, and on a 3 GB guest that is a PowerShell process
 // compiling C# on a repeating schedule — measured timing out at 8 s, then still at 25 s, on a guest already
 // starved by Edge. A detector that loads the machine it is watching makes the condition it looks for more
@@ -818,7 +782,7 @@ async function sampleDesktopDialogs() {
 // Gated with the listener: this spawns PowerShell, which the comment above notes "compiles C#" and was
 // measured timing out at 25 s on a starved guest. A worker that is booting should pay that once; a process
 // that merely imported this module should not pay it at all.
-if (IS_MAIN) void sampleDesktopDialogs();
+if (IS_MAIN) void sampleDesktopDialogs({ log });
 
 async function readiness() {
   warmUpOnceIfNeeded();
@@ -1138,51 +1102,52 @@ function withTimeoutMs(promise, ms, label) {
   return Promise.race([promise, expire]).finally(() => clearTimeout(timer));
 }
 
+// `prepareDesktop` (and the `abandonedAfter` fence it checks before touching the shared caches) lives in
+// `desktop-prepare.mjs`, imported above -- see that module's header for why, and its own comment on
+// `abandonedAfter` for the abandonment shape `runCapture` guards against below.
+
 /**
- * Clear whatever is standing between this capture and the desktop, and record what was there.
+ * Clear the desktop before driving it, bounded, with the abandonment fence armed.
  *
- * Extracted from `runCapture` when it crossed the physical-line budget, and it earns its own name rather
- * than merely shortening its caller: it does ONE thing at ONE level of abstraction -- make the desktop
- * usable, and say what was in the way. Two mechanisms, because a modal blocks INPUT and a foreground
- * holder blocks FOCUS, and a capture needs both cleared.
+ * Extracted from `runCapture` when it crossed the physical-line budget a second time -- once already for
+ * `prepareDesktop` itself, and this is the same shape one call site up: a real phase (make the desktop
+ * safe to drive AND arm the fence that keeps a losing race from corrupting a later capture's readiness),
+ * not a slice taken only to satisfy the budget.
  *
- * A diagnostic mark carries whatever its EVENT needs beyond the two common fields — `desktopDialogsDismissed`
- * carries the dialogs, `foregroundBlocked` carries the owner and title — so the parameter is typed for the
- * shape they share rather than for one event's payload. Narrowing it to `{event, atMs}` made every mark
- * that says something a type error, which is the sink refusing the only thing it exists to carry.
+ * INSIDE THE CALLER'S TRY, AND BOUNDED — and it was outside both for as long as this function has existed.
+ * This is the 3.5-hour stall on a11y-worker-6, diagnosed 2026-09-03: `busy` is released in `runCapture`'s
+ * `finally` and the hard timeout wraps `captureWithNvda` INSIDE `captureWithLocalRecovery`, so desktop
+ * preparation sat outside every guard the capture path has. It spawns PowerShell three times, and this
+ * repo already records PowerShell timing out at 8 s and then 25 s on a loaded guest -- one that never
+ * returns leaves `busy` set for ever with no capture running and nothing to time it out. From outside that
+ * is a worker answering `/health`, reporting `ready`, and never taking work, which is exactly what was
+ * observed for three and a half hours while every readiness check stayed green.
+ *
+ * Its own bound, not the capture's: `CAPTURE_HARD_TIMEOUT_MS` is 520 s and is sized for a page read,
+ * whereas preparation is three PowerShell calls that are pathological past a few seconds.
+ *
+ * THE ABANDONED CALL KEEPS RUNNING -- losing the race does not cancel it -- so it is handed a signal it can
+ * check before touching `dialogCache`/`foregroundCache` after we have stopped waiting on it. See
+ * `desktop-prepare.mjs`'s `abandonedAfter` for why a fence, not real cancellation, and why this cannot
+ * reach a capture result.
  *
  * @param {Record<string, unknown>[]} marks
  */
-async function prepareDesktop(marks) {
-  const cleared = await dismissBlockingDialogs((reason) => log(`could not dismiss desktop dialogs: ${reason}`));
-  if (cleared.dismissed.length) {
-    log(`  dismissed ${cleared.dismissed.length} blocking dialog(s) before capturing: `
-      + cleared.dismissed.map((d) => `${d.title}: ${d.message}`).join(" | "));
-    marks.push({ event: "desktopDialogsDismissed", atMs: 0, dialogs: cleared.dismissed });
-  }
-  // UNCONDITIONALLY, and that is the fix rather than a tidy-up.
-  //
-  // `sampleDesktopDialogs`'s own comment says "the sample that matters is the one at the START OF A
-  // CAPTURE" -- and there was no such sample. The only call is at boot, and this cache was refreshed only
-  // when something had been DISMISSED, so a guest that never had a dialog reported its boot-time answer
-  // for as long as it stayed up. Measured on the fleet: workers up six days were serving
-  // `dialogsCheckedMsAgo` of ~8,640 minutes, which is `/health` saying "no dialogs, as of last week".
-  //
-  // `dismissBlockingDialogs` has already enumerated by this point, so the current state is known for free:
-  // whatever it found is now closed, and if it found nothing the desktop was clear anyway. Recording that
-  // costs nothing and makes the comment true. "Dismissed none" and "never looked" were the same state,
-  // which is this repo's oldest defect wearing a cache.
-  dialogCache = { at: Date.now(), dialogs: [] };
-  // And the foreground, which is the half no dialog check can see. One PowerShell call beside one that
-  // already happens here, once per ~12 s capture -- paid at the only moment it answers a question, which
-  // is the reasoning `sampleDesktopDialogs` gives for not putting it on a timer.
-  const foreground = await probeWindowOwner((reason) => log(`could not read the foreground window: ${reason}`));
-  foregroundCache = { at: Date.now(), foreground };
-  const holding = foregroundBlocker(foreground);
-  if (holding) {
-    log(`  the foreground is held by ${holding.owner} (${holding.title}) — Edge may not take focus`);
-    marks.push({ event: "foregroundBlocked", atMs: 0, ...holding });
-  }
+async function prepareDesktopBounded(marks) {
+  const desktopPrepareAbandon = new AbortController();
+  await withTimeoutMs(prepareDesktop(marks, desktopPrepareAbandon.signal, { log }), DESKTOP_PREPARE_TIMEOUT_MS,
+    "prepareDesktop")
+    .catch((error) => {
+      // RECORDED AND CONTINUED, never rethrown. A desktop we could not tidy is not a reason to refuse
+      // the capture — the dialogs it clears are usually absent, and the capture's own failure modes are
+      // better diagnosed than a refusal here. The mark is what separates "preparation was skipped" from
+      // "preparation found nothing", which is this repo's oldest distinction.
+      log(`  desktop preparation did not finish: ${error instanceof Error ? error.message : String(error)}`);
+      marks.push({ event: "desktopPrepareTimedOut", atMs: 0, afterMs: DESKTOP_PREPARE_TIMEOUT_MS });
+      // Fires on a genuine timeout AND on `prepareDesktop` rejecting outright -- both mean the promise
+      // has stopped being authoritative, and aborting an already-settled call is a harmless no-op.
+      desktopPrepareAbandon.abort();
+    });
 }
 
 /**
@@ -1212,31 +1177,7 @@ async function runCapture(/** @type {any} */ res, /** @type {any} */ { url, opts
   // explanation — which is precisely what happened repeatedly before this existed. Recorded as a mark rather
   // than done silently, because a remedy that leaves no trace is how a recurring fault stays invisible.
   try {
-    // INSIDE THE TRY, AND BOUNDED — and it was outside both for as long as this function has existed.
-    //
-    // This is the 3.5-hour stall on a11y-worker-6, diagnosed 2026-09-03. `busy` is released in the
-    // `finally` below and the hard timeout wraps `captureWithNvda` INSIDE
-    // `captureWithLocalRecovery` — so desktop preparation sat outside every guard the capture path has.
-    // It spawns PowerShell three times (dialog enumeration, dismissal, the foreground probe), and this
-    // repo already records PowerShell timing out at 8 s and then 25 s on a loaded guest. One that never
-    // returns leaves `busy` set for ever with no capture running and nothing to time it out.
-    //
-    // From outside that is a worker answering `/health`, reporting `ready`, and never taking work — which
-    // is exactly what was observed for three and a half hours while every readiness check stayed green,
-    // and which the run reads as a slow page rather than a wedge.
-    //
-    // Its own bound, not the capture's: `CAPTURE_HARD_TIMEOUT_MS` is 520 s and is sized for a page read,
-    // whereas preparation is three PowerShell calls that are pathological past a few seconds. A remedy
-    // that took eight minutes to give up would still lose the run.
-    await withTimeoutMs(prepareDesktop(marks), DESKTOP_PREPARE_TIMEOUT_MS, "prepareDesktop")
-      .catch((error) => {
-        // RECORDED AND CONTINUED, never rethrown. A desktop we could not tidy is not a reason to refuse
-        // the capture — the dialogs it clears are usually absent, and the capture's own failure modes are
-        // better diagnosed than a refusal here. The mark is what separates "preparation was skipped" from
-        // "preparation found nothing", which is this repo's oldest distinction.
-        log(`  desktop preparation did not finish: ${error instanceof Error ? error.message : String(error)}`);
-        marks.push({ event: "desktopPrepareTimedOut", atMs: 0, afterMs: DESKTOP_PREPARE_TIMEOUT_MS });
-      });
+    await prepareDesktopBounded(marks);
     const result = await captureWithLocalRecovery(url, { ...opts, diagnosticsSink: marks });
     const environment = currentEnvironment();
     const after = (result.diagnostics || []).find((/** @type {any} */ e) => e.event === "afterStart");

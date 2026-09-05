@@ -31,6 +31,10 @@ export const WORKER_FILES = [
   "nvda-logging.mjs",
   "speech-channel.mjs",
   "desktop-dialogs.mjs",
+  // Split out of `server.mjs` so a Linux test can import `prepareDesktop` without reaching guidepup; the
+  // guest runs it (`server.mjs` imports it for the real capture path), so it is hashed like every other
+  // worker file. Same shape as `file-version.mjs` above, for the identical reason.
+  "desktop-prepare.mjs",
   // The forms-config matcher (ADR 0024). capture-core imports it, so a guest without it cannot start —
   // which is exactly what `worker-files.test.ts` caught when this line was missing.
   "field-match.mjs",
