@@ -15,11 +15,14 @@
  *   capture — and `build-realism` masks 4.1.3 on exactly `postSubmitFields.length > 0`, so the capture
  *   run the backlog prescribes to move `4.1.3: 0 of 37` would have moved nothing.
  *
- * Neither is visible to `tsc` or ESLint: `capture-core.mjs` is `.mjs` reading a duck-typed context, and
- * both gates were syntactically fine. So the guard reads the SOURCE for the shape, which this repo
- * normally forbids for expectations — the exemption is deliberate and narrow. `capture-core` imports
- * guidepup and throws at module load where no screen reader exists, so no test can call these functions;
- * the alternative is no guard at all, and the two misses cost a corpus row each.
+ * Neither is visible to `tsc` or ESLint: this is `.mjs` reading a duck-typed context, and both gates were
+ * syntactically fine. So the guard reads the SOURCE for the shape, which this repo normally forbids for
+ * expectations — the exemption is deliberate and narrow. This package imports guidepup and throws at
+ * module load where no screen reader exists, so no test can call these functions; the alternative is no
+ * guard at all, and the two misses cost a corpus row each.
+ *
+ * Reads `capture-probes.mjs`, not `capture-core.mjs`: both call sites this guards
+ * (`rescanFormFieldsAfterSubmit`, `probeConfiguredForm`) live there since the 2026-09-05 split.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -27,7 +30,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const CORE = readFileSync(
-  resolve(import.meta.dirname, "capture-core.mjs"), "utf8").split("\n");
+  resolve(import.meta.dirname, "capture-probes.mjs"), "utf8").split("\n");
 
 /**
  * Evidence that only exists AFTER something was operated. A gate on `probeForms` in the same expression
@@ -51,7 +54,7 @@ test("no post-activation evidence is gated on `probeForms`", () => {
     // number, and the test below pins the configured path's mark so this exclusion cannot hide a gap.
     .filter(({ line }) => !/\bdiag\.mark\(/.test(line));
 
-  assert.deepEqual(offenders.map((o) => `capture-core.mjs:${o.number}  ${o.line}`), [],
+  assert.deepEqual(offenders.map((o) => `capture-probes.mjs:${o.number}  ${o.line}`), [],
     "A branch gates post-activation evidence on `probeForms`. That flag says whether the OPPORTUNISTIC\n"
     + "probe is on; it does not say whether a control was activated, because a declared `formState`\n"
     + "activates one with `probeForms` false. Gate on `interaction.formChanges.length > 0` instead — an\n"

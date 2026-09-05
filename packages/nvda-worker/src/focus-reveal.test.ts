@@ -82,8 +82,9 @@ focusRevealTest("nothing appearing on focus is not a finding of any kind", () =>
  * exception for the same reason.
  */
 focusRevealTest("the reveal probe is sequenced BEFORE the probe that walks the tab ring", () => {
+  // `probePasses`, where both live, moved to `capture-probes.mjs` in the 2026-09-05 split.
   const source = readFileSync(
-    resolve(import.meta.dirname, "./capture-core.mjs"), "utf8");
+    resolve(import.meta.dirname, "./capture-probes.mjs"), "utf8");
   const reveal = source.indexOf("results.focusReveal = probeFocusReveal_");
   // Marker updated when `probeFocusOrder`'s call site moved into `probeFocusOrderWithEventLog` (the F55
   // focus-event log, which brackets the tab walk) -- that function IS the probe that walks the tab ring
@@ -91,7 +92,7 @@ focusRevealTest("the reveal probe is sequenced BEFORE the probe that walks the t
   // this test's own name states; the marker is just how a source-text test has to find it.
   const order = source.indexOf("await probeFocusOrderWithEventLog");
   focusRevealAssert.ok(reveal >= 0 && order >= 0,
-    "one of the two assignments is gone from capture-core.mjs -- this test examines nothing; find where "
+    "one of the two assignments is gone from capture-probes.mjs -- this test examines nothing; find where "
     + "the probes are sequenced now and assert the order there");
   focusRevealAssert.ok(reveal < order,
     "probeFocusReveal must run BEFORE probeFocusOrder. It ran after once, and its baseline census was "

@@ -15,6 +15,12 @@
  */
 export const WORKER_FILES = [
   "capture-core.mjs",
+  // Split out of `capture-core.mjs` 2026-09-05 (browser/NVDA lifecycle, and structural-navigation/probes
+  // respectively). The guest runs both -- `capture-core.mjs` imports from each -- so they are hashed and
+  // deployed like every other worker file, on the same rule `desktop-prepare.mjs` and `field-match.mjs`
+  // above already record: a file missing from this list deploys invisibly.
+  "capture-setup.mjs",
+  "capture-probes.mjs",
   "capture-pure.mjs",
   // Split out of `server.mjs` so a Linux test can import it without reaching guidepup; the guest runs
   // it, so it is hashed like every other worker file. `code-version.test.ts` refused the split until it

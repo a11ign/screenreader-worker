@@ -62,9 +62,11 @@ test("EVERY channel a capture fills must be able to report an observation", () =
   // like an unasked one, which made the gap invisible in the very field built to make gaps visible.
   //
   // Found by reading a real capture, not by a green pipeline: `verify` passed, `check-signals` passed, and
-  // three channels were silently unaccounted for. Asserted against the SOURCE because `capture-core.mjs`
+  // three channels were silently unaccounted for. Asserted against the SOURCE because this package
   // imports guidepup and cannot be loaded here — the same reason `probe-chain.test.ts` reads it as text.
-  const source = readFileSync(new URL("./capture-core.mjs", import.meta.url), "utf8");
+  // `sweepExtraTypes`'s call site (`sweepEveryStructuralType`) moved to `capture-probes.mjs` in the
+  // 2026-09-05 capture-core.mjs split.
+  const source = readFileSync(new URL("./capture-probes.mjs", import.meta.url), "utf8");
   const call = /sweepExtraTypes\(\{[^}]*\}\)/.exec(source);
   assert.ok(call, "sweepExtraTypes is no longer called the way this guard reads it");
   assert.match(call[0], /\bobserved\b/,
