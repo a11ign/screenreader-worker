@@ -182,7 +182,8 @@ function sameDocument(actualUrl, expectedUrl) {
  */
 /**
  * @typedef {{ type?: string, url?: string, webSocketDebuggerUrl?: string }} CdpTarget
- * @typedef {CdpTarget & { webSocketDebuggerUrl: string, targetMatch: "matched" | "fallback" | "no-expected-url" }} UsablePageTarget
+ * @typedef {CdpTarget & { webSocketDebuggerUrl: string,
+ *   targetMatch: "matched" | "fallback" | "no-expected-url", candidates: number }} UsablePageTarget
  *
  * The `filter` below already REQUIRES `typeof webSocketDebuggerUrl === "string"`, so a returned target
  * always has one -- but a predicate inside `find`/`filter` cannot narrow the result, and every caller then
@@ -198,6 +199,14 @@ function sameDocument(actualUrl, expectedUrl) {
  * URL is the expected reason, not a wrong document), "no-expected-url" (nothing was recorded to compare
  * against, e.g. a call before `openPage` ever ran).
  *
+ * `candidates` (`pages.length`) travels for the same reason `targetUrl` does on `evaluateOnPageTarget`'s
+ * result: `targetMatch: "fallback"` alone cannot say whether the fallback was FORCED (two page-type
+ * targets, a vendor widget among them, neither one confirmed) or VACUOUS (exactly one target existed, so
+ * the fallback and the only correct answer are the same target). `docs/backlog.md`'s own account of the
+ * bathingwaters/lbhf contamination makes this the whole difference: a consumer reading `targetMatch` alone
+ * cannot tell a genuinely suspect census from a perfectly safe one, and would either accuse too much or
+ * too little. `candidates <= 1` is what makes "fallback" safe; `> 1` is what makes it worth doubting.
+ *
  * @param {CdpTarget[] | null | undefined} targets
  * @param {string | null} [expectedUrl]
  * @returns {UsablePageTarget | null}
@@ -207,10 +216,11 @@ export function choosePageTarget(targets, expectedUrl) {
     t.type === "page" && typeof t.webSocketDebuggerUrl === "string" && !t.url?.startsWith("devtools://")
   ));
   if (!pages.length) return null;
-  if (!expectedUrl) return { ...pages[0], targetMatch: "no-expected-url" };
+  const candidates = pages.length;
+  if (!expectedUrl) return { ...pages[0], targetMatch: "no-expected-url", candidates };
   const match = pages.find((t) => sameDocument(t.url, expectedUrl));
-  if (match) return { ...match, targetMatch: "matched" };
-  return { ...pages[0], targetMatch: "fallback" };
+  if (match) return { ...match, targetMatch: "matched", candidates };
+  return { ...pages[0], targetMatch: "fallback", candidates };
 }
 
 /**
@@ -665,6 +675,10 @@ export async function structuralCensus() {
       // in capture-core.mjs for a census that still carries the field at runtime.
       const census = censusFromAXTree((await result)?.nodes);
       census.targetMatch = target.targetMatch;
+      // Travels beside `targetMatch` for the same reason: "fallback" alone cannot say whether it was
+      // forced (a real second target, unconfirmed) or vacuous (one target, so it is also the only correct
+      // answer). See the typedef on `choosePageTarget`.
+      census.candidates = target.candidates;
       return census;
     } finally {
       try { socket.close(); } catch (error) { void error; }
@@ -906,8 +920,11 @@ export async function domCensus() {
         params: { expression: DOM_CENSUS_EXPRESSION, returnByValue: true },
       }));
       const value = (await result)?.result?.value;
-      // Same reasoning as `structuralCensus`: the match status travels WITH the count it describes.
-      return value && typeof value === "object" ? { ...value, targetMatch: target.targetMatch } : null;
+      // Same reasoning as `structuralCensus`: the match status AND the candidate count travel WITH the
+      // count they describe.
+      return value && typeof value === "object"
+        ? { ...value, targetMatch: target.targetMatch, candidates: target.candidates }
+        : null;
     } finally {
       try { socket.close(); } catch (error) { void error; }
     }

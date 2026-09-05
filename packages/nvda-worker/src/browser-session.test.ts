@@ -32,6 +32,8 @@ test("a second page-type target that matches the navigated URL is preferred over
   ], "https://bathingwaters.sepa.org.uk/");
   assert.equal(target?.webSocketDebuggerUrl, "ws://real");
   assert.equal(target?.targetMatch, "matched");
+  assert.equal(target?.candidates, 2, "a matched target still reports how many candidates existed -- a "
+    + "consumer trusts `matched` unconditionally, but the count travels for uniformity with fallback");
 });
 
 test("when NEITHER target matches, it falls back to the first usable one and SAYS SO", () => {
@@ -45,6 +47,22 @@ test("when NEITHER target matches, it falls back to the first usable one and SAY
   ], "https://bathingwaters.sepa.org.uk/");
   assert.equal(target?.webSocketDebuggerUrl, "ws://widget", "first usable target, same as pre-fix behaviour");
   assert.equal(target?.targetMatch, "fallback");
+  assert.equal(target?.candidates, 2, "TWO real page-type targets competed and neither matched -- this is "
+    + "the shape a wrong-document census actually needs; a consumer reading targetMatch alone cannot tell "
+    + "this from the vacuous single-candidate case below");
+});
+
+test("a fallback with only ONE candidate is not the same finding as a fallback with two", () => {
+  // The bathingwaters/lbhf contamination needed a SECOND page-type target (a Cookiebot widget) to pick
+  // instead of the real page. With exactly one candidate, "fallback" and "the only correct answer" are the
+  // same target -- a redirect or a URL the page server normalised, not a wrong document. `candidates` is
+  // what lets a consumer (`docs/backlog.md`'s furniture-census row) tell the two apart; `targetMatch` alone
+  // cannot, which is the whole reason it travels.
+  const target = choosePageTarget([
+    { type: "page", url: "https://ico.org.uk/action-weve-taken/enforcement-old-slug", webSocketDebuggerUrl: "ws://a" },
+  ], "https://ico.org.uk/action-weve-taken/enforcement");
+  assert.equal(target?.targetMatch, "fallback");
+  assert.equal(target?.candidates, 1, "nothing else this fallback COULD have picked");
 });
 
 test("a trailing slash is not a different document", () => {
