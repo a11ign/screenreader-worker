@@ -176,6 +176,40 @@ async function tidyBrowserAtBoot() {
   }
 }
 
+/**
+ * THE STATE INVENTORY — architecture audit §6.2, "700 lines of policy and fifteen loose state variables".
+ *
+ * Below this comment is every module-level mutable this file owns (a second, smaller group — `dialogCache`
+ * and `foregroundCache` — lives in `desktop-prepare.mjs` and is only READ here; see the comment above
+ * `readiness()`). Sixteen touchpoints in total, inventoried by what writes each, what reads it, and —
+ * the question that actually mattered, per the `prepareDesktop` fence this mirrors — whether an abandoned
+ * or concurrent operation can reach it while stale.
+ *
+ * | state | scope | why |
+ * |---|---|---|
+ * | `busy` | per-capture | Claimed and released around exactly one capture; the ordering itself is `busy-claim.test.ts`'s whole subject. Correct. |
+ * | `inFlight` | per-capture | **WAS THE BUG.** Set at the start of a capture, never reset — so it silently answered `/progress` as "still capturing the last one" forever after every worker's first capture, on an idle box reporting `busy: false`. Measured in production (see `fleet-status.mjs`'s own defensive comment). Fixed 2026-09-06: cleared in the same `finally` as `busy`. This is the `dialogCache` shape exactly — per-capture data surviving in module scope past the capture's own lifetime — found by asking the same question of every variable rather than of this one by accident. |
+ * | `results` | per-process, by design | A bounded (8-entry) history across MANY captures — that persistence is the feature (`GET /capture/<id>` surviving a lost socket), not a hazard, and `capture-results.mjs`'s own header argues the bound and the eviction policy. |
+ * | `worked` (`captures`/`failures`/`recoveries`) | per-process, by design | Cumulative counters across the worker's whole life — `/health.vitals` and the pool's degradation detection need exactly this, not a per-capture reset. |
+ * | `consecutiveRecoveries` | per-process, by design | A rolling window ACROSS captures on purpose — it is the circuit breaker's memory, and resetting it per-capture would delete the thing it exists to count (a STREAK). |
+ * | `environmentCache` / `environmentMeasuredAt` | per-process | A 5 s TTL cache of facts that do not change per capture (Edge/NVDA/OS versions) and do change slowly in wall-clock time (an update, a reboot) — never per-capture data. |
+ * | `bootConstants` (Map) | per-process | Executable version strings; fixed until whatever would restart this process anyway (an Edge/NVDA update). |
+ * | `foundFiles` (Map) | per-process | Resolved executable paths; same reasoning as `bootConstants`. |
+ * | `fltCache` | per-process | `ForegroundLockTimeout`, applied once per session by `run-server.cmd` before this process starts; cannot change under a running worker. |
+ * | `warm` / `warming` / `warmAttempts` / `lastWarmAttempt` | per-process, by design | NVDA's warm-up lifecycle spans the whole process — `warming` is a mutex against two concurrent warm attempts fighting over one screen reader, and the attempt budget/cooldown are explicitly meant to survive across captures (see the comment above `MAX_WARM_ATTEMPTS`). |
+ *
+ * **The one hazard this shape can hide is a per-capture value that nothing ever clears — `inFlight` was
+ * exactly that, and it is the only one found.** Every other mutable here is per-process because the
+ * feature it serves genuinely spans the process's life, not because nobody asked the question.
+ *
+ * **No split follows from this table, and that is a finding rather than a default.** The state groups
+ * cleanly by the CONCERN that already owns it elsewhere in this package (`capture-results.mjs` for
+ * `results`, `desktop-prepare.mjs` for the dialog/foreground pair, `diagnostics.mjs`/`file-version.mjs`
+ * for the environment facts) — what remains here is irreducibly the HTTP-request and process-lifecycle
+ * policy that ties those concerns to the five routes this file serves, which is one cohesive job, not
+ * several unrelated ones sharing a file by accident. The routing being nine lines is not the defect the
+ * audit asks about; this table is the answer to whether the other 700 are one policy or several.
+ */
 let busy = false;
 
 /**
@@ -1232,6 +1266,17 @@ async function runCapture(/** @type {any} */ res, /** @type {any} */ { url, opts
     await recoverFromFailure(e);
   } finally {
     busy = false;
+    // `inFlight` is PER-CAPTURE data and was never cleared here, so it silently outlived every capture:
+    // once the first one ran, `/progress` reported the LAST capture's url/marks and a growing `elapsedMs`
+    // FOREVER afterwards, on an idle worker with `busy: false`. Measured in production
+    // (`fleet-status.mjs`'s own comment): `{busy: false, capturing: ".../table-unassociated-hilltown/bad.html",
+    // elapsedMs: 2526239}` — 42 minutes after that capture had finished, still climbing. The one consumer
+    // that reads `/progress` today (`fleet-status.mjs`) already works around it by checking `busy` first,
+    // but that is a downstream patch over a source that still lies to any other or future reader. Cleared
+    // in the SAME `finally` as `busy`, for the identical reason: whatever the outcome, this worker is no
+    // longer capturing anything, and `respondWithProgress`'s own `!inFlight` branch already reports exactly
+    // `{ busy, capturing: null }` — it was simply never reached.
+    inFlight = null;
   }
 }
 
