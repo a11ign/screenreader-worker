@@ -4539,6 +4539,47 @@ async function probeDialogEscape({ interaction, deadline, diag }) {
 }
 
 /**
+ * Tab through the first few stops and stop at the one that reveals something.
+ *
+ * A PHASE, not a name restating its code. "Walk until the page changes" is the whole of what
+ * `probeFocusReveal` must do before it can ask its question, and separating it lets that function read
+ * top-down as baseline -> walk -> dismiss -> judge. Extracted when the PHYSICAL-line budget refused it,
+ * which ESLint cannot catch: `skipComments: true` lets a comment-dense function run to twice its
+ * 70-line lint budget.
+ *
+ * @param {{ before: unknown, interaction: Record<string, any>, deadline: number }} ctx
+ * @returns {Promise<{onFocus: unknown, revealedAt: number, tabs: number}>}
+ */
+async function walkToReveal({ before, interaction, deadline }) {
+    // WALK THE TAB ORDER, do not press Tab once — `probeFocusContext` twenty lines up learned this the
+  // same way: "the first version pressed once and every one of its 28 corpus cases came back BLIND ...
+  // the FIRST focusable thing on a page is almost never the control you mean." `page()` gives every
+  // corpus page furniture, and a real page's first stop is the skip link. Walking is also the truer
+  // reading: 1.4.13 is about ANY control that reveals content on focus, not about the first one.
+  let onFocus = null;
+  let revealedAt = -1;
+  let tabs = 0;
+  for (let stop = 0; stop < FOCUS_REVEAL_STOPS; stop += 1) {
+    if (Date.now() > deadline) break;
+    await withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, "focusReveal").catch(() => undefined);
+    tabs += 1;
+    // WITH RETRY, like every other focus read that decides something. `reportFocusedControl` throws on
+    // a timeout at a measured 1 in 20, and this call is inside a loop of up to eight, so the compound
+    // rate is nothing like the single read the bare version was sized for -- and a throw here does not
+    // lose one stop, it propagates to the outer catch and abandons the WHOLE probe as `{error}` on a
+    // page where a later stop might have revealed the panel. The next line already uses the retry
+    // wrapper; two reads in one loop disagreeing about it is the defect, not the choice.
+    if (!await reportFocusedControlWithRetry(interaction)) break;
+    onFocus = await structuralCensus();
+    const grew = censusGrowth(before, onFocus);
+    // Stop at the FIRST control that reveals something: the evidence has to name which one did it, and
+    // walking on would report the last control rather than the one that mattered.
+    if (grew && grew.length > 0) { revealedAt = stop; break; }
+  }
+  return { onFocus, revealedAt, tabs };
+}
+
+/**
  * 1.4.13 Content on Hover or Focus — does focusing a control REVEAL content, and can Escape dismiss it
  * without moving focus?
  *
@@ -4547,9 +4588,16 @@ async function probeDialogEscape({ interaction, deadline, diag }) {
  * for a mechanism to dismiss "WITHOUT MOVING pointer hover or keyboard focus", so focus is read either
  * side: a page where Escape navigates has not shown that mechanism, whatever happened to the content.
  *
- * RUNS AFTER `probeFocusOrder` AND IS GATED ON IT, for the reason `probeDialogEscape` records beside it:
- * a sweep is browse mode and never moves DOM focus, so an Escape pressed from wherever the browse caret
- * rests measures the DOCUMENT. This needs a control to actually hold focus.
+ * RUNS BEFORE `probeFocusOrder`, AND THIS PARAGRAPH SAID THE OPPOSITE UNTIL 2026-09-05. It did run
+ * after, and that is what made all 18 of its cases BLIND: `probeFocusOrder` walks the entire tab ring,
+ * so anything revealed on focus was already in this probe's `before` census and the delta was zero by
+ * construction.
+ *
+ * It is still GATED on `probeFocus`, because the gate and the ORDER are different questions and the
+ * gate's reason stands: a sweep is browse mode and never moves DOM focus, so an Escape pressed from
+ * wherever the browse caret rests measures the DOCUMENT. This probe establishes focus by walking the
+ * tab order itself, so it needs no earlier probe to have moved it — which is what makes running first
+ * possible at all.
  *
  * ESCAPE TWICE, the same toll `probeDialogEscape` pays: `autoPassThroughOnFocusChange` switches focus mode
  * on when focus lands on an editable, Escape is flagged `ignoreTreeInterceptorPassThrough` so it stays
@@ -4579,38 +4627,29 @@ async function probeFocusReveal({ interaction, deadline, diag }) {
     // `hidden` panel, so the panel was already open before this probe took its first census, and the
     // delta was zero by construction.
     const before = await structuralCensus();
-    // WALK THE TAB ORDER, do not press Tab once — `probeFocusContext` twenty lines up learned this the
-    // same way: "the first version pressed once and every one of its 28 corpus cases came back BLIND ...
-    // the FIRST focusable thing on a page is almost never the control you mean." `page()` gives every
-    // corpus page furniture, and a real page's first stop is the skip link. Walking is also the truer
-    // reading: 1.4.13 is about ANY control that reveals content on focus, not about the first one.
-    let onFocus = null;
-    let focusBefore = null;
-    let tabs = 0;
-    for (let stop = 0; stop < FOCUS_REVEAL_STOPS; stop += 1) {
-      if (Date.now() > deadline) break;
-      await withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, "focusReveal").catch(() => undefined);
-      tabs += 1;
-      // WITH RETRY, like every other focus read that decides something. `reportFocusedControl` throws on
-      // a timeout at a measured 1 in 20, and this call is inside a loop of up to eight, so the compound
-      // rate is nothing like the single read the bare version was sized for -- and a throw here does not
-      // lose one stop, it propagates to the outer catch and abandons the WHOLE probe as `{error}` on a
-      // page where a later stop might have revealed the panel. The next line already uses the retry
-      // wrapper; two reads in one loop disagreeing about it is the defect, not the choice.
-      if (!await reportFocusedControlWithRetry(interaction)) break;
-      onFocus = await structuralCensus();
-      const grew = censusGrowth(before, onFocus);
-      // Stop at the FIRST control that reveals something: the evidence has to name which one did it, and
-      // walking on would report the last control rather than the one that mattered.
-      if (grew && grew.length > 0) { focusBefore = await reportFocusedControlWithRetry(interaction); break; }
-    }
+    const { onFocus, revealedAt, tabs } = await walkToReveal({ before, interaction, deadline });
     if (!onFocus) {
       // NOTHING FOCUSABLE is not "nothing appeared" — the question was never asked. Kept apart for the
       // same reason every absence in this file is, and `tabs` says which of the two it was.
       mark({ asked: true, revealed: null, tabs, why: "nothing focusable on this page" });
       return { asked: true, revealed: null, why: "nothing focusable on this page" };
     }
+    // THE FIRST ESCAPE IS THE TOLL, AND THE BASELINE READ GOES BETWEEN THE TWO.
+    //
+    // NVDA consumes the first Escape to leave focus mode and the page never sees it, which is why this
+    // presses twice. The consequence for the focus READS was missed: taken before any Escape, `focusBefore`
+    // is a FOCUS-MODE reading and `focusAfter` a BROWSE-MODE one, so they can never be equal and
+    // `focusHeld` was false on every capture. Measured 2026-09-05, and the two strings say it outright:
+    //
+    //   focusBefore  "B, o, o, k, i, n, g, space, r, e, f, e, r, e, n, c, e"
+    //   focusAfter   "Booking reference, edit, focused, blank"
+    //
+    // Focus had not moved at all. NVDA spells a field's name character by character in focus mode, so this
+    // was two alphabets compared as strings -- the U+FFFC and U+E604 lesson a third time. Reading BETWEEN
+    // the Escapes puts both in browse mode and leaves the second Escape, the one the page actually sees,
+    // as the only thing between them.
     await withTimeout(nvda.press("Escape"), NAV_TIMEOUT_MS, "focusReveal").catch(() => undefined);
+    const focusBefore = await reportFocusedControlWithRetry(interaction);
     await withTimeout(nvda.press("Escape"), NAV_TIMEOUT_MS, "focusReveal").catch(() => undefined);
     const afterEscape = await structuralCensus();
     const focusAfter = await reportFocusedControlWithRetry(interaction);
@@ -4626,7 +4665,7 @@ async function probeFocusReveal({ interaction, deadline, diag }) {
     // `vanished` fire on the conformant one. Whether that is focus genuinely moving, or the same control
     // announced differently once Escape has left focus mode, is not decidable from `false`. The strings
     // are the evidence; recording them costs nothing and one capture then answers it.
-    mark({ ...verdict, tabs, focusBefore, focusAfter });
+    mark({ ...verdict, tabs, revealedAt, focusBefore, focusAfter });
     return verdict;
   } catch (e) {
     // RECORDED, never dropped -- a probe that threw and a page that revealed nothing are different
