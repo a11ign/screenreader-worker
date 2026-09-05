@@ -3185,7 +3185,7 @@ function focusEventLogInstallFields(install) {
 
 /**
  * The collect-side half, same reason.
- * @param {{ targetMatch?: string | null, targetUrl?: string,
+ * @param {{ targetMatch?: string | null, targetUrl?: string, candidates?: number,
  *           events?: Array<{type: string, id: number, name: string, atMs: number}> | null,
  *           expectedUrl?: string | null, error?: string }} collected
  */
@@ -3193,6 +3193,9 @@ function focusEventLogCollectFields(collected) {
   return {
     collectTargetMatch: collected.targetMatch,
     collectTargetUrl: collected.targetUrl ?? null,
+    // `candidates` alongside the match status it qualifies -- a bare "fallback" cannot tell "the only page
+    // open" from "one of several, chosen by default", and `focusEventVerdict` is what actually acts on it.
+    collectCandidates: collected.candidates ?? null,
     eventCount: collected.events?.length ?? null,
     events: collected.events?.slice(0, FOCUS_EVENT_LOG_DIAGNOSTIC_LIMIT) ?? null,
     collectError: collected.error ?? null,
