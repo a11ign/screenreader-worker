@@ -4297,7 +4297,11 @@ async function probeFocusContext({ interaction, deadline, diag }) {
     let stops = 0;
     for (; stops < FOCUS_CONTEXT_STOPS; stops += 1) {
       await withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, "focusContext").catch(() => undefined);
-      const focused = await reportFocusedControl();
+      // Retry for the reason its sibling in `probeFocusReveal` does: this is a loop of up to eight pure
+      // reads, `reportFocusedControl` throws on a timeout at a measured 1 in 20, and a throw abandons the
+      // whole walk rather than one stop. Found 2026-09-05 by review of the reveal probe, which had the
+      // identical shape -- a remedy that reached one call site when the behaviour reaches several.
+      const focused = await reportFocusedControlWithRetry(interaction);
       if (!focused) break;
       control = focused;
       titleAfter = await reportedTitle(diag);
@@ -4587,7 +4591,13 @@ async function probeFocusReveal({ interaction, deadline, diag }) {
       if (Date.now() > deadline) break;
       await withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, "focusReveal").catch(() => undefined);
       tabs += 1;
-      if (!await reportFocusedControl()) break;
+      // WITH RETRY, like every other focus read that decides something. `reportFocusedControl` throws on
+      // a timeout at a measured 1 in 20, and this call is inside a loop of up to eight, so the compound
+      // rate is nothing like the single read the bare version was sized for -- and a throw here does not
+      // lose one stop, it propagates to the outer catch and abandons the WHOLE probe as `{error}` on a
+      // page where a later stop might have revealed the panel. The next line already uses the retry
+      // wrapper; two reads in one loop disagreeing about it is the defect, not the choice.
+      if (!await reportFocusedControlWithRetry(interaction)) break;
       onFocus = await structuralCensus();
       const grew = censusGrowth(before, onFocus);
       // Stop at the FIRST control that reveals something: the evidence has to name which one did it, and
