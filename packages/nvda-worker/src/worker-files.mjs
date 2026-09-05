@@ -15,6 +15,10 @@
  */
 export const WORKER_FILES = [
   "capture-core.mjs",
+  // Split out of `capture-core.mjs` so portable/host-side code can import CAPTURE_PROTOCOL_VERSION
+  // directly instead of regex-scraping this file's text — architecture-audit.md §5, item 3. `capture-core`
+  // imports it, so the guest runs it and it is hashed and deployed like every other worker file.
+  "protocol-version.mjs",
   // Split out of `capture-core.mjs` 2026-09-05 (browser/NVDA lifecycle, and structural-navigation/probes
   // respectively). The guest runs both -- `capture-core.mjs` imports from each -- so they are hashed and
   // deployed like every other worker file, on the same rule `desktop-prepare.mjs` and `field-match.mjs`
