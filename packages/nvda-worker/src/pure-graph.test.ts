@@ -25,9 +25,17 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-/** Files that must be usable where no screen reader exists. */
+/**
+ * Files that must be usable where no screen reader exists.
+ *
+ * `edge-args.test.ts` sat in this list after being renamed to `browser-args.test.ts` (the Edge preset
+ * became one entry in `browsers.mjs`), and `graph()` skips a path that does not exist — so that member
+ * was checked for nothing at all, silently, which is the failure mode this whole file exists to catch one
+ * layer down. The list is now VERIFIED TO EXIST before it is walked; a rename fails loudly and names the
+ * missing file instead of quietly shrinking what is guarded.
+ */
 const MUST_BE_PURE = [
-  "cross-check.test.ts", "dedupe-key.test.ts", "edge-args.test.ts",
+  "cross-check.test.ts", "dedupe-key.test.ts", "browser-args.test.ts",
   "read-through.test.ts", "sweep-step.test.ts", "worker-recovery.test.ts",
   "capture-pure.mjs",
 ];
@@ -60,6 +68,23 @@ function graph(entry: string): { files: string[]; bare: Set<string> } {
   }
   return { files: [...seen], bare };
 }
+
+test("every file MUST_BE_PURE names actually exists", () => {
+  // THE ENTRY THAT CHECKED NOTHING. `graph()` skips a path that does not exist -- necessarily, since it
+  // walks specifiers that may point anywhere -- so a renamed file left in this list is not an error, it is
+  // an assertion that silently stops asserting. `edge-args.test.ts` sat here after becoming
+  // `browser-args.test.ts` (the Edge preset became one entry in `browsers.mjs`), and the suite went on
+  // reporting six guarded files while guarding five.
+  //
+  // Checked SEPARATELY from the purity assertion rather than folded into it, because the two failures need
+  // different sentences: "this file is not pure" sends you to fix an import, "this file is not there" sends
+  // you to fix the list. Collapsing them would report a rename as a purity violation.
+  const missing = MUST_BE_PURE.filter((name) => !existsSync(join(here, name)));
+  assert.deepEqual(missing, [],
+    `MUST_BE_PURE names file(s) that do not exist, so they are silently guarded by nothing: `
+    + `${missing.join(", ")}. Rename the entry or remove it -- do not leave it, because graph() skips a `
+    + `missing path and the suite goes on reporting a count it is no longer checking.`);
+});
 
 test("the pure capture tests reach no screen-reader dependency", () => {
   for (const name of MUST_BE_PURE) {
