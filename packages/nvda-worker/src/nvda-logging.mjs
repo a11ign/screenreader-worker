@@ -20,6 +20,18 @@ import { readFileSync, writeFileSync } from "node:fs";
 const LEVELS = new Set(["DEBUG", "INFO", "WARNING", "ERROR", "OFF", "DEBUGWARNING"]);
 
 /**
+ * A literal, safe to splice into a `RegExp` constructor string.
+ *
+ * `withIniSetting` builds patterns out of `section`, `key` and `value`, and every caller today passes
+ * plain words ("general", "reportLanguage", "True") with nothing a regex would treat specially. Nothing
+ * stops a FUTURE `CAPTURE_SETTINGS` entry from carrying a value that does -- a decimal verbosity level's
+ * `.` matches any character, and a value containing `(` throws outright, both caught by `applyOne`'s
+ * `catch` and logged as a failed write rather than left silently unset. Escaping now costs nothing against
+ * today's values and closes that off before a setting needs it.
+ */
+const escapeRegExp = (/** @type {string} */ text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
  * The `nvda.ini` body with `logLevel` set, or null when nothing needs changing.
  *
  * Pure, because the risky part is editing a config file that decides whether NVDA starts at all, and a
@@ -63,11 +75,11 @@ export function withIniSetting(body, section, key, value) {
   if (!bounds) return `${body}${body.endsWith("\n") || body === "" ? "" : "\n"}[${section}]\n\t${key} = ${value}\n`;
   const [start, end] = bounds;
   const within = body.slice(start, end);
-  if (new RegExp(`^\\s*${key}\\s*=\\s*${value}\\s*$`, "mi").test(within)) return null;
-  const anyValue = new RegExp(`^\\s*${key}\\s*=.*$`, "mi");
+  if (new RegExp(`^\\s*${escapeRegExp(key)}\\s*=\\s*${escapeRegExp(value)}\\s*$`, "mi").test(within)) return null;
+  const anyValue = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=.*$`, "mi");
   const updated = anyValue.test(within)
     ? within.replace(anyValue, `\t${key} = ${value}`)
-    : within.replace(new RegExp(`^\\[${section}\\]`, "mi"), `[${section}]\n\t${key} = ${value}`);
+    : within.replace(new RegExp(`^\\[${escapeRegExp(section)}\\]`, "mi"), `[${section}]\n\t${key} = ${value}`);
   return body.slice(0, start) + updated + body.slice(end);
 }
 
@@ -79,7 +91,7 @@ export function withIniSetting(body, section, key, value) {
  * @returns {[number, number] | null}
  */
 function sectionBounds(body, section) {
-  const header = new RegExp(`^\\[${section}\\]\\s*$`, "mi");
+  const header = new RegExp(`^\\[${escapeRegExp(section)}\\]\\s*$`, "mi");
   const found = header.exec(body);
   if (!found) return null;
   const next = /^\[[^\]]+\]\s*$/m.exec(body.slice(found.index + found[0].length));

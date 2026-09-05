@@ -1125,9 +1125,16 @@ export const PROBE_FLAGS = Object.freeze([
   "probeForms",
   "probeFocus",
   "probeTables",
+  // Activates the first link and asks NVDA for the page title before and after. 2.4.2's single-page-app
+  // failure, where the route changes and the title does not.
   "probeNavigation",
+  // Cross-check against NVDA's own Elements List totals. Opens a modal dialog on the guest, so it is
+  // never on by default.
   "probeElementsList",
+  // Presses arrows inside whatever widget the focus probe landed on. Meaningless without `probeFocus`,
+  // because browse mode owns the arrows and one pressed there navigates the DOCUMENT.
   "probeArrows",
+  // TYPES into the focused field, which changes the page under measurement.
   "probeTyping",
   "probeFocusContext",
   "probeDialog",
