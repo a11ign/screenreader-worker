@@ -1108,6 +1108,30 @@ export function focusRevealVerdict({ before, onFocus, afterEscape, focusBefore, 
 const FOCUS_SCRIPT_BLUR_WINDOW_MS = 50;
 
 /**
+ * Is the CDP target a focus-event log was read from one this pipeline actually confirmed?
+ *
+ * The worker-side twin of `censusTargetIsSuspect` (`packages/evidence/src/verify.ts`) — same three lines,
+ * same reasoning, kept as TWO copies rather than one shared function because this file runs as plain `.mjs`
+ * on the Windows guest and that one is TypeScript compiled to `dist`; `focus-target-suspect-parity.test.ts`
+ * is what keeps them from drifting apart instead.
+ *
+ * `targetMatch === undefined` is a capture from before this field existed at all: it cannot retroactively
+ * accuse evidence nobody computed this for, so it reads as NOT suspect — never as "we don't know, so
+ * assume the worst", which would silently blind every capture on disk today. `"matched"` is the CDP target
+ * whose URL was confirmed against the one this capture asked for, so it is never suspect regardless of how
+ * many pages were open. Anything else — `"fallback"`, `"no-expected-url"` — is unconfirmed, and whether it
+ * is WORTH doubting turns on `candidates`: exactly one page open makes "fallback" the only page there ever
+ * was, so `candidates <= 1` is safe and `> 1` (or the count itself missing) is not.
+ *
+ * @param {{ targetMatch?: string | null | undefined, candidates?: number | undefined }} target
+ */
+export function focusTargetIsSuspect({ targetMatch, candidates }) {
+  if (targetMatch === undefined) return false;
+  if (targetMatch === "matched") return false;
+  return typeof candidates !== "number" || candidates > 1;
+}
+
+/**
  * ADJACENCY ALONE DOES NOT DISCRIMINATE, AND THE FIRST VERSION OF THIS FUNCTION GOT THAT WRONG — caught by
  * its own unit test, not by a capture. Per the UI Events spec, an ORDINARY Tab transition from A to B fires
  * `focusout(A)` and THEN `focusin(B)`, both as one browser-level change: focusout comes first, not second.
@@ -1153,12 +1177,41 @@ const FOCUS_SCRIPT_BLUR_WINDOW_MS = 50;
  * than merely under 633. The first capture carrying a real F55 page settles that, and until one does this
  * threshold is a hypothesis with a large margin rather than a calibrated value.
  *
+ * THE SEAM THIS CLOSED, 2026-09-06: `choosePageTarget` picking the wrong CDP target — the Cookiebot-iframe
+ * shape `censusTargetIsSuspect` (`packages/evidence/src/verify.ts`) exists for — reaches this detector
+ * through the identical `pageTarget()` machinery the census reads, and until now nothing here checked it.
+ * `evaluateOnPageTarget` (`browser-session.mjs`) always computed `targetMatch`/`candidates`;
+ * `collectFocusEventLog` passed `targetMatch` on but silently dropped `candidates`; this function did not
+ * even destructure `targetMatch`. So a mistargeted capture correctly suppressed a census finding (`null`,
+ * per `censusTargetIsSuspect`) while still reporting a REAL F55 finding computed from focus events on the
+ * wrong document — "a remedy applied at ONE call site when the behaviour reaches several", CLAUDE.md's own
+ * name for this repo's most expensive recurring defect shape, one seam further along the same pipe.
+ *
+ * `focusTargetIsSuspect` below is the WORKER-SIDE TWIN of `censusTargetIsSuspect`, not a shared import: this
+ * file is `.mjs` running under plain Node on the Windows guest, `verify.ts` is TypeScript compiled to
+ * `dist`, and depending on a build from here is how a stale `dist` scored the wrong rules once already (see
+ * `name-normalisation.test.ts`'s header). Two copies that CANNOT be merged across that boundary are pinned
+ * equal by a test instead — `focus-target-suspect-parity.test.ts` — which is this file's own third remedy
+ * for "a fact stated twice": delete the copy (impossible here), derive one from the other (impossible
+ * here), so pin them with a test that fails the moment they disagree.
+ *
  * @param {{ events: {type: string, id: number, name: string, atMs: number}[] | null | undefined,
- *           error?: string | undefined }} log
+ *           error?: string | undefined, targetMatch?: string | null | undefined,
+ *           candidates?: number | undefined }} log
  */
-export function focusEventVerdict({ events, error }) {
+export function focusEventVerdict({ events, error, targetMatch, candidates }) {
   if (!Array.isArray(events)) {
     return { asked: true, checked: false, why: error || "no event log", scriptRemovedFocus: null };
+  }
+  if (focusTargetIsSuspect({ targetMatch, candidates })) {
+    // "Cannot say", never "no findings" -- identical to the no-log branch above, and for the same reason:
+    // a verdict computed from the wrong document is not evidence about the right one. `mapping: "secondary"`
+    // in `rules.ts` already means a referral rather than an assertion, but a wrong referral is still wrong.
+    return {
+      asked: true, checked: false,
+      why: `focus-event log target unconfirmed (targetMatch=${targetMatch}, candidates=${candidates})`,
+      scriptRemovedFocus: null,
+    };
   }
   const scriptRemovedFocus = [];
   for (let i = 0; i < events.length - 1; i += 1) {

@@ -110,3 +110,39 @@ focusEventTest("events count is reported alongside the verdict, so a capture can
   const v = focusEventVerdict({ events });
   focusEventAssert.equal(v.events, 2);
 });
+
+// THE SEAM WITH THE CENSUS'S OWN GUARD, closed 2026-09-06. `choosePageTarget` picking the wrong CDP target
+// -- the Cookiebot-iframe shape `censusTargetIsSuspect` exists for -- reaches this detector through the
+// same `pageTarget()` machinery, and until now nothing here checked it: a mistargeted capture correctly
+// suppressed a census finding while still reporting a real-looking F55 finding computed from focus events
+// on the wrong document. See `focusTargetIsSuspect`'s own comment in `capture-pure.mjs` for the full trace.
+const F55_LOOKING_EVENTS = [
+  { type: "focusin", id: 0, name: "Coupon", atMs: 10 },
+  { type: "focusout", id: 0, name: "Coupon", atMs: 11 },
+];
+
+focusEventTest("a mistargeted log (fallback, several candidates) is 'cannot say', even with F55-shaped events", () => {
+  const v = focusEventVerdict({ events: F55_LOOKING_EVENTS, targetMatch: "fallback", candidates: 3 });
+  focusEventAssert.equal(v.checked, false,
+    "a verdict computed from the wrong document is not evidence about the right one");
+  focusEventAssert.equal(v.scriptRemovedFocus, null, "cannot say, never a suppressed-but-real finding");
+  focusEventAssert.match(String(v.why), /target unconfirmed/);
+});
+
+focusEventTest("fallback with exactly one candidate is NOT suspect -- fallback IS the only page there was", () => {
+  const v = focusEventVerdict({ events: F55_LOOKING_EVENTS, targetMatch: "fallback", candidates: 1 });
+  focusEventAssert.equal(v.checked, true, "a guard that suppresses everything is not a guard");
+  focusEventAssert.equal(v.scriptRemovedFocus?.length, 1);
+});
+
+focusEventTest("a MATCHED target still fires, however many other pages were open", () => {
+  const v = focusEventVerdict({ events: F55_LOOKING_EVENTS, targetMatch: "matched", candidates: 5 });
+  focusEventAssert.equal(v.checked, true);
+  focusEventAssert.equal(v.scriptRemovedFocus?.length, 1);
+});
+
+focusEventTest("targetMatch absent entirely (every capture before this field existed) is not retroactively suspect", () => {
+  const v = focusEventVerdict({ events: F55_LOOKING_EVENTS });
+  focusEventAssert.equal(v.checked, true);
+  focusEventAssert.equal(v.scriptRemovedFocus?.length, 1);
+});

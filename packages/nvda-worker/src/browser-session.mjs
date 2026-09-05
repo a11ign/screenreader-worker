@@ -1018,9 +1018,15 @@ export async function domCensus() {
  * `expectedPageUrlForTest` (which exists for a unit test asserting the RESET, not for a live diagnostic) —
  * so "fallback" can be read beside what it fell back FROM, not just what it fell back TO.
  *
+ * `candidates` travels out too, for the identical reason `domCensus` attaches it to its own result: a
+ * "fallback" `targetMatch` alone cannot tell "one page open, so fallback is the only page there was" (safe)
+ * from "several pages open and this fell back rather than matching one" (worth doubting) — see
+ * `censusTargetIsSuspect` (`packages/evidence/src/verify.ts`) and `focusEventVerdict`'s worker-side twin of
+ * it below, which is what actually reads this field.
+ *
  * @param {string} expression
  * @returns {Promise<{ value: any, targetMatch: UsablePageTarget["targetMatch"], targetUrl: string | undefined,
- *                      expectedUrl: string | null }>}
+ *                      expectedUrl: string | null, candidates: number }>}
  */
 async function evaluateOnPageTarget(expression) {
   const target = await pageTarget();
@@ -1031,7 +1037,7 @@ async function evaluateOnPageTarget(expression) {
     socket.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression, returnByValue: true } }));
     return {
       value: (await result)?.result?.value, targetMatch: target.targetMatch, targetUrl: target.url,
-      expectedUrl: expectedPageUrl,
+      expectedUrl: expectedPageUrl, candidates: target.candidates,
     };
   } finally {
     try { socket.close(); } catch (error) { void error; }
@@ -1136,13 +1142,17 @@ export async function installFocusEventLog() {
  * Returns `events: null` — never `[]` — when nothing was installed to read, so "the page had no focus
  * activity" and "we never asked" cannot be mistaken for each other.
  *
+ * `candidates` travels alongside `targetMatch` for the same reason `evaluateOnPageTarget` attaches it:
+ * `focusEventVerdict` reads both to refuse a verdict from a log installed on the wrong document, the same
+ * way `censusTargetIsSuspect` already refuses a census from one.
+ *
  * @returns {Promise<{ events: Array<{type: string, id: number, name: string, atMs: number}> | null,
  *                      targetMatch: UsablePageTarget["targetMatch"] | null, targetUrl: string | undefined,
- *                      expectedUrl: string | null, error?: string }>}
+ *                      expectedUrl: string | null, candidates: number | undefined, error?: string }>}
  */
 export async function collectFocusEventLog() {
   try {
-    const { value, targetMatch, targetUrl, expectedUrl } = await evaluateOnPageTarget(`(() => {
+    const { value, targetMatch, targetUrl, expectedUrl, candidates } = await evaluateOnPageTarget(`(() => {
       if (!window.__a11yFocusLog) return { events: null, error: "not installed" };
       const events = window.__a11yFocusLog;
       document.removeEventListener("focusin", window.__a11yFocusIn, true);
@@ -1151,10 +1161,12 @@ export async function collectFocusEventLog() {
       delete window.__a11yFocusIds; delete window.__a11yFocusNextId;
       return { events };
     })()`);
-    return { events: value?.events ?? null, targetMatch, targetUrl, expectedUrl, error: value?.error };
+    return {
+      events: value?.events ?? null, targetMatch, targetUrl, expectedUrl, candidates, error: value?.error,
+    };
   } catch (error) {
     return {
-      events: null, targetMatch: null, targetUrl: undefined, expectedUrl: null,
+      events: null, targetMatch: null, targetUrl: undefined, expectedUrl: null, candidates: undefined,
       error: /** @type {Error} */ (error).message,
     };
   }
