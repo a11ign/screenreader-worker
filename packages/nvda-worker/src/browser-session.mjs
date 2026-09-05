@@ -912,8 +912,19 @@ export async function domCensus() {
  * exactly as they are: they are validated on the fleet as of this branch, and refactoring code that is
  * mid-validation to share a helper is a second, unvalidated change riding on the first one's evidence.
  *
+ * `target.url` travels out alongside `targetMatch` for the same reason `targetMatch` itself exists: a
+ * "fallback" tag says a match failed, never WHICH document was used instead, and a diagnostic that names
+ * the tag without the URL leaves the reader unable to tell "fallback onto a widget" from "fallback onto
+ * the right page anyway, for a reason `sameDocument` doesn't yet account for" -- two causes needing
+ * opposite fixes, the same shape as the census's own "matched"/"fallback" ambiguity this exists to resolve.
+ *
+ * `expectedUrl` travels out too, read directly off this module's own state rather than through
+ * `expectedPageUrlForTest` (which exists for a unit test asserting the RESET, not for a live diagnostic) —
+ * so "fallback" can be read beside what it fell back FROM, not just what it fell back TO.
+ *
  * @param {string} expression
- * @returns {Promise<{ value: any, targetMatch: UsablePageTarget["targetMatch"] }>}
+ * @returns {Promise<{ value: any, targetMatch: UsablePageTarget["targetMatch"], targetUrl: string | undefined,
+ *                      expectedUrl: string | null }>}
  */
 async function evaluateOnPageTarget(expression) {
   const target = await pageTarget();
@@ -922,7 +933,10 @@ async function evaluateOnPageTarget(expression) {
     await once(socket, "open", CDP_READY_TIMEOUT_MS);
     const result = waitForResult(socket, 1, AX_TREE_TIMEOUT_MS);
     socket.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression, returnByValue: true } }));
-    return { value: (await result)?.result?.value, targetMatch: target.targetMatch };
+    return {
+      value: (await result)?.result?.value, targetMatch: target.targetMatch, targetUrl: target.url,
+      expectedUrl: expectedPageUrl,
+    };
   } finally {
     try { socket.close(); } catch (error) { void error; }
   }
@@ -995,17 +1009,25 @@ const INSTALL_FOCUS_EVENT_LOG_EXPRESSION = `(() => {
 
 /**
  * @returns {Promise<{ installed: boolean, targetMatch: UsablePageTarget["targetMatch"] | null,
+ *                      targetUrl: string | undefined, expectedUrl: string | null,
  *                      already?: boolean, error?: string }>}
  */
 export async function installFocusEventLog() {
   try {
-    const { value, targetMatch } = await evaluateOnPageTarget(INSTALL_FOCUS_EVENT_LOG_EXPRESSION);
-    return { installed: !!value?.installed || !!value?.already, targetMatch, already: !!value?.already };
+    const { value, targetMatch, targetUrl, expectedUrl } =
+      await evaluateOnPageTarget(INSTALL_FOCUS_EVENT_LOG_EXPRESSION);
+    return {
+      installed: !!value?.installed || !!value?.already, targetMatch, targetUrl, expectedUrl,
+      already: !!value?.already,
+    };
   } catch (error) {
     // A diagnostic probe must never fail a capture. `focusEventVerdict` reads `installed: false` as
     // "cannot say", never as "F55 absent" -- absence of the oracle and absence of the finding must not
     // collapse into the same silence, the same rule `structuralCensus`'s own comment states.
-    return { installed: false, targetMatch: null, error: /** @type {Error} */ (error).message };
+    return {
+      installed: false, targetMatch: null, targetUrl: undefined, expectedUrl: null,
+      error: /** @type {Error} */ (error).message,
+    };
   }
 }
 
@@ -1019,11 +1041,12 @@ export async function installFocusEventLog() {
  * activity" and "we never asked" cannot be mistaken for each other.
  *
  * @returns {Promise<{ events: Array<{type: string, id: number, name: string, atMs: number}> | null,
- *                      targetMatch: UsablePageTarget["targetMatch"] | null, error?: string }>}
+ *                      targetMatch: UsablePageTarget["targetMatch"] | null, targetUrl: string | undefined,
+ *                      expectedUrl: string | null, error?: string }>}
  */
 export async function collectFocusEventLog() {
   try {
-    const { value, targetMatch } = await evaluateOnPageTarget(`(() => {
+    const { value, targetMatch, targetUrl, expectedUrl } = await evaluateOnPageTarget(`(() => {
       if (!window.__a11yFocusLog) return { events: null, error: "not installed" };
       const events = window.__a11yFocusLog;
       document.removeEventListener("focusin", window.__a11yFocusIn, true);
@@ -1032,9 +1055,12 @@ export async function collectFocusEventLog() {
       delete window.__a11yFocusIds; delete window.__a11yFocusNextId;
       return { events };
     })()`);
-    return { events: value?.events ?? null, targetMatch, error: value?.error };
+    return { events: value?.events ?? null, targetMatch, targetUrl, expectedUrl, error: value?.error };
   } catch (error) {
-    return { events: null, targetMatch: null, error: /** @type {Error} */ (error).message };
+    return {
+      events: null, targetMatch: null, targetUrl: undefined, expectedUrl: null,
+      error: /** @type {Error} */ (error).message,
+    };
   }
 }
 
