@@ -469,13 +469,6 @@ function captureOptions(/** @type {any} */ parsed) {
     nav: parsed.nav,
     task: parsed.task ?? null,
     ...probeFlags(parsed),
-    // Opt-in navigation probe: activates the first link and asks NVDA for the page title before and after.
-    // 2.4.2's single-page-app failure, where the route changes and the title does not.
-    // Opt-in cross-check against NVDA's own Elements List totals. Opens a modal
-    // dialog on the guest, so it is never on by default.
-    // Opt-in: it presses arrows inside whatever widget the focus probe landed on. Meaningless without
-    // `probeFocus`, because browse mode owns the arrows and one pressed there navigates the DOCUMENT.
-    // Opt-in: it TYPES into the focused field, which changes the page under measurement.
     // ONE declared state per capture (ADR 0024). Not a flag: it carries the author's own values, and the
     // consent to submit is the fact that they supplied them. Shape-checked only for the two fields this
     // worker dispatches on — the CLI validated it against the schema before sending, and re-deriving the
