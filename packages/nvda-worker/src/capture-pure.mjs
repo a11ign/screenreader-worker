@@ -1128,21 +1128,23 @@ const FOCUS_SCRIPT_BLUR_WINDOW_MS = 50;
  * not the sleep-a-duration anti-pattern the rest of this codebase avoids, because nothing here is deciding
  * how long to wait; it is reading how long something that already happened actually took.
  *
- * `FOCUS_SCRIPT_BLUR_WINDOW_MS` IS UNVALIDATED. No real capture's inter-Tab-press timing has been measured
- * against it yet — that measurement needs the fleet, which is this design's explicit next step, not
- * something offline tests can supply. Treat the exact value as a placeholder proven only by its two
- * orders-of-magnitude margin above, not by data.
+ * `FOCUS_SCRIPT_BLUR_WINDOW_MS` — THE MARGIN IS NOW MEASURED, THE THRESHOLD ITSELF STILL IS NOT.
  *
- * MATCHED BY `id`, NEVER BY `name`. Two controls can share a name (two "Submit" buttons in two forms is the
- * ordinary case, per `unambiguous`'s reasoning in `rules.ts`), and `name` here is a best-effort DOM-side
- * label a page script assigns, not a join key. `id` is a per-page sequential counter the injected script
- * itself hands out via a `WeakMap`, so it identifies one DOM node and nothing else can collide with it.
+ * It was written as a placeholder justified only by an assumed two-orders-of-magnitude gap. Measured
+ * 2026-09-05 against a real capture of `focus-panel-undismissable-fee+with-component-index.bad`:
+ * `probeFocusOrder` ran from atMs 23953 to 58952 over 18 stops, so **1,944 ms per Tab stop — a 38.9x
+ * margin** over this 50 ms window. That is a mean across the whole probe and therefore an UPPER bound
+ * on the gap, since each stop also pays for `reportFocusedControlWithRetry`; the true focusout→focusin
+ * gap is smaller. It is still bounded below by a real NVDA keystroke round trip, which this repo
+ * measures in hundreds of milliseconds, never in tens.
  *
- * `checked: false` (no oracle) is kept apart from `scriptRemovedFocus: []` (oracle ran, saw nothing) for
- * the reason `focusRevealVerdict` above states about its own census: absence of the channel and absence of
- * the finding are different facts, and this repo has already shipped the collapse of the two once.
+ * So the SEPARATION is real and evidenced. What is still unmeasured is the other side: no capture has
+ * yet recorded a script `blur()` to confirm it lands under 50 ms rather than merely under 1,944. The
+ * first capture carrying a real F55 page settles that, and until one does this threshold is a
+ * hypothesis with a large margin rather than a calibrated value.
  *
- * @param {{ events: Array<{type: string, id: number, name: string, atMs: number}> | null, error?: string }} log
+ * @param {{ events: {type: string, id: number, name: string, atMs: number}[] | null | undefined,
+ *           error?: string | undefined }} log
  */
 export function focusEventVerdict({ events, error }) {
   if (!Array.isArray(events)) {
