@@ -24,6 +24,9 @@
 // `runCapturePhases` sequence phases from both of those files, which is why this file depends
 // on each of them and neither depends back: that is what keeps the import graph a DAG.
 import { browserFor } from "./browsers.mjs";
+// Moved to its own dependency-free file so portable/host-side code can IMPORT this number instead of
+// regex-scraping this file's text for it — architecture-audit.md §5, item 3. See protocol-version.mjs.
+export { CAPTURE_PROTOCOL_VERSION } from "./protocol-version.mjs";
 // The pure half of this module. Moved to `capture-pure.mjs` so tests can reach it without importing
 // guidepup, which THROWS at import time where no screen reader exists — that is why CI was red on six
 // files. Imported and re-exported here, so every existing caller of `capture-core` is unchanged and
@@ -81,37 +84,6 @@ import { navigateByStructureThenAudit } from "./capture-probes.mjs";
  *
  *   Named once because six sites write one — the eight-call-site lesson the browser preset records.
  */
-
-/**
- * 14 -> 15 on 2026-09-05, because THREE NEW EVIDENCE CHANNELS SHIPPED AND THE CACHE COULD NOT SEE THEM.
- *
- * `focusEvents` (2.4.7's F55 detector), `focusReveal` (1.4.13) and `candidates` on the census/focus marks
- * are all new fields that a RULE reads, which is this constant's own stated trigger — *"a new field a
- * signal reads"*. None of them bumped it, and `workerCode` is deliberately outside the cache key, so
- * every case whose PAGE did not change kept its pre-probe capture.
- *
- * MEASURED, not reasoned. `rules:coverage` in the 2026-09-05 chain reported
- * **`2.4.7 partial 0 0 NEVER FIRED ANYWHERE — the claim rests on nothing`**, and the F55 cases exist:
- * nine `focus-removed-on-receipt-*` cases, built specifically to exercise it. Fetching
- * `focus-removed-on-receipt-order.bad` explains it in one line — captured `07:01:11Z`, hours before the
- * probe existed, with `focusOrder` and `focusConfinement` in its marks and no `focusEventLog` at all, and
- * carrying the OLD `formProbe` mark name rather than `formFill`. The rule was silent because the evidence
- * was never collected, not because the page does not exhibit the failure.
- *
- * WHY NEW CASES HID IT. A case with no cache entry captures fresh, so 1.4.13's cases — added the same day
- * — got the new probe and the rule fired 15 times. The F55 cases are OLDER, their pages did not change,
- * and they were served from cache. So the corpus looked partly working, which is the worst way for this
- * to present: a probe that reaches only the cases nobody had captured before is indistinguishable from a
- * probe that works.
- *
- * This is what the bump is FOR and the cost is the point: a full recapture, ~4 hours of fleet time. The
- * alternative was downgrading 2.4.7's claim in `criterion-coverage.ts` while the rule, the probe and nine
- * corpus cases all sat there working — paying nothing and knowing nothing.
- *
- * The three channels are bundled deliberately, per this repo's own rule that the cheap moment to pay a
- * recapture is alongside any other pending bump rather than twice.
- */
-export const CAPTURE_PROTOCOL_VERSION = 15;
 
 // Re-exported for callers that had these from `capture-core` before the split.
 export {
