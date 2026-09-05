@@ -4578,9 +4578,6 @@ async function probeFocusReveal({ interaction, deadline, diag }) {
   const mark = (/** @type {Record<string, unknown>} */ fields) => diag.mark("focusReveal", fields);
   try {
     if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
-    // BEFORE is taken with focus already on a control -- `probeFocusOrder` has run -- so it is the baseline
-    // for "what this page shows while something is focused", not for the untouched document. Comparing
-    // against the untouched document would count everything the focus probe itself revealed.
     await anchorToTop();
     // BEFORE IS THE UNTOUCHED DOCUMENT, and this is the whole correctness of the probe.
     //
