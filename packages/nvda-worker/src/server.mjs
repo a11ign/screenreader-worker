@@ -889,13 +889,26 @@ const server = createServer((req, res) => {
  *
  * Three answers, and collapsing any two of them would make the endpoint useless:
  *
- *   404  we have never heard of this id      -> the capture never started; re-issue the case
- *   202  we have it and it is still running  -> wait, do NOT start a second capture
- *   200/500  the original response, verbatim -> use it exactly as if the POST had returned it
+ *   404  we have nothing under this id RIGHT NOW  -> safe to re-issue the case
+ *   202  we have it and it is still running       -> wait, do NOT start a second capture
+ *   200/500  the original response, verbatim      -> use it exactly as if the POST had returned it
  *
  * The middle one is the reason this is worth having at all. "Not finished" and "never happened" produce
  * opposite correct actions, and this project's own history is a list of faults that cost days precisely
  * because two different states were reported as one.
+ *
+ * **404 is BOUNDED RESULT RECALL, not proof the capture never ran — architecture-audit.md §14.4.** This
+ * used to say 404 means "the capture never started", which overclaims what an in-memory, 8-entry-bounded
+ * store can actually promise. It means "not retained here", and there are three ways to reach it that are
+ * NOT "never started": the id genuinely never arrived (the common case, and the only one re-issuing is
+ * free for); it was EVICTED after finishing, because `RESULT_HISTORY` other captures completed on this
+ * worker first (`capture-results.mjs`'s `evictOldestDone`); or the worker RESTARTED and lost the whole
+ * in-memory store. Re-issuing is still the right recovery in all three -- the worst cost is one redundant
+ * capture, never a wrong answer -- but "never started" is a claim this endpoint cannot back up, and this
+ * comment used to make it anyway. Deliberately NOT closed by payload-fingerprint duplicate suppression:
+ * an in-memory store cannot promise exactly-once across a restart regardless, so naming the real,
+ * BOUNDED guarantee is more honest than a mechanism that would still fall short of what "idempotent"
+ * implies. See `capture-results.mjs`'s own header for the retention bound and why it is not persisted.
  */
 function respondWithStoredResult(/** @type {any} */ res, /** @type {any} */ id) {
   const { status, body } = storedResultResponse(results.recall(id), id);

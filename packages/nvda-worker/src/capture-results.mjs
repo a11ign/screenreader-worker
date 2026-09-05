@@ -68,9 +68,17 @@ export function isValidCaptureId(id) {
  * answers that must not collapse into two.
  *
  *   400  the id is not a shape we accept
- *   404  never heard of it        -> the capture never started; re-issue the case
- *   202  running                  -> wait; do NOT start a second capture
- *   the original status and body  -> use it exactly as if the POST had returned it
+ *   404  nothing under this id RIGHT NOW  -> safe to re-issue the case
+ *   202  running                          -> wait; do NOT start a second capture
+ *   the original status and body          -> use it exactly as if the POST had returned it
+ *
+ * 404 IS BOUNDED RESULT RECALL, NOT PROOF THE CAPTURE NEVER RAN — architecture-audit.md §14.4. This used
+ * to say 404 means "the capture never started", which is one of three ways to reach it: the id genuinely
+ * never arrived, it finished and was EVICTED (`evictOldestDone`, bounded at `RESULT_HISTORY`), or the
+ * worker RESTARTED and lost this whole in-memory `Map`. Re-issuing is still correct in all three -- the
+ * worst cost is one redundant capture -- but "never started" overclaims what a bounded, non-persisted
+ * store can prove. See `server.mjs`'s route doc for the fuller account of why this is named rather than
+ * closed with payload-fingerprint duplicate suppression.
  *
  * THE SAME DISCRIMINATED UNION THE STORE HOLDS. This read
  * `{ state: "running" | "done", status?: number, body?: unknown }`, which permits `{ state: "done" }`

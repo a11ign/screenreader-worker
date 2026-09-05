@@ -140,3 +140,53 @@ test("a malformed id is refused before it is used as a key or echoed into a resp
   assert.equal(response.status, 400);
   assert.ok(!JSON.stringify(response.body).includes(".."), "a rejected id must not be reflected back");
 });
+
+/**
+ * 404 IS BOUNDED RESULT RECALL, NOT PROOF THE CAPTURE NEVER RAN — architecture-audit.md §14.4.
+ *
+ * The audit's own store probe, through the actual response-shaping function the route calls (not a bare
+ * Map): a capture that DEFINITELY completed reads 404 the moment enough later captures evict it. "Re-issue
+ * the case" is still the right recovery, but "never started" is not a claim this bounded, non-persisted
+ * store can back up, and this repo's own docs used to make it anyway.
+ */
+test("an EVICTED capture reads 404 exactly like an id that never existed, though it definitely ran", () => {
+  const store = createResultStore({ limit: 1 });
+  store.begin("ran-and-finished");
+  store.finish("ran-and-finished", { status: 200, body: { transcript: ["it really did run"] } });
+  assert.equal(storedResultResponse(store.recall("ran-and-finished"), "ran-and-finished").status, 200,
+    "still retained -- confirms the capture is really there before eviction");
+
+  // One more finished capture, over the limit of 1, evicts the first.
+  store.begin("later");
+  store.finish("later", { status: 200, body: {} });
+
+  const evicted = storedResultResponse(store.recall("ran-and-finished"), "ran-and-finished");
+  assert.equal(evicted.status, 404,
+    "eviction and 'never happened' must read identically at this boundary -- that IS the finding: 404 "
+    + "cannot distinguish them, so callers may only conclude 'not retained here', never 'never ran'");
+});
+
+/**
+ * REUSING AN ID SILENTLY EXECUTES AGAIN, WITH NO PAYLOAD-CONFLICT CHECK — architecture-audit.md §14.4.
+ *
+ * `begin(id)` unconditionally deletes any previous entry and starts fresh, whether the caller intended a
+ * replay of the SAME request or accidentally reused an id for a DIFFERENT one. This is deliberately not
+ * closed by fingerprinting the request (see the audit and this file's own header): documented here as the
+ * real, current contract, not implemented against.
+ */
+test("begin() on an id with a RETAINED result discards it unconditionally -- no payload check exists", () => {
+  const store = createResultStore();
+  store.begin("reused");
+  store.finish("reused", { status: 200, body: { url: "https://example.com/a" } });
+  assert.equal(store.recall("reused")?.state, "done");
+
+  // A caller reusing this id for a COMPLETELY DIFFERENT request -- nothing here can tell the two apart.
+  store.begin("reused");
+  assert.equal(store.recall("reused")?.state, "running",
+    "the previous, unrelated result is gone the instant begin() is called again on the same id");
+  store.finish("reused", { status: 200, body: { url: "https://example.com/completely-different-page" } });
+  assert.equal((store.recall("reused") as { body?: { url?: string } })?.body?.url,
+    "https://example.com/completely-different-page",
+    "the second request's result silently replaced the first's -- reusing an id is the caller's contract "
+    + "to keep, not something this store can enforce");
+});
