@@ -1105,6 +1105,62 @@ export function focusRevealVerdict({ before, onFocus, afterEscape, focusBefore, 
   };
 }
 
+const FOCUS_SCRIPT_BLUR_WINDOW_MS = 50;
+
+/**
+ * ADJACENCY ALONE DOES NOT DISCRIMINATE, AND THE FIRST VERSION OF THIS FUNCTION GOT THAT WRONG — caught by
+ * its own unit test, not by a capture. Per the UI Events spec, an ORDINARY Tab transition from A to B fires
+ * `focusout(A)` and THEN `focusin(B)`, both as one browser-level change: focusout comes first, not second.
+ * So across a whole walk the log reads `focusout(P), focusin(A), focusout(A), focusin(B), focusout(B), …` —
+ * and `focusin(A)` is followed, a few events later, by `focusout(A)`, EXACTLY LIKE F55 would be. A pair
+ * test with no timing component fires on every conformant control but the first, which the first version's
+ * own test caught immediately once the fixture matched what a real page actually does rather than what the
+ * comment above it assumed.
+ *
+ * THE REAL DISCRIMINATOR IS THE GAP. A script's `blur()` on `focus` runs synchronously (or on the next
+ * microtask at the latest) — no human input and no round trip to NVDA happens in between, so the gap
+ * between `focusin(X)` and its `focusout(X)` is on the order of a millisecond. An ORDINARY transition's
+ * `focusout(A)` is caused by the NEXT Tab press, which cannot happen until `probeFocusOrder`'s loop has
+ * sent the keystroke and read NVDA's announcement back — a round trip this codebase's own history puts at
+ * a minimum of tens of milliseconds and typically far more (guidepup's speech-settle timers alone are
+ * measured in the hundreds, per CLAUDE.md). So the two cases are separated by roughly two orders of
+ * magnitude, and the comparison is between two ALREADY-RECORDED timestamps, not a guessed wait — this is
+ * not the sleep-a-duration anti-pattern the rest of this codebase avoids, because nothing here is deciding
+ * how long to wait; it is reading how long something that already happened actually took.
+ *
+ * `FOCUS_SCRIPT_BLUR_WINDOW_MS` IS UNVALIDATED. No real capture's inter-Tab-press timing has been measured
+ * against it yet — that measurement needs the fleet, which is this design's explicit next step, not
+ * something offline tests can supply. Treat the exact value as a placeholder proven only by its two
+ * orders-of-magnitude margin above, not by data.
+ *
+ * MATCHED BY `id`, NEVER BY `name`. Two controls can share a name (two "Submit" buttons in two forms is the
+ * ordinary case, per `unambiguous`'s reasoning in `rules.ts`), and `name` here is a best-effort DOM-side
+ * label a page script assigns, not a join key. `id` is a per-page sequential counter the injected script
+ * itself hands out via a `WeakMap`, so it identifies one DOM node and nothing else can collide with it.
+ *
+ * `checked: false` (no oracle) is kept apart from `scriptRemovedFocus: []` (oracle ran, saw nothing) for
+ * the reason `focusRevealVerdict` above states about its own census: absence of the channel and absence of
+ * the finding are different facts, and this repo has already shipped the collapse of the two once.
+ *
+ * @param {{ events: Array<{type: string, id: number, name: string, atMs: number}> | null, error?: string }} log
+ */
+export function focusEventVerdict({ events, error }) {
+  if (!Array.isArray(events)) {
+    return { asked: true, checked: false, why: error || "no event log", scriptRemovedFocus: null };
+  }
+  const scriptRemovedFocus = [];
+  for (let i = 0; i < events.length - 1; i += 1) {
+    const receipt = events[i];
+    const next = events[i + 1];
+    const heldMs = next?.atMs - receipt?.atMs;
+    if (receipt?.type === "focusin" && next?.type === "focusout" && receipt.id === next.id
+      && heldMs < FOCUS_SCRIPT_BLUR_WINDOW_MS) {
+      scriptRemovedFocus.push({ id: receipt.id, name: receipt.name, heldMs });
+    }
+  }
+  return { asked: true, checked: true, events: events.length, scriptRemovedFocus };
+}
+
 /**
  * The plain boolean probe flags the worker's request boundary accepts.
  *

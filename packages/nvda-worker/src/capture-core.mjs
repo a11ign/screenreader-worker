@@ -54,6 +54,7 @@ import {
   notObserved,
   recordWhatWasAsked,
   focusRevealVerdict,
+  focusEventVerdict,
   censusGrowth,
 } from "./capture-pure.mjs";
 import { installSpeechChannelShim } from "./speech-channel.mjs";
@@ -105,7 +106,7 @@ import { parkPointer } from "./pointer.mjs";
 import { matchesFieldName, matchesWithin, fillActionFor } from "./field-match.mjs";
 import { browserAlive, currentPageUrl, launchReusable, navigateExisting, navigationOutcome, reusableArgs,
   mediaCensus, structuralCensus, domCensus, truncatedAnnouncements,
-  bringPageToFront, setExpectedPageUrl,
+  bringPageToFront, setExpectedPageUrl, installFocusEventLog, collectFocusEventLog,
 } from "./browser-session.mjs";
 import { connect } from "node:net";
 import { existsSync } from "node:fs";
@@ -2066,11 +2067,11 @@ async function navigateByStructureThenAudit(options) {
  *           formFill?: unknown},
  *           postSubmitFields: string[], focusOrder: string[], routeChange: unknown, dialogEscape: unknown,
  *           arrowNavigation: unknown, typedFeedback: unknown, focusContext: unknown,
- *           focusReveal: unknown }} ctx
+ *           focusReveal: unknown, focusEvents: unknown }} ctx
  */
 function interactionEvidence({
   structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape, arrowNavigation,
-  typedFeedback, focusContext, focusReveal,
+  typedFeedback, focusContext, focusReveal, focusEvents,
 }) {
   return {
     controls: structure.formFields,
@@ -2101,6 +2102,11 @@ function interactionEvidence({
     // the good one -- the discrimination was real and never reached the channel. Same shape as
     // `postSubmitFields` empty on 2,122 captures, which is the example this function's own docstring gives.
     ...(focusReveal ? { focusReveal } : {}),
+    // Absent unless asked for, like every other opt-in field. Absent and "we watched for F55 and never saw
+    // it" must stay distinguishable — `focusEventVerdict` already keeps `checked: false` (no oracle) apart
+    // from `scriptRemovedFocus: []` (oracle ran, saw nothing); dropping the field HERE would flatten that
+    // distinction right back into the single silence this repeated lesson is about.
+    ...(focusEvents ? { focusEvents } : {}),
     // Absent (rather than false) when the submit did not navigate, so "we did not check" and "it did not
     // navigate" stay distinguishable.
     // WHAT A CONFIGURED FORM ACTUALLY DID — filled, unbound, submitted (ADR 0024).
@@ -2139,10 +2145,10 @@ function probePasses(ctx) {
   // rename existed only to dodge a name collision with the function.
   const probeFocusContext_ = ctx.probeFocusContext;
   /** @type {{postSubmitFields: string[], focusOrder: string[], dialogEscape: any, focusReveal: any,
-   *           arrowNavigation: any, typedFeedback: any, focusContext: any}} */
+   *           arrowNavigation: any, typedFeedback: any, focusContext: any, focusEvents: any}} */
   const results = {
     postSubmitFields: [], focusOrder: [], dialogEscape: null, focusReveal: null, arrowNavigation: null, typedFeedback: null,
-    focusContext: null,
+    focusContext: null, focusEvents: null,
   };
   const runSweep = async () => {
     await sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips, observed });
@@ -2189,9 +2195,11 @@ function probePasses(ctx) {
     results.focusReveal = probeFocusReveal_ && probeFocus
       ? await probeFocusReveal({ interaction, deadline, diag })
       : null;
-    results.focusOrder = probeFocus
-      ? await probeFocusOrder({ deadline, diag, controlsOnPage: structure.formFields.length })
-      : [];
+    const { focusOrder, focusEvents } = await probeFocusOrderWithEventLog({
+      deadline, diag, probeFocus, controlsOnPage: structure.formFields.length,
+    });
+    results.focusOrder = focusOrder;
+    results.focusEvents = focusEvents;
     // Gated on `probeFocus` as well as its own flag: Escape from wherever the browse caret happens to
     // rest measures the document, which is what the first version of this did.
     results.dialogEscape = probeDialog && probeFocus
@@ -2283,7 +2291,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   // captures, reproduced exactly: an empty field is not a malformed one, no count moves, and every gate
   // stays green. Caught by reading, because `capture-core` imports guidepup and no test can reach here.
   const { postSubmitFields, focusOrder, dialogEscape, arrowNavigation, typedFeedback,
-    focusContext, focusReveal } = results;
+    focusContext, focusReveal, focusEvents } = results;
 
   // LAST of the three, because it is the only probe that can leave the page under measurement: it activates
   // a link. Everything position-dependent has finished by here, so navigating away costs nothing.
@@ -2305,7 +2313,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
 
   return { structure, interaction: assembleAndMark({
     structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape, arrowNavigation,
-    typedFeedback, focusContext, focusReveal, diag,
+    typedFeedback, focusContext, focusReveal, focusEvents, diag,
   }), observed };
 }
 
@@ -2324,13 +2332,14 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
  *
  * @param {{ structure: CapturedStructure, interaction: any, postSubmitFields: string[],
  *           focusOrder: string[], routeChange: unknown, dialogEscape: unknown, arrowNavigation: unknown,
- *           typedFeedback: unknown, focusContext: unknown, focusReveal: unknown, diag: Diag }} ctx
+ *           typedFeedback: unknown, focusContext: unknown, focusReveal: unknown, focusEvents: unknown,
+ *           diag: Diag }} ctx
  */
 function assembleAndMark({ structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape,
-  arrowNavigation, typedFeedback, focusContext, focusReveal, diag }) {
+  arrowNavigation, typedFeedback, focusContext, focusReveal, focusEvents, diag }) {
   const result = interactionEvidence({
     structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape, arrowNavigation,
-    typedFeedback, focusContext, focusReveal,
+    typedFeedback, focusContext, focusReveal, focusEvents,
   });
   diag.mark("interaction", {
     controls: result.controls.length,
@@ -3261,6 +3270,59 @@ function probeSequence(requested) {
   // omit one, and the evidence would then differ for a reason that is not the thing under test.
   if (requested === "focus-first") return ["focus", "sweep"];
   return ["sweep", "focus"];
+}
+
+/**
+ * `probeFocusOrder`, bracketed by the F55 focus-event log — installed immediately before, collected
+ * immediately after, whether or not the probe threw.
+ *
+ * F55 — "using script to remove focus when focus is received" (2.1.1, 2.4.7, 2.4.13 and 3.2.1 all named
+ * together in W3C's own listing) — produces a tab-stop list identical to a control that was never
+ * focusable, and `probeFocusOrder` is the ONLY probe that moves real focus, so it is the only window in
+ * which the DOM's own `focusin`/`focusout` pair can catch it. Bracketing ONLY this probe, rather than the
+ * whole capture, bounds how long a page-injected listener runs to the one thing its evidence needs: real
+ * Tab presses happening. See `installFocusEventLog`'s comment for the rest of the reasoning.
+ *
+ * A separate function rather than inlined in `runFocus`, which the extra try/finally pushed over this
+ * repo's complexity gate — the same reason `probeFocusOrder` itself is not inlined there.
+ *
+ * @param {{ deadline: number, diag: Diag, controlsOnPage: number, probeFocus: boolean }} ctx
+ */
+async function probeFocusOrderWithEventLog({ deadline, diag, controlsOnPage, probeFocus }) {
+  if (!probeFocus) return { focusOrder: [], focusEvents: null };
+  const install = await installFocusEventLog();
+  try {
+    const focusOrder = await probeFocusOrder({ deadline, diag, controlsOnPage });
+    return { focusOrder, focusEvents: await finishFocusEventLog({ diag, install }) };
+  } catch (error) {
+    // The probe threw. Its own caller decides whether that fails the capture; this must still tear the
+    // listener down and report what it saw before rethrowing, for the identical reason `captureWithNvda`'s
+    // `finally` clears `setExpectedPageUrl` unconditionally -- a listener left attached because a LATER
+    // step threw is a persistent side effect outliving the capture that hit it.
+    await finishFocusEventLog({ diag, install });
+    throw error;
+  }
+}
+
+/**
+ * Read the focus-event log, tear the listener down, mark what happened, and decide F55 from it — the
+ * second half of `probeFocusOrderWithEventLog`, split out only because that function needs to call it from
+ * both its success path and its catch, and a `try`/`finally` cannot also report a `throw`'s own error into
+ * the same mark cleanly.
+ *
+ * @param {{ diag: Diag, install: { installed: boolean, targetMatch: string | null, error?: string,
+ *           already?: boolean } }} ctx
+ */
+async function finishFocusEventLog({ diag, install }) {
+  const collected = await collectFocusEventLog();
+  diag.mark("focusEventLog", {
+    installed: install?.installed ?? false,
+    installTargetMatch: install?.targetMatch ?? null,
+    collectTargetMatch: collected.targetMatch,
+    events: collected.events?.length ?? null,
+    error: install?.error ?? collected.error,
+  });
+  return focusEventVerdict(collected);
 }
 
 /** @param {{ deadline: number, diag: Diag, controlsOnPage: number }} ctx */

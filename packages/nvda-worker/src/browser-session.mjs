@@ -903,6 +903,142 @@ export async function domCensus() {
 }
 
 /**
+ * Run one `Runtime.evaluate` expression against the page target, with the same open/send/close shape
+ * `structuralCensus` and `domCensus` already use.
+ *
+ * Extracted for `installFocusEventLog`/`collectFocusEventLog`, which need TWO round trips bracketing one
+ * probe rather than one -- duplicating the socket dance a third time is how the two would drift the way
+ * this repo's own history warns about ("a fact stated twice"). `structuralCensus`/`domCensus` are left
+ * exactly as they are: they are validated on the fleet as of this branch, and refactoring code that is
+ * mid-validation to share a helper is a second, unvalidated change riding on the first one's evidence.
+ *
+ * @param {string} expression
+ * @returns {Promise<{ value: any, targetMatch: UsablePageTarget["targetMatch"] }>}
+ */
+async function evaluateOnPageTarget(expression) {
+  const target = await pageTarget();
+  const socket = new WebSocket(target.webSocketDebuggerUrl);
+  try {
+    await once(socket, "open", CDP_READY_TIMEOUT_MS);
+    const result = waitForResult(socket, 1, AX_TREE_TIMEOUT_MS);
+    socket.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression, returnByValue: true } }));
+    return { value: (await result)?.result?.value, targetMatch: target.targetMatch };
+  } finally {
+    try { socket.close(); } catch (error) { void error; }
+  }
+}
+
+/**
+ * Best-effort label for a focus-event log entry, computed IN THE PAGE rather than from the accessibility
+ * tree -- an injected script has no CDP `Accessibility` domain access, only the DOM. Not an accessible-name
+ * algorithm; a cheap approximation good enough to read back in a diagnostic, the way `nearestNamedAncestor`
+ * (browser-session.mjs, 1.1.1) is a DOM-side approximation for the same reason.
+ */
+const FOCUS_EVENT_NAME_OF = `(el) => {
+  try {
+    return String((el.getAttribute && el.getAttribute("aria-label"))
+      || (el.labels && el.labels[0] && el.labels[0].textContent && el.labels[0].textContent.trim())
+      || (el.getAttribute && el.getAttribute("placeholder"))
+      || (el.getAttribute && el.getAttribute("title"))
+      || el.id || el.tagName || "unknown").slice(0, 60);
+  } catch (e) { return "unknown"; }
+}`;
+
+/**
+ * F55 — "using script to remove focus when focus is received" — produces a tab-stop list IDENTICAL to a
+ * control that was never focusable at all: `probeFocusOrder` presses Tab, NVDA has nothing new to
+ * announce (focus already moved on, or fell back to the document), and the loop either skips the control
+ * silently or reads its OWN prior stop again and calls the ring a trap. Both readings are 2.1.1's
+ * signature, and F55 is also — but only also — a failure of 2.4.7 (the indicator was never visible because
+ * focus never RESTED) and 3.2.1 (see W3C's own listing: F55 names 2.1.1, 2.4.7, 2.4.13 AND 3.2.1 together,
+ * not 2.1.1 alone). Nothing in this pipeline can currently tell "never reached" from "reached and
+ * immediately expelled", and only the second is F55.
+ *
+ * A `focusin`/`focusout` LOG, captured at the DOM level, is the one channel that can: the browser fires
+ * BOTH events on any focus change, spec-ordered, and F55's signature is `focusin(X)` followed IMMEDIATELY
+ * by `focusout(X)` for the SAME element with no intervening user action — never `focusout(A)` then
+ * `focusin(B)`, which is what an ORDINARY Tab press produces (A losing focus and B gaining it are the same
+ * browser-level change, not two separate ones). `focusEventVerdict` (capture-pure.mjs) is the pure function
+ * that tells the two apart; this only produces the raw log.
+ *
+ * Installed for the DURATION OF ONE PROBE, not the capture — `probeFocusOrder`, the only probe that moves
+ * real focus. A listener recording nothing but push-to-array should not change anything else a capture
+ * observes, but "should not" is not "shown not to": this is scoped as tightly as the evidence it exists to
+ * gather allows, so that question is answerable by comparing evidence WITH and WITHOUT it on the same
+ * pages, on the fleet, rather than argued from the source.
+ *
+ * Every element seen is assigned a per-page sequential id (a `WeakMap`, reset on install), so events can
+ * be matched by IDENTITY rather than by name — two controls sharing a name must not be confused, and a
+ * name is display-only here, never the join key.
+ */
+const INSTALL_FOCUS_EVENT_LOG_EXPRESSION = `(() => {
+  if (window.__a11yFocusLog) return { already: true };
+  window.__a11yFocusLog = [];
+  window.__a11yFocusIds = new WeakMap();
+  window.__a11yFocusNextId = 0;
+  const nameOf = ${FOCUS_EVENT_NAME_OF};
+  const idOf = (el) => {
+    if (!window.__a11yFocusIds.has(el)) window.__a11yFocusIds.set(el, window.__a11yFocusNextId++);
+    return window.__a11yFocusIds.get(el);
+  };
+  const start = performance.now();
+  const record = (type) => (e) => {
+    window.__a11yFocusLog.push({ type, id: idOf(e.target), name: nameOf(e.target),
+      atMs: Math.round(performance.now() - start) });
+  };
+  window.__a11yFocusIn = record("focusin");
+  window.__a11yFocusOut = record("focusout");
+  document.addEventListener("focusin", window.__a11yFocusIn, true);
+  document.addEventListener("focusout", window.__a11yFocusOut, true);
+  return { installed: true };
+})()`;
+
+/**
+ * @returns {Promise<{ installed: boolean, targetMatch: UsablePageTarget["targetMatch"] | null,
+ *                      already?: boolean, error?: string }>}
+ */
+export async function installFocusEventLog() {
+  try {
+    const { value, targetMatch } = await evaluateOnPageTarget(INSTALL_FOCUS_EVENT_LOG_EXPRESSION);
+    return { installed: !!value?.installed || !!value?.already, targetMatch, already: !!value?.already };
+  } catch (error) {
+    // A diagnostic probe must never fail a capture. `focusEventVerdict` reads `installed: false` as
+    // "cannot say", never as "F55 absent" -- absence of the oracle and absence of the finding must not
+    // collapse into the same silence, the same rule `structuralCensus`'s own comment states.
+    return { installed: false, targetMatch: null, error: /** @type {Error} */ (error).message };
+  }
+}
+
+/**
+ * Read the log AND remove the listeners, in one round trip -- so a capture that throws between
+ * `installFocusEventLog` and here still only leaves the listeners attached for the one CDP call it takes
+ * to tear them down, which `captureWithNvda`'s `finally` calls unconditionally (see its comment for why
+ * that has to be unconditional: the same reasoning as `setExpectedPageUrl(null)`).
+ *
+ * Returns `events: null` — never `[]` — when nothing was installed to read, so "the page had no focus
+ * activity" and "we never asked" cannot be mistaken for each other.
+ *
+ * @returns {Promise<{ events: Array<{type: string, id: number, name: string, atMs: number}> | null,
+ *                      targetMatch: UsablePageTarget["targetMatch"] | null, error?: string }>}
+ */
+export async function collectFocusEventLog() {
+  try {
+    const { value, targetMatch } = await evaluateOnPageTarget(`(() => {
+      if (!window.__a11yFocusLog) return { events: null, error: "not installed" };
+      const events = window.__a11yFocusLog;
+      document.removeEventListener("focusin", window.__a11yFocusIn, true);
+      document.removeEventListener("focusout", window.__a11yFocusOut, true);
+      delete window.__a11yFocusLog; delete window.__a11yFocusIn; delete window.__a11yFocusOut;
+      delete window.__a11yFocusIds; delete window.__a11yFocusNextId;
+      return { events };
+    })()`);
+    return { events: value?.events ?? null, targetMatch, error: value?.error };
+  } catch (error) {
+    return { events: null, targetMatch: null, error: /** @type {Error} */ (error).message };
+  }
+}
+
+/**
  * What URL is the browser showing RIGHT NOW?
  *
  * Needed because a form probe on a real site can NAVIGATE. Submitting Wikipedia's search moved the browser

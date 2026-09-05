@@ -85,7 +85,11 @@ focusRevealTest("the reveal probe is sequenced BEFORE the probe that walks the t
   const source = readFileSync(
     resolve(import.meta.dirname, "./capture-core.mjs"), "utf8");
   const reveal = source.indexOf("results.focusReveal = probeFocusReveal_");
-  const order = source.indexOf("results.focusOrder = probeFocus");
+  // Marker updated when `probeFocusOrder`'s call site moved into `probeFocusOrderWithEventLog` (the F55
+  // focus-event log, which brackets the tab walk) -- that function IS the probe that walks the tab ring
+  // now, `probeFocusOrder` itself being one call inside it. Whatever the marker, the invariant is the one
+  // this test's own name states; the marker is just how a source-text test has to find it.
+  const order = source.indexOf("await probeFocusOrderWithEventLog");
   focusRevealAssert.ok(reveal >= 0 && order >= 0,
     "one of the two assignments is gone from capture-core.mjs -- this test examines nothing; find where "
     + "the probes are sequenced now and assert the order there");
