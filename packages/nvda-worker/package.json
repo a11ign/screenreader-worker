@@ -9,6 +9,7 @@
     "./code-version": "./src/code-version.mjs",
     "./worker-files": "./src/worker-files.mjs",
     "./capture-pure": "./src/capture-pure.mjs",
+    "./capture-faults": "./src/capture-faults.mjs",
     "./package.json": "./package.json",
     "./error-text": "./src/error-text.mjs"
   },

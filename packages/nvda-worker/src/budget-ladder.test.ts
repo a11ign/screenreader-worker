@@ -194,7 +194,7 @@ test("the shared capture client posts through requestJson — proved, not assume
   // once, and each one's own budget would read as though it applied.
   const here = dirname(fileURLToPath(import.meta.url));
   const src = readFileSync(
-    join(here, "..", "..", "lab", "src", "capture", "capture-client.mjs"), "utf8");
+    join(here, "..", "..", "worker-fleet", "src", "capture-client.mjs"), "utf8");
   assert.match(src, /\brequestJson\(/, "captureTolerantly must send its POST through requestJson");
   assert.doesNotMatch(src, /\bfetch\(/,
     "a fetch here would put undici's 300 s headers cap back under every client that delegates to this one");
