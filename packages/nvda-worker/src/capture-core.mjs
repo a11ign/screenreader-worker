@@ -2049,11 +2049,12 @@ async function navigateByStructureThenAudit(options) {
  *           formChanges: AnnouncedChange[], navigatedOnSubmit?: unknown, postSubmitNames?: string[],
  *           formFill?: unknown},
  *           postSubmitFields: string[], focusOrder: string[], routeChange: unknown, dialogEscape: unknown,
- *           arrowNavigation: unknown, typedFeedback: unknown, focusContext: unknown }} ctx
+ *           arrowNavigation: unknown, typedFeedback: unknown, focusContext: unknown,
+ *           focusReveal: unknown }} ctx
  */
 function interactionEvidence({
   structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape, arrowNavigation,
-  typedFeedback, focusContext,
+  typedFeedback, focusContext, focusReveal,
 }) {
   return {
     controls: structure.formFields,
@@ -2077,6 +2078,13 @@ function interactionEvidence({
     // Absent unless asked for. Absent and "we walked the tab order and the title never moved" must stay
     // distinguishable: the second is the CONFORMANT answer to 3.2.1, the first is no answer at all.
     ...(focusContext ? { focusContext } : {}),
+    // 1.4.13. THIS LINE IS WHAT THE DOCSTRING ABOVE WARNS ABOUT, and it was missing for the probe's whole
+    // life: the verdict was computed, written to its diagnostic mark, and dropped here, so
+    // `interaction.focusReveal` was `undefined` on every capture and the signal reading it was BLIND on all
+    // 18 cases. The mark said `revealed: true, dismissed: false` on the bad page and `dismissed: true` on
+    // the good one -- the discrimination was real and never reached the channel. Same shape as
+    // `postSubmitFields` empty on 2,122 captures, which is the example this function's own docstring gives.
+    ...(focusReveal ? { focusReveal } : {}),
     // Absent (rather than false) when the submit did not navigate, so "we did not check" and "it did not
     // navigate" stay distinguishable.
     // WHAT A CONFIGURED FORM ACTUALLY DID — filled, unbound, submitted (ADR 0024).
@@ -2259,7 +2267,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   // captures, reproduced exactly: an empty field is not a malformed one, no count moves, and every gate
   // stays green. Caught by reading, because `capture-core` imports guidepup and no test can reach here.
   const { postSubmitFields, focusOrder, dialogEscape, arrowNavigation, typedFeedback,
-    focusContext } = results;
+    focusContext, focusReveal } = results;
 
   // LAST of the three, because it is the only probe that can leave the page under measurement: it activates
   // a link. Everything position-dependent has finished by here, so navigating away costs nothing.
@@ -2281,7 +2289,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
 
   return { structure, interaction: assembleAndMark({
     structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape, arrowNavigation,
-    typedFeedback, focusContext, diag,
+    typedFeedback, focusContext, focusReveal, diag,
   }), observed };
 }
 
@@ -2300,13 +2308,13 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
  *
  * @param {{ structure: CapturedStructure, interaction: any, postSubmitFields: string[],
  *           focusOrder: string[], routeChange: unknown, dialogEscape: unknown, arrowNavigation: unknown,
- *           typedFeedback: unknown, focusContext: unknown, diag: Diag }} ctx
+ *           typedFeedback: unknown, focusContext: unknown, focusReveal: unknown, diag: Diag }} ctx
  */
 function assembleAndMark({ structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape,
-  arrowNavigation, typedFeedback, focusContext, diag }) {
+  arrowNavigation, typedFeedback, focusContext, focusReveal, diag }) {
   const result = interactionEvidence({
     structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape, arrowNavigation,
-    typedFeedback, focusContext,
+    typedFeedback, focusContext, focusReveal,
   });
   diag.mark("interaction", {
     controls: result.controls.length,
