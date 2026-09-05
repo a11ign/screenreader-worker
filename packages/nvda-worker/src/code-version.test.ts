@@ -69,6 +69,17 @@ test("the hash covers every worker source file the guest runs", () => {
   }
   // Guard the guard: if the walk stopped following imports it would pass having examined almost nothing.
   assert.ok(seen.size >= 5, `the import walk only reached ${seen.size} file(s); it is not following imports`);
+
+  // NAMED, not just counted. A threshold on `seen.size` would still pass if the walk reached five
+  // UNRELATED files and missed both of these — a count is where an investigation stops, and it is where
+  // a false confirmation stops too. `capture-core.mjs` split into these plus itself on 2026-09-05; this
+  // asserts the walk actually followed capture-core.mjs's two new imports rather than happening to clear
+  // the threshold some other way. Mutation-checked: removing either from `worker-files.mjs` fails this
+  // assertion by name, not just the generic "imports X but it is not in the hash" one two lines up.
+  assert.ok(seen.has("capture-setup.mjs") && seen.has("capture-probes.mjs"),
+    `the import walk from server.mjs did not reach both of capture-core.mjs's 2026-09-05 split targets `
+    + `(reached: ${[...seen].sort().join(", ")}) — capture-setup.mjs and capture-probes.mjs would then `
+    + `be able to drift from the hash with nothing here noticing`);
 });
 
 test("the list contains itself, so a change to it is deployed", () => {
