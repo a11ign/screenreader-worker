@@ -4615,9 +4615,18 @@ async function probeFocusReveal({ interaction, deadline, diag }) {
     const afterEscape = await structuralCensus();
     const focusAfter = await reportFocusedControlWithRetry(interaction);
     const verdict = focusRevealVerdict({ before, onFocus, afterEscape, focusBefore, focusAfter });
-    // `tabs` is on the MARK and not in the verdict: "nothing revealed in 8 stops" and "we got one stop
-    // before the deadline" are different findings, and the verdict cannot tell them apart.
-    mark({ ...verdict, tabs });
+    // `tabs`, `focusBefore` and `focusAfter` are on the MARK and not in the verdict.
+    //
+    // `tabs` because "nothing revealed in 8 stops" and "we got one stop before the deadline" are different
+    // findings and the verdict cannot tell them apart.
+    //
+    // THE TWO FOCUS STRINGS BECAUSE `focusHeld` IS A BOOLEAN AND A BOOLEAN IS WHERE AN INVESTIGATION
+    // STOPS. Measured 2026-09-05: it read `false` on BOTH variants of every 1.4.13 case, which makes the
+    // signal — `focusHeld === true && dismissed === false` — unable to fire on the bad page, and makes
+    // `vanished` fire on the conformant one. Whether that is focus genuinely moving, or the same control
+    // announced differently once Escape has left focus mode, is not decidable from `false`. The strings
+    // are the evidence; recording them costs nothing and one capture then answers it.
+    mark({ ...verdict, tabs, focusBefore, focusAfter });
     return verdict;
   } catch (e) {
     // RECORDED, never dropped -- a probe that threw and a page that revealed nothing are different
