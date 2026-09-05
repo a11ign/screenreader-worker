@@ -41,6 +41,7 @@
  */
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { samePath } from "./capture-pure.mjs";
 
 /** Chromium's DevTools endpoint. Loopback only — it is never reachable off the guest. */
 export const CDP_PORT = 9222;
@@ -139,9 +140,22 @@ export function expectedPageUrlForTest() {
  *     or `/council-tax`. Path is the dimension that actually discriminates a widget from the page under
  *     test; host and port are the dimensions this project has already proven unreliable.
  *
- * Trailing slashes are normalised away in both operands (`/enforcement` and `/enforcement/` match) because
- * a redirect that adds or drops one is not a different document. The hash is ignored because an in-page
- * anchor never changes which document is showing.
+ * PATHS ARE COMPARED WITH `samePath`, not a bespoke normalisation, and this was a real gap until
+ * 2026-09-05: every synthetic page is REQUESTED with `.html` and the page server serves the extensionless
+ * path the browser then reports, so this function tagged `fallback` on every synthetic capture ever
+ * taken -- undetected because a single-target page still falls back onto the right document, so no
+ * evidence was ever wrong. `samePath` (`capture-pure.mjs`) already exists to solve exactly this: it was
+ * written for `landedVerdict`/`addressesSamePage` after an identical incident (`serve` logging
+ * `GET /route-title-stale/bad` for a request to `/bad.html`) and already normalises the extension, a
+ * trailing slash AND an `/index` suffix -- a superset of "tolerate `.html`", proven against a real
+ * incident rather than invented for this file. Writing a second, narrower normaliser here would be this
+ * repo's own "a fact stated twice" shape: two hand-rolled answers to "is this the same document" that
+ * could disagree the next time the page server's rewrite rule changes. Reusing it keeps the comparison
+ * against the REQUESTED `expectedUrl`, never the browser's own report of where it landed -- CDP's
+ * `target.url` is exactly the value this function exists to doubt, so trusting it as the oracle would
+ * remove the check it is performing.
+ *
+ * The hash is ignored because an in-page anchor never changes which document is showing.
  *
  * @param {string | undefined} actualUrl @param {string} expectedUrl
  */
@@ -149,8 +163,9 @@ function sameDocument(actualUrl, expectedUrl) {
   if (!actualUrl) return false;
   if (actualUrl === expectedUrl) return true;
   try {
-    const pathAndQuery = (/** @type {URL} */ u) => u.pathname.replace(/\/+$/, "") + u.search;
-    return pathAndQuery(new URL(actualUrl)) === pathAndQuery(new URL(expectedUrl));
+    const actual = new URL(actualUrl);
+    const expected = new URL(expectedUrl);
+    return samePath(actual.pathname, expected.pathname) && actual.search === expected.search;
   } catch {
     return false; // either URL failed to parse -- not a match, never a crash
   }

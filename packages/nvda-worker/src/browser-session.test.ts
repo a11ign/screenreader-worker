@@ -64,6 +64,19 @@ test("host-vs-IP is not a different document -- every synthetic fixture looks ex
   assert.equal(target?.targetMatch, "matched");
 });
 
+test("a requested .html and a landed extensionless path are the same document -- MEASURED, not hypothetical", () => {
+  // Found 2026-09-05 diagnosing 2.4.7: every synthetic page is REQUESTED with `.html`
+  // (case-matrix.mjs/openPage) and the page server serves the extensionless path, which is what CDP then
+  // reports as the target's own url. Before `sameDocument` reused `samePath`, this tagged EVERY synthetic
+  // capture ever taken "fallback" -- undetected because a single target still falls back onto the right
+  // page, so no evidence was wrong, but the protection this file exists for was off the whole time.
+  const target = choosePageTarget([
+    { type: "page", url: "http://REDACTED-INTERNAL-ADDRESS:5050/focus-removed-on-receipt-coupon/bad",
+      webSocketDebuggerUrl: "ws://a" },
+  ], "http://REDACTED-INTERNAL-ADDRESS:5050/focus-removed-on-receipt-coupon/bad.html");
+  assert.equal(target?.targetMatch, "matched");
+});
+
 test("a query string is part of the document identity, not ignored", () => {
   const targets = [
     { type: "page", url: "https://www.cqc.org.uk/search/all?query=other", webSocketDebuggerUrl: "ws://wrong" },
