@@ -545,6 +545,13 @@ export async function captureWithNvda(url, opts = {}) {
     succeeded = documentReady && Array.isArray(result.transcript) && result.transcript.length > 0;
     return result;
   } finally {
+    // A worker is long-lived and serves many captures, so an expectation set by THIS capture and never
+    // cleared is not an edge case, it is the normal state between requests -- every `pageTarget()` call
+    // outside a capture (`/diagnostics`, a `bringPageToFront` between cases) would otherwise compare the
+    // live target against the PREVIOUS capture's URL. That mostly reads as a wrong "fallback" where
+    // "no-expected-url" is the truth, and two same-path pages on different hosts would make it a false
+    // "matched" -- this repo's most-repeated defect, a stale value read as a current one, in a new place.
+    setExpectedPageUrl(null);
     // Cleanup MUST be unconditional, and it was not.
     //
     // Edge is launched before NVDA is started, and every phase in between can throw. When

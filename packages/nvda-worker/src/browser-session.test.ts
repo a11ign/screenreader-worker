@@ -4,7 +4,8 @@
 // before, so target selection is pure and tested.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { choosePageTarget, reusableArgs, CDP_PORT } from "./browser-session.mjs";
+import { choosePageTarget, reusableArgs, CDP_PORT, setExpectedPageUrl, expectedPageUrlForTest }
+  from "./browser-session.mjs";
 
 test("the visible page target is chosen", () => {
   const target = choosePageTarget([
@@ -71,6 +72,36 @@ test("a query string is part of the document identity, not ignored", () => {
   const target = choosePageTarget(targets, "https://www.cqc.org.uk/search/all?query=hospital");
   assert.equal(target?.webSocketDebuggerUrl, "ws://right");
   assert.equal(target?.targetMatch, "matched");
+});
+
+// A worker is long-lived and serves many captures, so an expectation `setExpectedPageUrl` is never
+// cleared is not an edge case, it is the normal state between requests. `pageTarget` itself does a real
+// CDP fetch and cannot be unit-tested, so this asserts the state directly -- the way `expectedPageUrlForTest`
+// exists for.
+
+test("setExpectedPageUrl(null) clears the expectation, as captureWithNvda's finally now does on every capture", () => {
+  setExpectedPageUrl("https://example.com/page-one");
+  assert.equal(expectedPageUrlForTest(), "https://example.com/page-one");
+  setExpectedPageUrl(null); // what captureWithNvda's finally block calls when a capture ends
+  assert.equal(expectedPageUrlForTest(), null);
+});
+
+test("without the reset, a stale expectation would tag a same-path page on a DIFFERENT host as a false match", () => {
+  // The exact failure the reset prevents: two unrelated pages sharing a path, captured back to back on a
+  // worker that never cleared the previous capture's URL.
+  setExpectedPageUrl("https://siteA.example.com/search");
+  const staleTarget = choosePageTarget(
+    [{ type: "page", url: "https://siteB.example.com/search", webSocketDebuggerUrl: "ws://b" }],
+    expectedPageUrlForTest(),
+  );
+  assert.equal(staleTarget?.targetMatch, "matched", "path-only matching cannot see the host difference");
+  setExpectedPageUrl(null); // the reset under test
+  const target = choosePageTarget(
+    [{ type: "page", url: "https://siteB.example.com/search", webSocketDebuggerUrl: "ws://b" }],
+    expectedPageUrlForTest(),
+  );
+  assert.equal(target?.targetMatch, "no-expected-url",
+    "cleared correctly: no stale expectation to falsely match against");
 });
 
 test("the DevTools UI is never chosen, even though it is type 'page'", () => {

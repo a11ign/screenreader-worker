@@ -115,6 +115,17 @@ export function setExpectedPageUrl(url) {
 }
 
 /**
+ * Read the current value, for the one thing `pageTarget` cannot be unit-tested through: it does a real
+ * `fetch` to CDP, so the reset `captureWithNvda`'s `finally` now performs on every capture -- the fix for
+ * "a worker is long-lived, so the PREVIOUS capture's URL was never cleared" -- has to be asserted here
+ * instead, on the state itself, the way `comparableNamesForTest` exposes a rule-layer internal for the
+ * same reason.
+ */
+export function expectedPageUrlForTest() {
+  return expectedPageUrl;
+}
+
+/**
  * Do two URLs identify the same document, allowing for the differences a real capture actually sees?
  *
  * Deliberately compares PATH AND QUERY ONLY — never scheme, host or port. Two facts from this repo's own
