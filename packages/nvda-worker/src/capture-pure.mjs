@@ -1138,10 +1138,20 @@ const FOCUS_SCRIPT_BLUR_WINDOW_MS = 50;
  * gap is smaller. It is still bounded below by a real NVDA keystroke round trip, which this repo
  * measures in hundreds of milliseconds, never in tens.
  *
- * So the SEPARATION is real and evidenced. What is still unmeasured is the other side: no capture has
- * yet recorded a script `blur()` to confirm it lands under 50 ms rather than merely under 1,944. The
- * first capture carrying a real F55 page settles that, and until one does this threshold is a
- * hypothesis with a large margin rather than a calibrated value.
+ * A SECOND, MORE DIRECT MEASUREMENT, from a real page rather than a probe-wide average: a real capture
+ * carrying `interaction.focusEvents` (116 events, `scriptRemovedFocus: []`) was walked for every real
+ * `focusin`→`focusout` pair sharing an id — 24 of them, ordinary Tab transitions, none scripted — and the
+ * SMALLEST gap measured was 633 ms. That is **a 12.6x margin on the negative side, lower bound
+ * unconfirmed**: 633 ms is an actual observed focusout-follows-Tab-press gap, not an upper bound derived
+ * from a probe's mean, so it tightens the negative-side evidence beyond the 38.9x figure above rather than
+ * merely repeating it. It says nothing new about the other side — no capture has yet recorded a script
+ * `blur()` at all, so whether a real synchronous re-focus lands under 50 ms remains exactly as unmeasured
+ * as the paragraph above already says. Both figures bound the SAME side; neither touches the lower one.
+ *
+ * So the SEPARATION is real and evidenced, twice over, on the negative side. What is still unmeasured is
+ * the other side: no capture has yet recorded a script `blur()` to confirm it lands under 50 ms rather
+ * than merely under 633. The first capture carrying a real F55 page settles that, and until one does this
+ * threshold is a hypothesis with a large margin rather than a calibrated value.
  *
  * @param {{ events: {type: string, id: number, name: string, atMs: number}[] | null | undefined,
  *           error?: string | undefined }} log
