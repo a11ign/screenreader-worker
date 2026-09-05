@@ -104,6 +104,12 @@ export const REMOVABLE_APPX = [
 export const KEEP_PATTERNS = [
   "edge", "webview", "speech", "texttospeech", "onecore", "narrator",
   "accessib", "uiautomation", "dotnet", "netfx", "vclibs", "ui.xaml", "runtime",
+  // Added 2026-09-06 (audit §9, "Windows trimming"): `build-lean-worker-image.ps1`'s offline copy of this
+  // list carried it and this one did not, found by diffing the two rather than assumed equal. Servicing
+  // stack updates are never Appx packages so it is inert against `REMOVABLE_APPX` today, but the two lists
+  // are pinned equal by `windows-trim-parity.test.ts` and a silent drift is exactly what that test exists
+  // to catch — so it is added here rather than removed there.
+  "servicingstack",
 ];
 
 /**
