@@ -187,6 +187,39 @@ export const CAPTURE_SETTINGS = Object.freeze([
   // Read from NVDA's own `configSpec.py` — `[speech] reportLanguage = boolean(default=false)`.
   { section: "speech", key: "reportLanguage", value: "True",
     why: "3.1.2 Language of Parts is announced as a VOICE change and no text unless this is on" },
+  //
+  // DO NOT MERGE THIS ENTRY, OR THE ONE BELOW, ALONE. `screenReaderSettingsDigest` is a capture cache
+  // key: adding either invalidates every cached capture, which is a real recapture and must ride with a
+  // key change already paying for one rather than being spent by itself.
+  //
+  // Read from NVDA's own `configSpec.py`, both in `[speech]` beside `reportLanguage` -- confirmed
+  // rather than assumed, because it would have been easy to guess `[documentFormatting]` again:
+  // `autoLanguageSwitching = boolean(default=true)`, `reportNotSupportedLanguage = option("speech",
+  // "beep", "off", default="speech")`.
+  //
+  // Their actual relationship was RESEARCHED from `source/speech/languageHandling.py` rather than
+  // inferred from the sibling `[documentFormatting]` incident, and it corrects an assumption this repo
+  // had made: `autoLanguageSwitching` is NOT the precondition for `reportLanguage` firing at all.
+  // `shouldMakeLangChangeCommand()` -- the gate that decides whether NVDA even inserts a language-change
+  // marker into the speech sequence -- is `autoLanguageSwitching OR reportLanguage`, so `reportLanguage`
+  // alone still causes the language name to be spoken. What `autoLanguageSwitching` genuinely
+  // preconditions is `reportNotSupportedLanguage`: `shouldReportNotSupported()` is
+  // `autoLanguageSwitching AND reportNotSupportedLanguage != "off"`, so with it off the setting below
+  // really is inert, the `[documentFormatting]` shape one setting over. And it has its OWN direct effect
+  // on `reportLanguage`'s own announcement: `getLangToReport()` reports the passage's language as its
+  // ROOT code ("es" from "es_ES") when `autoLanguageSwitching` is on and `autoDialectSwitching` (default
+  // off) is not, and the FULL code otherwise -- a different string spoken for the identical page.
+  { section: "speech", key: "autoLanguageSwitching", value: "True",
+    why: "the precondition for reportNotSupportedLanguage below, and it changes reportLanguage's own "
+      + "announcement to a root code (\"es\") rather than a full one (\"es_ES\") for the same passage" },
+  // A passage whose language the synthesiser cannot voice is announced "<language> (not supported)" —
+  // or, set to "beep", a tone with no language name at all — only when `autoLanguageSwitching` (above)
+  // is also on. Off entirely, NVDA says nothing about the mismatch. Three settings, three different
+  // transcripts for the same page: this is not a smaller version of the `reportLanguage` case, it is the
+  // same failure mode with a third value instead of two.
+  { section: "speech", key: "reportNotSupportedLanguage", value: "speech",
+    why: "a passage in a language the synthesiser cannot voice is announced \"(not supported)\", "
+      + "beeped, or silently skipped, depending on this value alone" },
   // NOT `documentFormatting.reportEmphasis`, and the reason is a browser limit rather than a decision.
   //
   // It was added here on 2026-09-03 with its corpus case, and the case came back CONTAMINATED: the signal
@@ -199,6 +232,27 @@ export const CAPTURE_SETTINGS = Object.freeze([
   // `screenReaderSettings`, which is a cache-key input, and invalidate every capture in exchange for
   // nothing. The finding is recorded in known-gaps rather than the setting kept "in case".
 ]);
+
+/**
+ * The settings this guest captures under, as one comparable value for the cache key.
+ *
+ * Derived from `CAPTURE_SETTINGS` rather than hand-written, so adding a setting cannot fail to move the
+ * key — which is the failure that would matter: a new setting changing the evidence while every old
+ * capture stays reusable. The `why` is deliberately NOT in the digest; the digest answers "is this the
+ * same evidence", and a reworded comment is not a different capture.
+ *
+ * Lives beside `CAPTURE_SETTINGS` rather than in `server.mjs`, which imports `capture-core.mjs` and
+ * therefore guidepup — unsafe to import from a portable test on any host without a screen reader.
+ * `capture-settings.test.ts` needs this reachable on its own to prove the digest actually moves.
+ *
+ * @returns {string}
+ */
+export function captureSettingsDigest() {
+  return CAPTURE_SETTINGS
+    .map((setting) => `${setting.section}.${setting.key}=${setting.value}`)
+    .sort()
+    .join(",");
+}
 
 /**
  * Apply `CAPTURE_SETTINGS` to every nvda.ini found, at boot.

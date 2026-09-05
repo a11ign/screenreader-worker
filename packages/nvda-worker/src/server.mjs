@@ -36,7 +36,7 @@ import { faultCode } from "./capture-faults.mjs";
 import { createResultStore, isValidCaptureId, storedResultResponse } from "./capture-results.mjs";
 import { edgePolicy, guestDiagnostics, processCounts, screenReaderState, screenReaderDefaults, treeSize } from "./diagnostics.mjs";
 import { killStrayBrowsers, pruneEdgeProfile, reportBrowserPolicyDrift } from "./browser-profile.mjs";
-import { applyRequestedLogLevel, applyCaptureSettings, CAPTURE_SETTINGS } from "./nvda-logging.mjs";
+import { applyRequestedLogLevel, applyCaptureSettings, captureSettingsDigest } from "./nvda-logging.mjs";
 import { trimAlreadyDone } from "./windows-trim.mjs";
 import { createLogWriter, silenceStreamErrors } from "./server-log.mjs";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -777,23 +777,6 @@ function nvdaConfigPaths() {
     tempDir: process.env.TEMP || process.env.TMP || ".",
     tailLines: 1,
   }).config ?? []).map((/** @type {{path: string}} */ c) => c.path);
-}
-
-/**
- * The settings this guest captures under, as one comparable value for the cache key.
- *
- * Derived from `CAPTURE_SETTINGS` rather than hand-written, so adding a setting cannot fail to move the
- * key — which is the failure that would matter: a new setting changing the evidence while every old
- * capture stays reusable. The `why` is deliberately NOT in the digest; the digest answers "is this the
- * same evidence", and a reworded comment is not a different capture.
- *
- * @returns {string}
- */
-function captureSettingsDigest() {
-  return CAPTURE_SETTINGS
-    .map((setting) => `${setting.section}.${setting.key}=${setting.value}`)
-    .sort()
-    .join(",");
 }
 
 async function sampleDesktopDialogs() {

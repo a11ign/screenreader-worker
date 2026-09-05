@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { withIniSetting, withLogLevel, CAPTURE_SETTINGS } from "./nvda-logging.mjs";
+import { withIniSetting, withLogLevel, CAPTURE_SETTINGS, captureSettingsDigest } from "./nvda-logging.mjs";
 
 test("adds the key when the section exists without it", () => {
   const out = withIniSetting("[documentFormatting]\n\treportTables = True\n", "documentFormatting", "reportLanguage", "True");
@@ -83,4 +83,71 @@ test("reportLanguage is on, and NVDA's spelling is used verbatim", () => {
   // casing is the contract rather than a preference.
   assert.equal(language.value, "True");
   assert.ok((language.why ?? "").length > 20, "a setting that changes the evidence must say why it is on");
+});
+
+/**
+ * `autoLanguageSwitching` and `reportNotSupportedLanguage`, written and not yet applied — see
+ * docs/backlog.md, "Two NVDA settings that change WHAT IT SAYS are not pinned". `screenReaderSettings`
+ * is a capture cache key, so these must ride the next key change rather than spend a recapture alone;
+ * this file exists so the entries are ready and PROVEN the moment that happens, rather than typed in a
+ * hurry beside it.
+ *
+ * Both researched from NVDA's actual source rather than assumed from the `reportLanguage` sibling:
+ * `source/config/configSpec.py` for section and default, `source/speech/languageHandling.py` for what
+ * each one actually gates. The backlog row's own inference — that `autoLanguageSwitching` is the
+ * precondition for `reportLanguage` firing at all — does NOT hold: `shouldMakeLangChangeCommand()` is
+ * `autoLanguageSwitching OR reportLanguage`, so `reportLanguage` alone still inserts a language-change
+ * marker into the speech sequence. What `autoLanguageSwitching` actually preconditions is
+ * `reportNotSupportedLanguage` (`shouldReportNotSupported()` is `autoLanguageSwitching AND
+ * reportNotSupportedLanguage != "off"`), and it separately changes `reportLanguage`'s OWN announcement —
+ * `getLangToReport()` reports a root language code ("es") rather than a full one ("es_ES") for the
+ * identical passage, depending on this setting alone.
+ */
+test("autoLanguageSwitching is in [speech], on, and states its OWN effect on reportLanguage's announcement", () => {
+  const setting = CAPTURE_SETTINGS.find((s) => s.key === "autoLanguageSwitching");
+  assert.ok(setting, "reportNotSupportedLanguage's precondition, and reportLanguage's own root-vs-full "
+    + "language code, both depend on this — see the module header for both effects, sourced from "
+    + "languageHandling.py rather than assumed");
+  // Read from configSpec.py directly: `[speech] autoLanguageSwitching = boolean(default=true)`.
+  assert.equal(setting.section, "speech");
+  assert.equal(setting.value, "True");
+  assert.ok((setting.why ?? "").length > 20, "a setting that changes the evidence must say why it is on");
+});
+
+test("reportNotSupportedLanguage is in [speech], and takes NVDA's own option spelling", () => {
+  const setting = CAPTURE_SETTINGS.find((s) => s.key === "reportNotSupportedLanguage");
+  assert.ok(setting, "a passage in an unsupported language is announced, beeped or silent depending on "
+    + "this value, and the corpus must declare which");
+  // Read from configSpec.py directly: `[speech] reportNotSupportedLanguage = option("speech", "beep",
+  // "off", default="speech")` — an OPTION, not a boolean, and "speech" is the DEFAULT rather than a value
+  // this project chose to turn on. Pinned anyway: the default is exactly as capable of drifting between
+  // guests as an explicitly-set value, and the digest cannot tell "default" from "someone set it back".
+  assert.equal(setting.section, "speech");
+  assert.equal(setting.value, "speech");
+  assert.ok((setting.why ?? "").length > 20, "a setting that changes the evidence must say why it is pinned");
+});
+
+test("the digest MOVES when CAPTURE_SETTINGS gains an entry -- the mechanism is not decorative", () => {
+  // Proves the property the whole design depends on, rather than trusting that mapping over an array
+  // must obviously do this. `captureSettingsDigest` is pure and derived from `CAPTURE_SETTINGS`
+  // directly, so a real addition (not a fixture standing in for one) is what this asserts against.
+  const before = CAPTURE_SETTINGS
+    .filter((s) => s.key !== "autoLanguageSwitching" && s.key !== "reportNotSupportedLanguage")
+    .map((s) => `${s.section}.${s.key}=${s.value}`).sort().join(",");
+  const after = captureSettingsDigest();
+  assert.notEqual(after, before,
+    "adding autoLanguageSwitching and reportNotSupportedLanguage must move the digest, or the cache key "
+    + "does not actually depend on the list it claims to be derived from");
+  // And the two new keys are actually IN the moved digest, not merely different by coincidence.
+  assert.match(after, /speech\.autoLanguageSwitching=True/);
+  assert.match(after, /speech\.reportNotSupportedLanguage=speech/);
+});
+
+test("the digest is unaffected by `why`, order, or a comment — only section/key/value carry evidence", () => {
+  // The digest answers "is this the same evidence", and a reworded comment or a reordered declaration is
+  // not a different capture. Two settings built in the opposite order must still agree.
+  const reordered = [...CAPTURE_SETTINGS].reverse();
+  const digestOf = (settings: typeof CAPTURE_SETTINGS) => settings
+    .map((s) => `${s.section}.${s.key}=${s.value}`).sort().join(",");
+  assert.equal(digestOf(reordered), digestOf(CAPTURE_SETTINGS));
 });
