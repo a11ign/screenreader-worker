@@ -13,7 +13,10 @@
  * Reachable despite the pool sending one case per worker at a time: CLAUDE.md records that two shells or two
  * agents drive this worker, and a `--no-cache` rerun beside a live run is exactly that shape.
  *
- * `server.mjs` binds a port on import and needs Windows, so this asserts the ORDERING PROPERTY against the
+ * `server.mjs` needs guidepup and therefore a screen reader, so this asserts the ORDERING PROPERTY against the
+ * (It does NOT bind a port on import: `IS_MAIN` guards `server.listen`, and the older claim outlived that
+ * guard in six files. Verified 2026-09-05. The guidepup half is the real constraint.)
+ * 
  * source, and separately proves the property itself with a model of both arrangements. Found by applying Clean
  * Code's Concurrency chapter, which the review skill was missing.
  */

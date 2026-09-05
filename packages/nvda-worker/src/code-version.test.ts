@@ -10,7 +10,10 @@
 // express — a better fix than checking for it. What is still worth asserting is that nobody reintroduces a
 // second copy, and that the list actually covers what the guest runs.
 //
-// Note what may not be imported here: `server.mjs` binds a port on import and `check-worker-code.mjs` runs its
+// Note what may not be imported here: `server.mjs` needs guidepup, which refuses to import without a
+// screen reader. It does NOT bind a port on import — that was true before the `IS_MAIN` guard and the
+// claim outlived it, repeated in six files. Verified 2026-09-05: it imports cleanly on macOS with
+// nothing listening. `check-worker-code.mjs` runs its
 // check on import, so those two are read as TEXT. `worker-files.mjs` is a bare constant and safe to import,
 // which is the point of it being its own module.
 import { test } from "node:test";

@@ -91,7 +91,7 @@ const LOG_PATH = process.env.A11Y_SERVER_LOG || "worker.log";
 // PowerShell 5.1 has no -Encoding parameter and writes UTF-16 -- that changed the log's
 // encoding mid-file and broke every existing reader of it.
 //
-// The writer itself lives in server-log.mjs, where it can be tested: this file binds a port on import, and
+// The writer itself lives in server-log.mjs, where it can be tested: this file needs guidepup, and
 // the console write below used to be OUTSIDE the try that guarded the append -- an EPIPE from a parent that
 // had gone away then reached the uncaughtException handler, which logged, which wrote to the same broken
 // pipe. That loop reached 354 GB. See that module's header.

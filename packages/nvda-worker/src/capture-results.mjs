@@ -63,7 +63,8 @@ export function isValidCaptureId(id) {
 /**
  * The HTTP answer for a recall, as data.
  *
- * Separated from the route so it can be tested at all: `server.mjs` binds a port on import, so anything
+ * Separated from the route so it can be tested at all: `server.mjs` needs guidepup and therefore a screen
+ * reader — it does NOT bind a port on import, which `IS_MAIN` settled and this sentence outlived — so anything
  * decided inside it is decided where no test can reach — and this endpoint's whole value is in three
  * answers that must not collapse into two.
  *

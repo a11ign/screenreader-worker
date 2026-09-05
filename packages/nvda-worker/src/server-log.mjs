@@ -4,7 +4,9 @@
  *
  * ## Why this is not in server.mjs
  *
- * `server.mjs` binds a port on import, so anything decided inside it is decided where no test can reach —
+ * `server.mjs` needs guidepup, so anything decided inside it is decided where no test without a screen
+ * reader can reach — it does NOT bind a port on import, which the `IS_MAIN` guard settled and this
+ * sentence outlived in six files (verified 2026-09-05) —
  * the same reason `capture-results.mjs` exists. That mattered here: the fault below ran to completion with
  * every check green, and there was no seam at which to prove a guard against it works.
  *
