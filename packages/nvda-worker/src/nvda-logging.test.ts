@@ -54,3 +54,20 @@ test("a value containing a regex metacharacter is not confused with a similar-lo
     "the file holds 1X5, not 1.5 -- it must be rewritten, not read as already correct");
   assert.match(updated!, /symbolLevel = 1\.5/);
 });
+
+test("a value containing a $ is written literally, not expanded as a replacement pattern", () => {
+  // The other half of the same defect. `escapeRegExp` protects the PATTERN; `String.replace`'s
+  // REPLACEMENT string has its own syntax where `$&` means "the whole match" -- so writing an existing
+  // key wrote the matched line into the middle of the value instead of the two characters requested.
+  const updated = withIniSetting("[speech]\n\trate = 50\n", "speech", "rate", "a$&b");
+  assert.match(updated!, /rate = a\$&b/, "the literal $& must survive, not expand to the matched line");
+});
+
+test("a value containing a $ survives when the key is new but the section already exists", () => {
+  // The SECOND `.replace` call -- taken when the section exists but the key does not, which is the one
+  // that also rewrites the section header line -- has the identical exposure through `section` and `key`
+  // as well as `value`. (A section that does not exist at all takes the template-literal append path at
+  // the top of the function, which never calls `.replace` and was never exposed.)
+  const updated = withIniSetting("[speech]\n\tsynth = oneCore\n", "speech", "rate", "$1$`x");
+  assert.match(updated!, /rate = \$1\$`x/, "the literal must survive through the new-key-in-existing-section path too");
+});

@@ -32,6 +32,19 @@ const LEVELS = new Set(["DEBUG", "INFO", "WARNING", "ERROR", "OFF", "DEBUGWARNIN
 const escapeRegExp = (/** @type {string} */ text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
+ * A literal, safe to splice into `String.replace`'s REPLACEMENT argument.
+ *
+ * The other half of the same defect, on the other side of the same call: `escapeRegExp` above protects the
+ * PATTERN, and the replacement string has its own special syntax -- `$&`, `` $` ``, `$'`, `$1` all expand
+ * inside it, which a pattern-only escape does nothing about. Reproduced: `withIniSetting(body, "speech",
+ * "rate", "a$&b")` wrote the whole matched line into the middle of the value instead of the literal
+ * requested, because `$&` in a replacement string means "the match", not the two characters dollar and
+ * ampersand. `$$` is how `String.replace` spells a literal `$`, so escaping here is DIFFERENT from
+ * `escapeRegExp` and must not be confused with it.
+ */
+const escapeReplacement = (/** @type {string} */ text) => text.replace(/\$/g, "$$$$");
+
+/**
  * The `nvda.ini` body with `logLevel` set, or null when nothing needs changing.
  *
  * Pure, because the risky part is editing a config file that decides whether NVDA starts at all, and a
@@ -78,8 +91,9 @@ export function withIniSetting(body, section, key, value) {
   if (new RegExp(`^\\s*${escapeRegExp(key)}\\s*=\\s*${escapeRegExp(value)}\\s*$`, "mi").test(within)) return null;
   const anyValue = new RegExp(`^\\s*${escapeRegExp(key)}\\s*=.*$`, "mi");
   const updated = anyValue.test(within)
-    ? within.replace(anyValue, `\t${key} = ${value}`)
-    : within.replace(new RegExp(`^\\[${escapeRegExp(section)}\\]`, "mi"), `[${section}]\n\t${key} = ${value}`);
+    ? within.replace(anyValue, `\t${escapeReplacement(key)} = ${escapeReplacement(value)}`)
+    : within.replace(new RegExp(`^\\[${escapeRegExp(section)}\\]`, "mi"),
+        `[${escapeReplacement(section)}]\n\t${escapeReplacement(key)} = ${escapeReplacement(value)}`);
   return body.slice(0, start) + updated + body.slice(end);
 }
 
