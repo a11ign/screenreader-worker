@@ -7,7 +7,9 @@
  */
 import { test as focusRevealTest } from "node:test";
 import focusRevealAssert from "node:assert/strict";
-import { focusRevealVerdict } from "./capture-pure.mjs";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { focusRevealVerdict, censusGrowth } from "./capture-pure.mjs";
 
 const BASE = { formControl: 2, link: 3, graphic: 0, heading: 1, landmark: 1 };
 const GREW = { ...BASE, link: 4 };
@@ -59,4 +61,55 @@ focusRevealTest("nothing appearing on focus is not a finding of any kind", () =>
   const v = focusRevealVerdict({ before: BASE, onFocus: BASE, afterEscape: BASE, focusBefore: "a", focusAfter: "a" });
   focusRevealAssert.equal(v.revealed, false);
   focusRevealAssert.equal(v.dismissed, undefined, "there is nothing to dismiss, so the bullet does not apply");
+});
+
+/**
+ * THE BUG THIS FILE'S SIX TESTS ABOVE COULD NOT SEE, AND WHY IT NEEDED A DIFFERENT KIND OF TEST.
+ *
+ * All 18 of the 1.4.13 cases came back BLIND from their first capture — 15 corpus plus 3 held-out — while
+ * every unit test here passed. They were right to: `focusRevealVerdict` was never wrong. What was wrong is
+ * WHERE its evidence came from. `probeFocusReveal` ran after `probeFocusOrder`, which walks the entire tab
+ * ring, so the panel the probe exists to catch was already open when it took its "before" census and the
+ * delta was zero by construction. Measured on `focus-panel-undismissable-fee.bad`: stop 2 is the trigger,
+ * stop 3 is the link inside the `hidden` panel.
+ *
+ * A verdict function tested on hand-built censuses cannot fail on that, however many cases you give it —
+ * which is this repo's own rule that a metric computed on data sharing the flaw cannot see the flaw. The
+ * property that was actually broken is an ORDER, so it is the order that has to be asserted.
+ *
+ * Source text, deliberately and with the anti-vacuity guard that requires: `probePasses` needs real NVDA,
+ * so there is nothing to import and call. `forbidden-input-keys-parity.test.ts` documents the same
+ * exception for the same reason.
+ */
+focusRevealTest("the reveal probe is sequenced BEFORE the probe that walks the tab ring", () => {
+  const source = readFileSync(
+    resolve(import.meta.dirname, "./capture-core.mjs"), "utf8");
+  const reveal = source.indexOf("results.focusReveal = probeFocusReveal_");
+  const order = source.indexOf("results.focusOrder = probeFocus");
+  focusRevealAssert.ok(reveal >= 0 && order >= 0,
+    "one of the two assignments is gone from capture-core.mjs -- this test examines nothing; find where "
+    + "the probes are sequenced now and assert the order there");
+  focusRevealAssert.ok(reveal < order,
+    "probeFocusReveal must run BEFORE probeFocusOrder. It ran after once, and its baseline census was "
+    + "then taken on a page whose whole tab ring had already been focused -- so anything revealed on "
+    + "focus was already in the baseline and all 18 of its cases read `revealed: false`.");
+});
+
+focusRevealTest("censusGrowth keeps 'we could not look' apart from 'there was nothing'", () => {
+  focusRevealAssert.equal(censusGrowth({ error: "no socket" }, GREW), null,
+    "an errored census must not read as zero growth");
+  focusRevealAssert.equal(censusGrowth(BASE, { error: "no socket" }), null,
+    "and it must not, in either position");
+  focusRevealAssert.deepEqual(censusGrowth(BASE, BASE), [],
+    "an unchanged census is EMPTY growth, which is a real reading and not an absent one");
+  focusRevealAssert.deepEqual(censusGrowth(BASE, GREW), [["link", 1]],
+    "growth names the role and the size, because the evidence has to say what appeared");
+});
+
+focusRevealTest("a role that SHRANK is not growth", () => {
+  // Directional on purpose. Content going away while a control takes focus is 1.4.13's PERSISTENT bullet,
+  // which `focusRevealVerdict` reports as `vanished` and deliberately does not judge -- folding it in here
+  // would make one verdict answer two bullets, which is how a criterion gets reported more confidently
+  // than its evidence allows.
+  focusRevealAssert.deepEqual(censusGrowth(GREW, BASE), []);
 });

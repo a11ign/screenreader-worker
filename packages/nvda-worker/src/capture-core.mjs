@@ -54,6 +54,7 @@ import {
   notObserved,
   recordWhatWasAsked,
   focusRevealVerdict,
+  censusGrowth,
 } from "./capture-pure.mjs";
 import { installSpeechChannelShim } from "./speech-channel.mjs";
 
@@ -299,6 +300,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 // most expensive capture in the corpus. Eight is past the furniture `page()` adds — a skip link and a
 // six-item list — and into the page's own controls, which is where the criterion's failure lives.
 const FOCUS_CONTEXT_STOPS = 8;
+// Same budget and the same reason as FOCUS_CONTEXT_STOPS: far enough past a skip link and a nav list
+// to reach the page's own controls, near enough that a page revealing nothing costs eight tabs.
+const FOCUS_REVEAL_STOPS = 8;
 
 const TYPED_PROBE_TEXT = "123456";
 
@@ -2148,6 +2152,19 @@ function probePasses(ctx) {
     results.focusContext = probeFocusContext_ && probeFocus
       ? await probeFocusContext({ interaction, deadline, diag })
       : null;
+    // 1.4.13, and BEFORE `probeFocusOrder` for the identical reason `focusContext` above is: the reveal
+    // baseline must be a census of a page nothing has focused yet. It ran after, and every one of its 18
+    // cases came back BLIND -- `probeFocusOrder` walks the whole tab ring, so the panel this probe exists
+    // to catch was already open when it took its "before".
+    //
+    // TWO PROBES HERE NOW REQUIRE A PRISTINE PAGE, and only one of them can have it. `focusContext` needs
+    // an untouched TITLE and this needs an untouched CENSUS, and each walks the tab order, so whichever
+    // runs second has a baseline the first may have moved. No corpus case enables both and
+    // `capture-real-pages` enables neither, so this is recorded rather than solved -- but turning both on
+    // for one capture makes the second one's answer unreliable, and nothing downstream would say so.
+    results.focusReveal = probeFocusReveal_ && probeFocus
+      ? await probeFocusReveal({ interaction, deadline, diag })
+      : null;
     results.focusOrder = probeFocus
       ? await probeFocusOrder({ deadline, diag, controlsOnPage: structure.formFields.length })
       : [];
@@ -2155,12 +2172,6 @@ function probePasses(ctx) {
     // rest measures the document, which is what the first version of this did.
     results.dialogEscape = probeDialog && probeFocus
       ? await probeDialogEscape({ interaction, deadline, diag })
-      : null;
-    // 1.4.13, and gated on `probeFocus` for the reason its own comment gives: without DOM focus on a
-    // control there is nothing for Escape to dismiss and the census diff measures the document. AFTER the
-    // dialog probe, which may already have dismissed an overlay -- the same ordering argument.
-    results.focusReveal = probeFocusReveal_ && probeFocus
-      ? await probeFocusReveal({ interaction, deadline, diag })
       : null;
     // Same gate and same reason: an arrow pressed without DOM focus inside the widget navigates the
     // DOCUMENT, because browse mode owns the arrows. AFTER the dialog probe, which may have dismissed an
@@ -4545,16 +4556,50 @@ async function probeFocusReveal({ interaction, deadline, diag }) {
     // BEFORE is taken with focus already on a control -- `probeFocusOrder` has run -- so it is the baseline
     // for "what this page shows while something is focused", not for the untouched document. Comparing
     // against the untouched document would count everything the focus probe itself revealed.
+    await anchorToTop();
+    // BEFORE IS THE UNTOUCHED DOCUMENT, and this is the whole correctness of the probe.
+    //
+    // It used to be taken here with focus already on a control, because `probeFocusOrder` had run --
+    // reasoned at the time as "the baseline for what this page shows WHILE something is focused", to avoid
+    // counting what the focus probe itself revealed. Counting exactly that IS the finding, and the
+    // inversion cost all 18 of the 1.4.13 cases. Measured 2026-09-05, from the tab ring of
+    // `focus-panel-undismissable-fee.bad`: stop 2 is the trigger and stop 3 is the link inside the
+    // `hidden` panel, so the panel was already open before this probe took its first census, and the
+    // delta was zero by construction.
     const before = await structuralCensus();
-    const focusBefore = await reportFocusedControlWithRetry(interaction);
-    await withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, "focusReveal").catch(() => undefined);
-    const onFocus = await structuralCensus();
+    // WALK THE TAB ORDER, do not press Tab once — `probeFocusContext` twenty lines up learned this the
+    // same way: "the first version pressed once and every one of its 28 corpus cases came back BLIND ...
+    // the FIRST focusable thing on a page is almost never the control you mean." `page()` gives every
+    // corpus page furniture, and a real page's first stop is the skip link. Walking is also the truer
+    // reading: 1.4.13 is about ANY control that reveals content on focus, not about the first one.
+    let onFocus = null;
+    let focusBefore = null;
+    let tabs = 0;
+    for (let stop = 0; stop < FOCUS_REVEAL_STOPS; stop += 1) {
+      if (Date.now() > deadline) break;
+      await withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, "focusReveal").catch(() => undefined);
+      tabs += 1;
+      if (!await reportFocusedControl()) break;
+      onFocus = await structuralCensus();
+      const grew = censusGrowth(before, onFocus);
+      // Stop at the FIRST control that reveals something: the evidence has to name which one did it, and
+      // walking on would report the last control rather than the one that mattered.
+      if (grew && grew.length > 0) { focusBefore = await reportFocusedControlWithRetry(interaction); break; }
+    }
+    if (!onFocus) {
+      // NOTHING FOCUSABLE is not "nothing appeared" — the question was never asked. Kept apart for the
+      // same reason every absence in this file is, and `tabs` says which of the two it was.
+      mark({ asked: true, revealed: null, tabs, why: "nothing focusable on this page" });
+      return { asked: true, revealed: null, why: "nothing focusable on this page" };
+    }
     await withTimeout(nvda.press("Escape"), NAV_TIMEOUT_MS, "focusReveal").catch(() => undefined);
     await withTimeout(nvda.press("Escape"), NAV_TIMEOUT_MS, "focusReveal").catch(() => undefined);
     const afterEscape = await structuralCensus();
     const focusAfter = await reportFocusedControlWithRetry(interaction);
     const verdict = focusRevealVerdict({ before, onFocus, afterEscape, focusBefore, focusAfter });
-    mark(verdict);
+    // `tabs` is on the MARK and not in the verdict: "nothing revealed in 8 stops" and "we got one stop
+    // before the deadline" are different findings, and the verdict cannot tell them apart.
+    mark({ ...verdict, tabs });
     return verdict;
   } catch (e) {
     // RECORDED, never dropped -- a probe that threw and a page that revealed nothing are different
@@ -4562,6 +4607,11 @@ async function probeFocusReveal({ interaction, deadline, diag }) {
     mark({ error: errMsg(e) });
     interaction.sweepLog.push(`focusReveal ERROR ${errMsg(e)}`);
     return null;
+  } finally {
+    // IT NOW PRESSES TAB UP TO EIGHT TIMES AND LANDS ON EDITABLES, where NVDA switches to focus mode --
+    // after which single letters are TYPED INTO THE PAGE instead of navigating. The one-Tab version could
+    // mostly get away with omitting this; a walk cannot. Same remedy `probeFocusContext` ends with.
+    await restoreBrowseMode("focusReveal", diag);
   }
 }
 

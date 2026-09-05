@@ -1006,6 +1006,42 @@ export function focusOrderCycled(stops) {
 }
 
 /**
+ * The census roles a reveal can show up in, and the growth between two reads.
+ *
+ * NAMED ONCE. `focusRevealVerdict` had this list twice in its own body -- once for "did anything appear"
+ * and once for "is it still there" -- and `probeFocusReveal` now needs the same question a third time,
+ * once per tab stop, to decide whether to keep walking. Three copies of "what counts as revealed" is this
+ * repo's most expensive shape, so the fact is stated here and the verdict reads it.
+ */
+export const REVEALABLE_ROLES = Object.freeze(["formControl", "link", "graphic", "heading", "landmark"]);
+
+/**
+ * Which of `REVEALABLE_ROLES` GREW between two censuses, as `[role, delta]` pairs — or `null` when either
+ * read is unusable.
+ *
+ * A FAILED CENSUS IS NOT A READING OF ZERO, AND IT DOES NOT ARRIVE AS `null`. `structuralCensus` returns
+ * `{ error }` when the CDP socket did not answer, so the obvious `if (!before)` guard passes the failure
+ * straight through, every count reads 0, and a dropped connection becomes "nothing appeared on focus" --
+ * which is a conformant page. That is absence read as a value, in the one place where absence IS the
+ * question. `null` here is what keeps "we could not look" and "there was nothing" apart.
+ *
+ * @param {unknown} before
+ * @param {unknown} after
+ * @returns {Array<[string, number]> | null}
+ */
+export function censusGrowth(before, after) {
+  const usable = (/** @type {unknown} */ read) =>
+    (read && typeof read === "object" && !("error" in read))
+      ? /** @type {Record<string, number>} */ (read)
+      : null;
+  const [b, a] = [usable(before), usable(after)];
+  if (!b || !a) return null;
+  return /** @type {Array<[string, number]>} */ (REVEALABLE_ROLES
+    .map((key) => [key, Number(a[key] ?? 0) - Number(b[key] ?? 0)])
+    .filter(([, delta]) => Number(delta) > 0));
+}
+
+/**
  * 1.4.13 Content on Hover or Focus — what three censuses and two focus reads MEAN, decided here so the
  * decision is testable without NVDA.
  *
@@ -1041,30 +1077,20 @@ export function focusRevealVerdict({ before, onFocus, afterEscape, focusBefore, 
   // straight through, every count reads 0, and a dropped connection becomes "nothing appeared on focus",
   // which is a conformant page. That is absence read as a value, in the one place where absence IS the
   // question, and `tsc` caught it in the first version of this function rather than a capture run.
-  const counts = (/** @type {unknown} */ read) =>
-    (read && typeof read === "object" && !("error" in read))
-      ? /** @type {Record<string, number>} */ (read)
-      : null;
-  const [b, f, e] = [counts(before), counts(onFocus), counts(afterEscape)];
-  if (!b || !f) return { asked: true, why: "census unavailable", revealed: null };
-
-  const grew = (/** @type {string} */ key) => Number(f[key] ?? 0) - Number(b[key] ?? 0);
-  const revealedBy = ["formControl", "link", "graphic", "heading", "landmark"]
-    .map((key) => [key, grew(key)])
-    .filter(([, delta]) => Number(delta) > 0);
-  const revealed = revealedBy.length > 0;
-  if (!revealed) return { asked: true, revealed: false, why: "nothing appeared on focus" };
+  const revealedBy = censusGrowth(before, onFocus);
+  if (revealedBy === null) return { asked: true, why: "census unavailable", revealed: null };
+  if (revealedBy.length === 0) return { asked: true, revealed: false, why: "nothing appeared on focus" };
 
   // FOCUS MUST NOT HAVE MOVED, or Escape dismissed nothing — it navigated. The criterion's wording is the
   // whole reason this is checked rather than assumed: a mechanism that moves focus is not a mechanism to
   // dismiss "without moving focus".
   const focusHeld = Boolean(focusBefore) && focusBefore === focusAfter;
-  if (!e) {
+  const afterGrowth = censusGrowth(before, afterEscape);
+  if (afterGrowth === null) {
     return { asked: true, revealed: true, revealedBy, focusHeld, dismissed: null,
       why: "census unavailable after Escape" };
   }
-  const stillThere = ["formControl", "link", "graphic", "heading", "landmark"]
-    .some((key) => Number(e[key] ?? 0) > Number(b[key] ?? 0));
+  const stillThere = afterGrowth.length > 0;
   return {
     asked: true,
     revealed: true,
