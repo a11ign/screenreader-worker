@@ -37,10 +37,22 @@ import { CONTAINER_PREFIX } from "./capture-pure.mjs";
  * this would otherwise risk". Stripping "list, " from a key could collapse two genuinely different
  * announcements into one, which loses evidence rather than cleaning it.
  *
- * So they are a LEDGER, not an exemption list, and the entry is the question rather than an answer:
- * **does the worker need to strip this, and what does it do to `dedupeKey` over the real corpus?** The
- * check that answers it is the one quoted above — run the strip across every sweep announcement, count the
- * keys it changes, and confirm none reduces to empty.
+ * THEY WERE A LEDGER WITH AN OPEN QUESTION. IT IS NOW ANSWERED, AND THE ANSWER IS NO — measured
+ * 2026-09-05 by running the widened pattern over 19,297 sweep announcements from 2,178 corpus captures,
+ * which is the check quoted above:
+ *
+ *     keys the wider strip would change      2,583
+ *     reduced to EMPTY (the over-strip risk)     0
+ *     distinct keys COLLAPSED                    0   <- the entire point of dedupe
+ *
+ * It changes 2,583 keys and merges NOTHING. That is pure churn, and the examples show it is worse than
+ * churn: `"list, with 6 items, Opening times…"` becomes `"with 6 items, Opening times…"` — the container
+ * WORD stripped and its item count left behind as a fragment. `announcement.ts` records the cause beside
+ * its own list: "the item count sits on EITHER side of the comma depending on the container".
+ *
+ * So these eight stay off the worker's pattern DELIBERATELY. What would change the answer is a container
+ * announced as a bare `"<role>, "` with nothing between it and the name — the shape `form` and `section`
+ * have, and none of the eight does.
  *
  * `section` is NOT here, and that is the point of the file: it was added the day Edge 152 introduced it.
  */
