@@ -73,3 +73,49 @@ test("parkPointer gives up after two attempts and never throws", async () => {
   assert.deepEqual(marks.map((m) => m.event), ["pointerParkFailed"]);
   assert.equal(marks[0].detail.attempts, 2);
 });
+
+/**
+ * WHICH FAILURE IT WAS, recorded rather than inferred. `pointer.mjs` asserted for weeks that "the observed
+ * failures are transient spawn failures" and built its retry on that; the 11 `pointerParkFailed` marks on
+ * disk all read 5,032-9,134 ms against a 5,000 ms ceiling, which is the other candidate entirely.
+ */
+test("a park killed by the TIMEOUT is recorded as one, so the next occurrence needs no arithmetic", () => {
+  const marks: { event: string; detail: Record<string, unknown> }[] = [];
+  const diag = { mark: (event: string, detail: object) => marks.push({ event, detail: detail as never }) };
+  // The shape `execFile` produces on timeout: it kills the child, so `killed` and `signal` are set while
+  // the MESSAGE is the reconstructed command line — identical to a silent non-zero exit, which is exactly
+  // why the text cannot tell them apart.
+  const timedOut = () => Promise.reject(Object.assign(
+    new Error("Command failed: powershell -NoProfile -NonInteractive -Command Add-Type ..."),
+    { cause: { killed: true, signal: "SIGTERM", code: null } }));
+  return parkPointer(diag, { setCursor: timedOut }).then(() => {
+    const failed = marks.find((m) => m.event === "pointerParkFailed");
+    assert.ok(failed, "a failed park must still be marked");
+    assert.equal(failed?.detail.timedOut, true);
+  });
+});
+
+test("a FAST failure is not called a timeout — that is the distinction the field exists for", () => {
+  const marks: { event: string; detail: Record<string, unknown> }[] = [];
+  const diag = { mark: (event: string, detail: object) => marks.push({ event, detail: detail as never }) };
+  // A non-zero exit with no stderr: same message, no kill. Calling this a timeout would recreate the
+  // conflation in the other direction.
+  const failedFast = () => Promise.reject(Object.assign(
+    new Error("Command failed: powershell -NoProfile -NonInteractive -Command Add-Type ..."),
+    { cause: { killed: false, signal: null, code: 1 } }));
+  return parkPointer(diag, { setCursor: failedFast }).then(() => {
+    assert.equal(marks.find((m) => m.event === "pointerParkFailed")?.detail.timedOut, false);
+  });
+});
+
+test("killed by SOMETHING ELSE is not a timeout either — both fields are required", () => {
+  // A guest shutting down, or an operator ending the task, is also `killed: true`. Calling that a timeout
+  // would file a real outage under "this is fine".
+  const marks: { event: string; detail: Record<string, unknown> }[] = [];
+  const diag = { mark: (event: string, detail: object) => marks.push({ event, detail: detail as never }) };
+  const killedNoSignal = () => Promise.reject(Object.assign(
+    new Error("Command failed"), { cause: { killed: true, signal: null } }));
+  return parkPointer(diag, { setCursor: killedNoSignal }).then(() => {
+    assert.equal(marks.find((m) => m.event === "pointerParkFailed")?.detail.timedOut, false);
+  });
+});

@@ -101,7 +101,15 @@ function setCursorPosition(x, y) {
   return moved;
 }
 
-/** Two attempts, never more -- see `parkPointer`: the observed failures are transient spawn failures. */
+/**
+ * Two attempts, never more.
+ *
+ * THIS COMMENT USED TO SAY "the observed failures are transient spawn failures" AND THAT IS REFUTED --
+ * see `wasKilledByTimeout`, which reads the `ms` these marks have always carried: all 11 on disk are
+ * timeouts, not fast failures. The retry survives the refutation on a different argument (`Add-Type`
+ * compiles C# on first use, so a cold attempt can be slow where a warm one is not); a third would be a
+ * poll disguised as a remedy either way.
+ */
 const PARK_ATTEMPTS = 2;
 
 /**
@@ -157,5 +165,41 @@ export async function parkPointer(diag, { setCursor = setCursorPosition } = {}) 
   }
   diag?.mark("pointerParkFailed", {
     x, y, attempts: PARK_ATTEMPTS, error: errorText(lastError), ms: Date.now() - startedAt,
+    // WHICH FAILURE THIS WAS, stated rather than inferred from `ms`. See `wasKilledByTimeout`.
+    timedOut: wasKilledByTimeout(lastError),
   });
+}
+
+/**
+ * Was this failure the TIMEOUT firing, or PowerShell answering fast and badly?
+ *
+ * THE TWO ARE INDISTINGUISHABLE BY ERROR TEXT and this file asserted the wrong one for weeks. The comment
+ * above `PARK_ATTEMPTS` reads *"the observed failures are transient spawn failures"* and the retry was
+ * built on it. Read off the 11 `pointerParkFailed` marks on disk 2026-09-05, using the `ms` the same mark
+ * already carried and nobody had looked at: every one reads between **5,032 and 9,134 ms** against a
+ * `PARK_TIMEOUT_MS` of 5,000, and none carries an `attempts` field — so all 11 predate the retry and each
+ * is ONE attempt that hit the ceiling. A transient spawn failure returns in tens to low hundreds of
+ * milliseconds. **These are timeouts, and the premise the retry rests on is refuted by its own mark.**
+ *
+ * `execFile` kills the child on timeout, so Node's error carries `killed: true` with `signal: "SIGTERM"`
+ * while the MESSAGE is the reconstructed command line either way -- the child is killed before it prints
+ * anything, so a timeout and a silent non-zero exit produce identical text. `setCursorPosition` attaches
+ * that error as `cause`, so the discriminator was already reachable and simply never recorded.
+ *
+ * THE RETRY IS KEPT DESPITE THE REFUTATION, deliberately. `Add-Type` compiles C# on first use, so a cold
+ * attempt genuinely can be slow where a warm one is not, and a second attempt is worth its 5 s on that
+ * reading. What is NOT justified any more is the claim about WHY, and raising `PARK_TIMEOUT_MS` is not
+ * done here because nothing measures how long PowerShell actually needed -- only that it exceeded 5 s.
+ * `timedOut` is what makes the next occurrence answer that instead of inviting another guess.
+ *
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+function wasKilledByTimeout(error) {
+  const cause = /** @type {{ cause?: unknown }} */ (error)?.cause;
+  // BOTH FIELDS, not just `killed`. A child killed by anything else -- a guest shutting down, an operator
+  // ending the task -- is also `killed: true`, and calling that a timeout would put a real outage in the
+  // bucket labelled "this is fine".
+  const killed = /** @type {{ killed?: unknown, signal?: unknown }} */ (cause);
+  return killed?.killed === true && typeof killed?.signal === "string";
 }
