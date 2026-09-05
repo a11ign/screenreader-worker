@@ -105,7 +105,7 @@ import { parkPointer } from "./pointer.mjs";
 import { matchesFieldName, matchesWithin, fillActionFor } from "./field-match.mjs";
 import { browserAlive, currentPageUrl, launchReusable, navigateExisting, navigationOutcome, reusableArgs,
   mediaCensus, structuralCensus, domCensus, truncatedAnnouncements,
-  bringPageToFront,
+  bringPageToFront, setExpectedPageUrl,
 } from "./browser-session.mjs";
 import { connect } from "node:net";
 import { existsSync } from "node:fs";
@@ -815,6 +815,10 @@ async function discardReusable(diag, mark, detail) {
  */
 async function openPage(url, diag, { reuse = REUSE_BROWSER, app = browserFor() } = {}) {
   navigatedExistingWindow = false;
+  // The ONE chokepoint every capture navigates through, reuse or fresh launch alike -- see
+  // `setExpectedPageUrl`'s own comment for why this cannot be inferred inside browser-session.mjs on the
+  // fresh-launch path (the URL is a command-line flag there, never a `Page.navigate` this module observes).
+  setExpectedPageUrl(url);
   if (!reuse) return launchBrowser(url, diag, app);
   // A request may name a different browser than the one still running. Reusing that window would capture
   // Edge and label the evidence Chrome — the cache key would be a lie told by the tool about itself, which
@@ -2024,7 +2028,12 @@ async function navigateByStructureThenAudit(options) {
         link: result.structure.links.length,
         graphic: result.structure.graphics.length,
       },
-      elementsList: census,
+      // The exact counts `crossCheckStructure` reads, named explicitly rather than spreading `census`
+      // wholesale -- `census` also carries `graphicUnnamedDetail` (an array), `names` (strings) and now
+      // `targetMatch` (a string), none of which fit `Record<string, number | undefined>`, and none of
+      // which this comparison is about.
+      elementsList: { heading: census.heading, landmark: census.landmark, link: census.link,
+        graphic: census.graphic, distinct: census.distinct },
     }));
   }
   return result;

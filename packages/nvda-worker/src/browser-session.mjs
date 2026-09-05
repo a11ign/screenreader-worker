@@ -86,30 +86,105 @@ export async function browserAlive() {
 }
 
 /**
+ * The URL `openPage` most recently pointed the browser at, so `choosePageTarget` can tell a genuine
+ * capture target from a third-party widget's own CDP target — see the finding this fixes, recorded in
+ * `docs/backlog.md`: two unrelated real sites returned a byte-identical census because a Cookiebot
+ * consent iframe surfaced its own `type: "page"` target and `choosePageTarget` took the first one.
+ *
+ * Module-level rather than threaded as a parameter through the ~8 functions that call `pageTarget` and
+ * the 14 places in `capture-core.mjs` that call THOSE — every one of them already means "what is CDP
+ * showing me right now, for the capture `openPage` most recently started", so a parameter would repeat
+ * the same value at every call site for no reader's benefit. `setExpectedPageUrl` is the one seam that
+ * needs to know it, and it already receives the URL.
+ *
+ * @type {string | null}
+ */
+let expectedPageUrl = null;
+
+/**
+ * Record which URL the capture believes it is showing.
+ *
+ * Called from `openPage` on BOTH paths — reuse (`navigateExisting`) and a fresh launch — because a fresh
+ * launch never calls anything in this module to get there: the URL is a `--app=` command-line flag, so
+ * this module cannot infer it from a navigation it did not perform.
+ *
+ * @param {string | null | undefined} url
+ */
+export function setExpectedPageUrl(url) {
+  expectedPageUrl = url || null;
+}
+
+/**
+ * Do two URLs identify the same document, allowing for the differences a real capture actually sees?
+ *
+ * Deliberately compares PATH AND QUERY ONLY — never scheme, host or port. Two facts from this repo's own
+ * corpus made that the right line to draw, not a guess:
+ *
+ *   - Every synthetic fixture is declared against `localhost:5050` in `case-matrix.mjs` and served from
+ *     whichever lab box runs the capture, e.g. `REDACTED-INTERNAL-ADDRESS:5050` — a real, permanent host mismatch on
+ *     every synthetic capture this project has ever taken, not a hypothetical.
+ *   - The contaminating target is never confusable by PATH: a Cookiebot consent panel's own document has
+ *     a path like `/what-is-behind-powered-by-cookiebot`, nothing close to `/action-weve-taken/enforcement/`
+ *     or `/council-tax`. Path is the dimension that actually discriminates a widget from the page under
+ *     test; host and port are the dimensions this project has already proven unreliable.
+ *
+ * Trailing slashes are normalised away in both operands (`/enforcement` and `/enforcement/` match) because
+ * a redirect that adds or drops one is not a different document. The hash is ignored because an in-page
+ * anchor never changes which document is showing.
+ *
+ * @param {string | undefined} actualUrl @param {string} expectedUrl
+ */
+function sameDocument(actualUrl, expectedUrl) {
+  if (!actualUrl) return false;
+  if (actualUrl === expectedUrl) return true;
+  try {
+    const pathAndQuery = (/** @type {URL} */ u) => u.pathname.replace(/\/+$/, "") + u.search;
+    return pathAndQuery(new URL(actualUrl)) === pathAndQuery(new URL(expectedUrl));
+  } catch {
+    return false; // either URL failed to parse -- not a match, never a crash
+  }
+}
+
+/**
  * The page target to drive.
  *
  * Pure so the selection rule is testable. Chromium lists more than pages — service workers, extension
- * backgrounds, the DevTools UI itself — and picking the wrong one produces a navigate that silently
- * does nothing to the visible window.
- *
- * @param {Array<{type?: string, url?: string, webSocketDebuggerUrl?: string}>} targets
+ * backgrounds, the DevTools UI itself, and (the defect this now guards against) a third-party widget's own
+ * navigable document — and picking the wrong one either does nothing to the visible window (a stale
+ * navigate) or, for `structuralCensus`/`domCensus`, silently reads a different document's numbers as the
+ * page's own.
  */
 /**
  * @typedef {{ type?: string, url?: string, webSocketDebuggerUrl?: string }} CdpTarget
- * @typedef {CdpTarget & { webSocketDebuggerUrl: string }} UsablePageTarget
+ * @typedef {CdpTarget & { webSocketDebuggerUrl: string, targetMatch: "matched" | "fallback" | "no-expected-url" }} UsablePageTarget
  *
- * The `find` below already REQUIRES `typeof webSocketDebuggerUrl === "string"`, so a returned target
- * always has one -- but a predicate inside `find` cannot narrow the result, and every caller then reads a
- * possibly-undefined URL straight into `new WebSocket`. The second typedef states what the filter has
- * already established rather than re-checking it at four call sites.
+ * The `filter` below already REQUIRES `typeof webSocketDebuggerUrl === "string"`, so a returned target
+ * always has one -- but a predicate inside `find`/`filter` cannot narrow the result, and every caller then
+ * reads a possibly-undefined URL straight into `new WebSocket`. The second typedef states what the filter
+ * has already established rather than re-checking it at four call sites.
+ *
+ * `targetMatch` is additive on the existing shape rather than a wrapper object, so none of the ~8 existing
+ * callers that only ever read `.webSocketDebuggerUrl` or `.url` need to change. It exists so a caller that
+ * DOES care — `structuralCensus` and `domCensus`, which write a diagnostic mark — can record which of the
+ * three things happened, because a fallback that looks identical to a match is the same defect this fixes,
+ * wearing a different coat: "matched" (found the page we navigated to), "fallback" (nothing matched, so we
+ * took the first usable target, exactly as before this fix — a page that redirected or normalised its own
+ * URL is the expected reason, not a wrong document), "no-expected-url" (nothing was recorded to compare
+ * against, e.g. a call before `openPage` ever ran).
  *
  * @param {CdpTarget[] | null | undefined} targets
+ * @param {string | null} [expectedUrl]
  * @returns {UsablePageTarget | null}
  */
-export function choosePageTarget(targets) {
-  return /** @type {UsablePageTarget | undefined} */ ((targets ?? []).find((t) =>
+export function choosePageTarget(targets, expectedUrl) {
+  const pages = /** @type {(CdpTarget & { webSocketDebuggerUrl: string })[]} */ ((targets ?? []).filter((t) =>
     t.type === "page" && typeof t.webSocketDebuggerUrl === "string" && !t.url?.startsWith("devtools://")
-  )) ?? null;
+  ));
+  if (!pages.length) return null;
+  if (!expectedUrl) return { ...pages[0], targetMatch: "no-expected-url" };
+  const match = pages.find((t) => sameDocument(t.url, expectedUrl));
+  if (match) return { ...match, targetMatch: "matched" };
+  return { ...pages[0], targetMatch: "fallback" };
 }
 
 /**
@@ -137,7 +212,7 @@ async function pageTarget() {
         signal: AbortSignal.timeout(CDP_LIST_TIMEOUT_MS),
       });
       if (!response.ok) throw new Error(`CDP /json/list returned HTTP ${response.status}`);
-      const target = choosePageTarget(await response.json());
+      const target = choosePageTarget(await response.json(), expectedPageUrl);
       if (!target) throw new Error("CDP listed no page target to navigate");
       return target;
     } catch (error) {
@@ -552,7 +627,19 @@ export async function structuralCensus() {
       await once(socket, "open", CDP_READY_TIMEOUT_MS);
       const result = waitForResult(socket, 1, AX_TREE_TIMEOUT_MS);
       socket.send(JSON.stringify({ id: 1, method: "Accessibility.getFullAXTree" }));
-      return censusFromAXTree((await result)?.nodes);
+      // targetMatch travels WITH the census it describes, not beside it in a second field nobody joins --
+      // the fact-stated-twice shape this repo keeps paying for. "fallback" or "no-expected-url" does not
+      // make the census wrong; it makes it a claim worth reading `docs/backlog.md`'s finding over before
+      // trusting on a page where NOTHING else corroborates it.
+      //
+      // ASSIGNED, never spread. `censusFromAXTree`'s own `@type` is an intersection with
+      // `Record<string, any>` so every reader of its result -- `distinct` among them -- keeps working;
+      // `{...x, targetMatch}` computes a FRESH object type from only x's NAMED properties and silently
+      // drops that index signature, which turned `census.distinct` into a type error two call sites away
+      // in capture-core.mjs for a census that still carries the field at runtime.
+      const census = censusFromAXTree((await result)?.nodes);
+      census.targetMatch = target.targetMatch;
+      return census;
     } finally {
       try { socket.close(); } catch (error) { void error; }
     }
@@ -793,7 +880,8 @@ export async function domCensus() {
         params: { expression: DOM_CENSUS_EXPRESSION, returnByValue: true },
       }));
       const value = (await result)?.result?.value;
-      return value && typeof value === "object" ? value : null;
+      // Same reasoning as `structuralCensus`: the match status travels WITH the count it describes.
+      return value && typeof value === "object" ? { ...value, targetMatch: target.targetMatch } : null;
     } finally {
       try { socket.close(); } catch (error) { void error; }
     }
