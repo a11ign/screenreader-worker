@@ -53,6 +53,7 @@ import {
   sweepObservation,
   notObserved,
   recordWhatWasAsked,
+  focusRevealVerdict,
 } from "./capture-pure.mjs";
 import { installSpeechChannelShim } from "./speech-channel.mjs";
 
@@ -644,6 +645,7 @@ async function runCapturePhases(url, opts, diag) {
     probeForms: !!opts.probeForms, probeFocus: !!opts.probeFocus, probeTables: !!opts.probeTables,
     probeNavigation: !!opts.probeNavigation,
     probeDialog: !!opts.probeDialog,
+    probeFocusReveal: !!opts.probeFocusReveal,
     probeArrows: !!opts.probeArrows,
     probeTyping: !!opts.probeTyping,
     probeFocusContext: !!opts.probeFocusContext,
@@ -2101,17 +2103,17 @@ function interactionEvidence({
  */
 function probePasses(ctx) {
   const { structure, interaction, observed, onFormField, probeForms, probeTables, probeFocus,
-    probeDialog, probeArrows, probeTyping, deadline, diag, trips } = ctx;
+    probeDialog, probeArrows, probeTyping, probeFocusReveal: probeFocusReveal_, deadline, diag, trips } = ctx;
   // READ from ctx, NOT destructured-and-renamed. Renaming it out of the object removed it from the
   // `...flags` that `recordWhatWasAsked` spreads, so `observed.focusContext` reported `asked: false` while
   // the probe was demonstrably running — its own diagnostic mark sat in the same capture saying
   // `focused: true`. Two records of one fact disagreeing is this repo's most-recorded defect, and the
   // rename existed only to dodge a name collision with the function.
   const probeFocusContext_ = ctx.probeFocusContext;
-  /** @type {{postSubmitFields: string[], focusOrder: string[], dialogEscape: any,
+  /** @type {{postSubmitFields: string[], focusOrder: string[], dialogEscape: any, focusReveal: any,
    *           arrowNavigation: any, typedFeedback: any, focusContext: any}} */
   const results = {
-    postSubmitFields: [], focusOrder: [], dialogEscape: null, arrowNavigation: null, typedFeedback: null,
+    postSubmitFields: [], focusOrder: [], dialogEscape: null, focusReveal: null, arrowNavigation: null, typedFeedback: null,
     focusContext: null,
   };
   const runSweep = async () => {
@@ -2154,6 +2156,12 @@ function probePasses(ctx) {
     results.dialogEscape = probeDialog && probeFocus
       ? await probeDialogEscape({ interaction, deadline, diag })
       : null;
+    // 1.4.13, and gated on `probeFocus` for the reason its own comment gives: without DOM focus on a
+    // control there is nothing for Escape to dismiss and the census diff measures the document. AFTER the
+    // dialog probe, which may already have dismissed an overlay -- the same ordering argument.
+    results.focusReveal = probeFocusReveal_ && probeFocus
+      ? await probeFocusReveal({ interaction, deadline, diag })
+      : null;
     // Same gate and same reason: an arrow pressed without DOM focus inside the widget navigates the
     // DOCUMENT, because browse mode owns the arrows. AFTER the dialog probe, which may have dismissed an
     // overlay -- arrows inside a widget the page has since closed measure nothing.
@@ -2176,14 +2184,14 @@ function probePasses(ctx) {
 /**
  * @param {{ deadline: number, diag: Diag, probeForms?: boolean, probeFocus?: boolean, probeTables?: boolean,
  *           probeNavigation?: boolean, probeElementsList?: boolean, probeOrder?: string,
- *           probeDialog?: boolean, probeArrows?: boolean, probeTyping?: boolean,
+ *           probeDialog?: boolean, probeArrows?: boolean, probeTyping?: boolean, probeFocusReveal?: boolean,
  *           probeFocusContext?: boolean,
  *           formState?: {state: string, submit: string,
  *             fields: {field: string, within?: string, nth?: number}[]},
  *           task?: string }} ctx
  */
 async function navigateByStructure({ deadline, diag, probeForms, probeFocus, probeTables, probeNavigation,
-  formState, probeDialog, probeArrows, probeTyping, probeFocusContext: probeFocusContext_,
+  formState, probeDialog, probeArrows, probeTyping, probeFocusReveal, probeFocusContext: probeFocusContext_,
   probeElementsList, probeOrder, task }) {
   // BOTH ACCUMULATORS ARE DECLARED, because both are filled in by probes that run later and elsewhere.
   // An inferred type here describes only the fields present at construction -- `never[]` for each array,
@@ -2227,7 +2235,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   // observations, and making it visible is the point of the option.
   const { runSweep, runFocus, results } = probePasses({
     structure, interaction, observed, onFormField, probeForms, probeTables, probeFocus,
-    probeDialog, probeArrows, probeTyping, probeFocusContext: probeFocusContext_, deadline, diag, trips,
+    probeDialog, probeArrows, probeTyping, probeFocusReveal, probeFocusContext: probeFocusContext_, deadline, diag, trips,
   });
   await runProbeSequence({ probeOrder, diag, runSweep, runFocus });
   // AFTER the sweep, because the sweep is what establishes where the fields are and reads them in browse
@@ -2254,7 +2262,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
     // The list is hand-written, which is the "six hand-written hops" shape the manifest hop was fixed for;
     // it survives here because these are the DOCUMENTED interface and a reader should see them. The guard
     // is `record-what-was-asked.test.ts` — this comment used to name a test that checks something else.
-    observed, probeForms, probeFocus, probeNavigation, probeDialog, probeArrows, probeTyping,
+    observed, probeForms, probeFocus, probeNavigation, probeDialog, probeArrows, probeTyping, probeFocusReveal,
     probeFocusContext: probeFocusContext_, interaction,
     // NOT a probe flag, and passed for exactly that reason — see `recordWhatWasAsked`.
     formState,
@@ -4503,6 +4511,56 @@ async function probeDialogEscape({ interaction, deadline, diag }) {
     // findings, and this file has already paid once for making them the same silence.
     mark({ error: errMsg(e) });
     interaction.sweepLog.push(`dialogEscape ERROR ${errMsg(e)}`);
+    return null;
+  }
+}
+
+/**
+ * 1.4.13 Content on Hover or Focus — does focusing a control REVEAL content, and can Escape dismiss it
+ * without moving focus?
+ *
+ * THREE CENSUSES AND TWO FOCUS READS. The criterion covers "pointer hover OR KEYBOARD FOCUS", and we drive
+ * keyboard focus — which is why it stopped being `out-of-scope` on 2026-09-05. The Dismissable bullet asks
+ * for a mechanism to dismiss "WITHOUT MOVING pointer hover or keyboard focus", so focus is read either
+ * side: a page where Escape navigates has not shown that mechanism, whatever happened to the content.
+ *
+ * RUNS AFTER `probeFocusOrder` AND IS GATED ON IT, for the reason `probeDialogEscape` records beside it:
+ * a sweep is browse mode and never moves DOM focus, so an Escape pressed from wherever the browse caret
+ * rests measures the DOCUMENT. This needs a control to actually hold focus.
+ *
+ * ESCAPE TWICE, the same toll `probeDialogEscape` pays: `autoPassThroughOnFocusChange` switches focus mode
+ * on when focus lands on an editable, Escape is flagged `ignoreTreeInterceptorPassThrough` so it stays
+ * reachable there, and NVDA therefore CONSUMES the first press to leave focus mode. The second reaches the
+ * page.
+ *
+ * The VERDICT is `focusRevealVerdict` in capture-pure.mjs, so what three counts mean is decided somewhere
+ * it can be tested without NVDA.
+ *
+ * @param {{ interaction: Record<string, any>, deadline: number, diag: Diag }} ctx
+ */
+async function probeFocusReveal({ interaction, deadline, diag }) {
+  const mark = (/** @type {Record<string, unknown>} */ fields) => diag.mark("focusReveal", fields);
+  try {
+    if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
+    // BEFORE is taken with focus already on a control -- `probeFocusOrder` has run -- so it is the baseline
+    // for "what this page shows while something is focused", not for the untouched document. Comparing
+    // against the untouched document would count everything the focus probe itself revealed.
+    const before = await structuralCensus();
+    const focusBefore = await reportFocusedControlWithRetry(interaction);
+    await withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, "focusReveal").catch(() => undefined);
+    const onFocus = await structuralCensus();
+    await withTimeout(nvda.press("Escape"), NAV_TIMEOUT_MS, "focusReveal").catch(() => undefined);
+    await withTimeout(nvda.press("Escape"), NAV_TIMEOUT_MS, "focusReveal").catch(() => undefined);
+    const afterEscape = await structuralCensus();
+    const focusAfter = await reportFocusedControlWithRetry(interaction);
+    const verdict = focusRevealVerdict({ before, onFocus, afterEscape, focusBefore, focusAfter });
+    mark(verdict);
+    return verdict;
+  } catch (e) {
+    // RECORDED, never dropped -- a probe that threw and a page that revealed nothing are different
+    // findings, and this file has paid for making them the same silence.
+    mark({ error: errMsg(e) });
+    interaction.sweepLog.push(`focusReveal ERROR ${errMsg(e)}`);
     return null;
   }
 }

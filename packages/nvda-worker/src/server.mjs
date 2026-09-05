@@ -27,7 +27,7 @@ import {
   screenReaderReady, shutdownScreenReader, warmUpScreenReader,
 } from "./capture-core.mjs";
 import { configuredBrowser, browserProfileDir, resolveBrowser } from "./browsers.mjs";
-import { CAPTURE_HARD_TIMEOUT_DEFAULT_MS } from "./capture-pure.mjs";
+import { CAPTURE_HARD_TIMEOUT_DEFAULT_MS, PROBE_FLAGS } from "./capture-pure.mjs";
 import { isLocallyRecoverable } from "./worker-recovery.mjs";
 import { codeVersion } from "./code-version.mjs";
 import { listBlockingDialogs, dismissBlockingDialogs, probeWindowOwner, foregroundBlocker }
@@ -447,32 +447,40 @@ function currentEnvironment() {
  * the field the probe writes is simply absent, which is indistinguishable from a page that had nothing to
  * report. `probe-chain.test.ts` now walks all five, so a sixth hop cannot be added silently either.
  */
+/**
+ * The plain opt-in probe flags, read as booleans.
+ *
+ * SPLIT OUT WHEN `probeFocusReveal` TOOK `captureOptions` PAST THE COMPLEXITY GATE (16 of a permitted 15),
+ * and the gate was right: ten `?? false` reads are one decision made ten times, and the function around
+ * them does several other things — the declared form state, the probe ORDER, the step budget. Listing the
+ * flags by name here rather than forwarding `probe*` by prefix is deliberate and is NOT the enumeration
+ * defect recorded elsewhere: this is the REQUEST BOUNDARY, so an unknown `probe*` key from the wire must
+ * not become an option the capture acts on.
+ *
+ * @param {any} parsed @returns {Record<string, boolean>}
+ */
+function probeFlags(parsed) {
+  return Object.fromEntries(PROBE_FLAGS.map((flag) => [flag, parsed[flag] ?? false]));
+}
+
 function captureOptions(/** @type {any} */ parsed) {
   return {
     steps: parsed.steps,
     nav: parsed.nav,
     task: parsed.task ?? null,
-    probeForms: parsed.probeForms ?? false,
-    probeFocus: parsed.probeFocus ?? false,
-    probeTables: parsed.probeTables ?? false,
+    ...probeFlags(parsed),
     // Opt-in navigation probe: activates the first link and asks NVDA for the page title before and after.
     // 2.4.2's single-page-app failure, where the route changes and the title does not.
-    probeNavigation: parsed.probeNavigation ?? false,
     // Opt-in cross-check against NVDA's own Elements List totals. Opens a modal
     // dialog on the guest, so it is never on by default.
-    probeElementsList: parsed.probeElementsList ?? false,
     // Opt-in: it presses arrows inside whatever widget the focus probe landed on. Meaningless without
     // `probeFocus`, because browse mode owns the arrows and one pressed there navigates the DOCUMENT.
-    probeArrows: parsed.probeArrows ?? false,
     // Opt-in: it TYPES into the focused field, which changes the page under measurement.
-    probeTyping: parsed.probeTyping ?? false,
-    probeFocusContext: parsed.probeFocusContext ?? false,
     // ONE declared state per capture (ADR 0024). Not a flag: it carries the author's own values, and the
     // consent to submit is the fact that they supplied them. Shape-checked only for the two fields this
     // worker dispatches on — the CLI validated it against the schema before sending, and re-deriving the
     // rules here would be the second spelling of a contract that already exists.
     formState: formStateOf(parsed.formState),
-    probeDialog: parsed.probeDialog ?? false,
     // Which order the two position-dependent probes run in. A NAME, never a caller-supplied list — see
     // `probeSequence`. Absent means the order that has always run, so no cached capture is affected.
     probeOrder: parsed.probeOrder === "focus-first" ? "focus-first" : undefined,

@@ -604,7 +604,7 @@ const FOCUS_DEPENDENT_PROBES = Object.freeze({
  *                                     configured?: boolean}>,
  *           probeForms?: boolean, probeFocus?: boolean,
  *           probeNavigation?: boolean, probeDialog?: boolean, probeArrows?: boolean,
- *           probeTyping?: boolean, probeFocusContext?: boolean,
+ *           probeTyping?: boolean, probeFocusContext?: boolean, probeFocusReveal?: boolean,
  *           formState?: {state: string, submit: string, fields: unknown[]} | null,
  *           interaction: { formChanges: {control: string, after: string}[] } }} ctx
  */
@@ -1004,3 +1004,106 @@ export function focusOrderCycled(stops) {
   return stops.slice(-FOCUS_CYCLE_CONFIRM)
     .every((phrase, i) => phrase === stops[i]);
 }
+
+/**
+ * 1.4.13 Content on Hover or Focus — what three censuses and two focus reads MEAN, decided here so the
+ * decision is testable without NVDA.
+ *
+ * THE CRITERION COVERS KEYBOARD FOCUS, WHICH IS WHY THIS EXISTS. It was recorded `out-of-scope` on the
+ * reasoning "the screen-reader path never hovers" — true of the HOVER trigger and of the Hoverable bullet,
+ * and it settles neither of the other two. Verbatim: *"Where receiving and then removing pointer hover OR
+ * KEYBOARD FOCUS triggers additional content to become visible and then hidden"*. We drive keyboard focus.
+ *
+ * DISMISSABLE is the bullet this decides: *"a mechanism is available to dismiss the additional content
+ * WITHOUT MOVING pointer hover or keyboard focus"*. So the observation is three counts and two focus
+ * reads — focus a control, see whether content appeared, press Escape, see whether it went, and confirm
+ * focus did not move in the process. If focus moved, the dismissal is not the mechanism the criterion asks
+ * for and nothing here can claim anything.
+ *
+ * PERSISTENT is asymmetric and is deliberately NOT decided here. *"Remains visible"* is pixels, so it can
+ * never be CONFIRMED from this evidence; content vanishing while the trigger still holds focus is
+ * sufficient evidence of FAILURE without being necessary. That asymmetry is reported (`vanished`) and left
+ * to the rule layer to weigh, because a probe that silently folds two bullets into one verdict is how a
+ * criterion comes to be reported more confidently than its evidence allows.
+ *
+ * WHY A COUNT AND NOT A DIFF OF NAMES. The census is an AX-tree count, and the thing that appears on focus
+ * is usually a tooltip or a disclosure — new nodes, not renamed ones. Comparing counts is what the census
+ * can answer honestly; comparing names would need a stable identity the tree does not give us. An
+ * unchanged count with changed content reads as `revealed: false`, which is a MISS rather than an
+ * invention, and that is the direction this file fails in deliberately.
+ *
+ * @param {{ before: unknown, onFocus: unknown, afterEscape: unknown,
+ *           focusBefore: string | null, focusAfter: string | null }} reads
+ */
+export function focusRevealVerdict({ before, onFocus, afterEscape, focusBefore, focusAfter }) {
+  // A FAILED CENSUS IS NOT A READING OF ZERO, AND IT DOES NOT ARRIVE AS `null`. `structuralCensus` returns
+  // `{ error }` when the CDP socket did not answer — so the obvious `if (!before)` guard passes the failure
+  // straight through, every count reads 0, and a dropped connection becomes "nothing appeared on focus",
+  // which is a conformant page. That is absence read as a value, in the one place where absence IS the
+  // question, and `tsc` caught it in the first version of this function rather than a capture run.
+  const counts = (/** @type {unknown} */ read) =>
+    (read && typeof read === "object" && !("error" in read))
+      ? /** @type {Record<string, number>} */ (read)
+      : null;
+  const [b, f, e] = [counts(before), counts(onFocus), counts(afterEscape)];
+  if (!b || !f) return { asked: true, why: "census unavailable", revealed: null };
+
+  const grew = (/** @type {string} */ key) => Number(f[key] ?? 0) - Number(b[key] ?? 0);
+  const revealedBy = ["formControl", "link", "graphic", "heading", "landmark"]
+    .map((key) => [key, grew(key)])
+    .filter(([, delta]) => Number(delta) > 0);
+  const revealed = revealedBy.length > 0;
+  if (!revealed) return { asked: true, revealed: false, why: "nothing appeared on focus" };
+
+  // FOCUS MUST NOT HAVE MOVED, or Escape dismissed nothing — it navigated. The criterion's wording is the
+  // whole reason this is checked rather than assumed: a mechanism that moves focus is not a mechanism to
+  // dismiss "without moving focus".
+  const focusHeld = Boolean(focusBefore) && focusBefore === focusAfter;
+  if (!e) {
+    return { asked: true, revealed: true, revealedBy, focusHeld, dismissed: null,
+      why: "census unavailable after Escape" };
+  }
+  const stillThere = ["formControl", "link", "graphic", "heading", "landmark"]
+    .some((key) => Number(e[key] ?? 0) > Number(b[key] ?? 0));
+  return {
+    asked: true,
+    revealed: true,
+    revealedBy,
+    focusHeld,
+    // `dismissed` answers Dismissable ONLY when focus held. Reported separately from `focusHeld` so a rule
+    // can tell "Escape did nothing" from "Escape worked by navigating away", which are different pages.
+    dismissed: !stillThere,
+    // PERSISTENT's sufficient-failure half, reported and not judged: the content went while the trigger
+    // still holds focus and nobody dismissed it.
+    vanished: !stillThere && !focusHeld,
+  };
+}
+
+/**
+ * The plain boolean probe flags the worker's request boundary accepts.
+ *
+ * LIVES HERE, NOT IN `server.mjs`, so a test can READ it. `probe-chain.test.ts` used to regex that file
+ * for `^    probeX:` lines inside `captureOptions`; extracting those flags into a list on 2026-09-05 --
+ * to get the function back under the complexity gate -- reduced the scan to one match, and the suite's own
+ * message named the diagnosis: "the scan is broken, not the code clean". A test deriving its expectations
+ * from source TEXT is this repo's anti-pattern, and importing `server.mjs` to fix it would start an HTTP
+ * server. This module is pure and already exported.
+ *
+ * NAMED rather than forwarded by prefix, and that is deliberate at THIS hop specifically: it is the
+ * REQUEST BOUNDARY, so an unknown `probe*` key arriving over the wire must not become an option the
+ * capture acts on. The prefix-forwarding rule applies to the hops between our own code, not to input.
+ *
+ * `probeOrder` is absent because it is a NAME ("focus-first"), not a boolean.
+ */
+export const PROBE_FLAGS = Object.freeze([
+  "probeForms",
+  "probeFocus",
+  "probeTables",
+  "probeNavigation",
+  "probeElementsList",
+  "probeArrows",
+  "probeTyping",
+  "probeFocusContext",
+  "probeDialog",
+  "probeFocusReveal",
+]);
