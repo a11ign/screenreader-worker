@@ -10,6 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { stripComments } from "@a11y-witness/evidence/source-text";
 import { captureFault, faultCode, FAULT } from "./capture-faults.mjs";
 
 
@@ -53,7 +54,10 @@ test("the settle wait is a CONDITION, not a duration, and cannot hang on an empt
   // and every other wait in capture-core is speech-based — speech settles just as happily on a shell.
   // Measured: the Met Office warnings page captured as "blank", 27 announcements, census heading=0, while
   // its published HTML carries forty headings. Two WCAG findings against faults the page does not have.
-  const source = readFileSync(new URL("./capture-core.mjs", import.meta.url), "utf8");
+  // Comments stripped before matching -- unbounded to end of file, and capture-core.mjs discusses
+  // headings/census logic extensively in prose elsewhere, so a bare regex here risks matching a LATER,
+  // unrelated comment rather than this function's own code. See `@a11y-witness/evidence/source-text`.
+  const source = stripComments(readFileSync(new URL("./capture-core.mjs", import.meta.url), "utf8"));
   const settle = source.slice(source.indexOf("async function waitForPageToSettle"));
   assert.match(settle, /shape === previous/,
     "it must wait for the tree to STOP CHANGING — waiting for content would hang the whole budget on a "

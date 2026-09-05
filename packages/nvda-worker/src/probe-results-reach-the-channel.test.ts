@@ -23,6 +23,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { stripComments } from "@a11y-witness/evidence/source-text";
 
 const SOURCE = readFileSync(resolve(import.meta.dirname, "./capture-core.mjs"), "utf8");
 
@@ -43,8 +44,11 @@ function interactionEvidenceReturn(): string {
   // COMMENTS STRIPPED, and this is the whole difference between a guard and a decoration. Every field in
   // that return sits under a comment explaining why it is conditional, and those comments NAME the field —
   // so matching the raw slice matched the prose and passed with the code removed. Caught by mutation:
-  // deleting the `focusReveal` spread left the test green until this line existed.
-  return SOURCE.slice(from, to).replace(/\/\/[^\n]*/g, "");
+  // deleting the `focusReveal` spread left the test green until this line existed. `stripComments` is
+  // shared across every guard with this shape, and it also strips BLOCK comments this file's own original
+  // line-only strip did not -- a gap that happened not to matter here only because nothing in this
+  // particular block used one.
+  return stripComments(SOURCE.slice(from, to));
 }
 
 test("every probe result assigned in probePasses is forwarded by interactionEvidence", () => {
