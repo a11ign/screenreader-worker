@@ -27,11 +27,37 @@ import { resolve } from "node:path";
 
 const SOURCE = readFileSync(resolve(import.meta.dirname, "browser-session.mjs"), "utf8");
 
-/** The census runs inside `page.evaluate`, so the test rebuilds it from the source's own function. */
+/**
+ * The three source pieces every reconstruction below needs: the role set, the per-ancestor folder, and the
+ * walk itself. ONE extraction rather than a copy per test-harness function -- `nearestNamedAncestor` and
+ * `recordUnnamedGraphic` both need all three in scope, and a second hand-written copy of these regexes is
+ * exactly the "fact stated twice" shape this repo keeps paying for.
+ */
+function ancestorSource(): { roles: string; noteAncestor: string; nearestNamedAncestor: string } {
+  const roles = /const CONTROL_ROLES = new Set\(\[([\s\S]*?)\]\);/.exec(SOURCE)?.[1];
+  const noteAncestor = /function noteAncestor\(found, ancestor\) \{([\s\S]*?)\n\}/.exec(SOURCE)?.[1];
+  const nearestNamedAncestor = /function nearestNamedAncestor\(node, byId\) \{([\s\S]*?)\n\}/.exec(SOURCE)?.[1];
+  assert.ok(roles && noteAncestor && nearestNamedAncestor,
+    "CONTROL_ROLES, noteAncestor or nearestNamedAncestor is gone from browser-session.mjs — this test "
+    + "examines nothing");
+  return { roles, noteAncestor, nearestNamedAncestor };
+}
+
+/**
+ * The census runs inside `page.evaluate`, so the test rebuilds it from the source's own functions.
+ *
+ * `noteAncestor` is extracted alongside it and given its own name in scope, not inlined, because
+ * `nearestNamedAncestor`'s source calls it BY NAME -- see `nearestNamedAncestor`'s own comment on why the
+ * per-ancestor decision was split out (the complexity gate, not a second concept). `CONTROL_ROLES` is
+ * needed one level further in: `noteAncestor` is what actually reads it.
+ */
 function nearestNamedAncestor(node: unknown, byId: Map<string, unknown>): Record<string, unknown> {
-  const body = /function nearestNamedAncestor\(node, byId\) \{([\s\S]*?)\n\}/.exec(SOURCE)?.[1];
-  assert.ok(body, "nearestNamedAncestor is gone from browser-session.mjs — this test examines nothing");
-  return new Function("node", "byId", body)(node, byId) as Record<string, unknown>;
+  const src = ancestorSource();
+  return new Function("node", "byId", `
+    const CONTROL_ROLES = new Set([${src.roles}]);
+    function noteAncestor(found, ancestor) {${src.noteAncestor}}
+    ${src.nearestNamedAncestor}
+  `)(node, byId) as Record<string, unknown>;
 }
 
 const node = (id: string, role: string, name: string, parentId?: string) =>
@@ -99,25 +125,22 @@ test("the census carries the detail, bounded", () => {
  * verdict runs on `1.1.1 cqc.org.uk`, and the capture's own detail showed both nameless images inside a
  * link named "The Care Quality Commission" — the site logo, marked up exactly as it should be.
  */
-import { readFileSync as read2 } from "node:fs";
-import { resolve as resolve2 } from "node:path";
-
-const SRC = read2(resolve2(import.meta.dirname, "browser-session.mjs"), "utf8");
-
 function recordUnnamedGraphic(census: Record<string, unknown>, node: unknown, byId: Map<string, unknown>) {
-  const body = /function recordUnnamedGraphic\(census, node, byId\) \{([\s\S]*?)\n\}/.exec(SRC)?.[1];
+  const body = /function recordUnnamedGraphic\(census, node, byId\) \{([\s\S]*?)\n\}/.exec(SOURCE)?.[1];
   assert.ok(body, "recordUnnamedGraphic is gone — this test examines nothing");
-  const helper = /function nearestNamedAncestor\(node, byId\) \{([\s\S]*?)\n\}/.exec(SRC)?.[1];
-  const roles = /const CONTROL_ROLES = new Set\(\[([\s\S]*?)\]\);/.exec(SRC)?.[1];
-  assert.ok(helper && roles, "the helper or the role set is gone");
+  const src = ancestorSource();
   new Function("census", "node", "byId", `
-    const CONTROL_ROLES = new Set([${roles}]);
-    function nearestNamedAncestor(node, byId) {${helper}}
+    const CONTROL_ROLES = new Set([${src.roles}]);
+    function noteAncestor(found, ancestor) {${src.noteAncestor}}
+    function nearestNamedAncestor(node, byId) {${src.nearestNamedAncestor}}
     ${body}
   `)(census, node, byId);
 }
 
-const fresh = () => ({ graphicUnnamed: 0, graphicUnnamedDetail: [] as unknown[] });
+const fresh = () => ({
+  graphicUnnamed: 0, graphicUnnamedDetail: [] as unknown[],
+  graphicExempted: 0, graphicExemptedDetail: [] as unknown[],
+});
 
 test("an image inside a NAMED CONTROL is not counted — the Controls/Input exception", () => {
   const census = fresh();
@@ -126,6 +149,12 @@ test("an image inside a NAMED CONTROL is not counted — the Controls/Input exce
   assert.equal(census.graphicUnnamed, 0,
     "an image inside a named link conforms through that link's name; counting it accused cqc.org.uk twice");
   assert.deepEqual(census.graphicUnnamedDetail, [], "and it is not listed as a finding either");
+  // THE EXEMPTED POPULATION, MADE VISIBLE — this is the one case this file could never see before: an
+  // image that IS correctly exempted used to leave no record at all.
+  assert.equal(census.graphicExempted, 1);
+  assert.deepEqual(census.graphicExemptedDetail,
+    [{ role: "image", ancestorName: "The Care Quality Commission", ancestorRole: "link",
+      controlRole: "link", controlName: "The Care Quality Commission" }]);
 });
 
 test("an image inside a named NON-control is still counted", () => {
@@ -136,13 +165,52 @@ test("an image inside a named NON-control is still counted", () => {
   recordUnnamedGraphic(census, node("2", "image", "", "1"), new Map([["1", region]]));
   assert.equal(census.graphicUnnamed, 1,
     "a named region does not discharge 1.1.1 — only a control's name does");
+  assert.equal(census.graphicExempted, 0);
 });
 
 test("an image in NO control is still counted, with its detail", () => {
   const census = fresh();
   recordUnnamedGraphic(census, node("2", "image", ""), new Map());
   assert.equal(census.graphicUnnamed, 1);
-  assert.deepEqual(census.graphicUnnamedDetail, [{ role: "image", ancestorName: null, ancestorRole: null }]);
+  assert.deepEqual(census.graphicUnnamedDetail,
+    [{ role: "image", ancestorName: null, ancestorRole: null, controlRole: null, controlName: null }]);
+});
+
+test("A NAMED NON-CONTROL WRAPPER MUST NOT STOP THE SEARCH FOR A CONTROL FURTHER OUT", () => {
+  // THE DEFECT `docs/backlog.md` NAMED, reproduced directly: a real tree wraps an icon in a `<div
+  // aria-label="...">` unrelated to the image (a component library adds one routinely) before reaching a
+  // genuinely named control. The OLD walk stopped at the wrapper -- the first NAMED ancestor -- and failed
+  // the control-role test against a node that was never the control the exception asks about, so a
+  // CONFORMING image (a named control sits one level further out) was counted as a 1.1.1 finding.
+  const census = fresh();
+  const button = node("1", "button", "Search");
+  const wrapper = node("2", "generic", "Photo credit: Jane Doe", "1");
+  const img = node("3", "image", "", "2");
+  recordUnnamedGraphic(census, img, new Map<string, unknown>([["1", button], ["2", wrapper]]));
+  assert.equal(census.graphicUnnamed, 0,
+    "the image is content of the named button one level further out; the wrapper's own unrelated name "
+    + "must not end the search before the walk reaches it");
+  assert.equal(census.graphicExempted, 1);
+  assert.deepEqual(census.graphicExemptedDetail,
+    // `ancestorName`/`ancestorRole` still report the NEAREST named ancestor (the wrapper) for the general
+    // diagnostic; `controlRole`/`controlName` report the control the exemption actually turned on. Both
+    // survive in the record, because a human reading this later benefits from seeing both facts, not just
+    // the one that decided the verdict.
+    [{ role: "image", ancestorName: "Photo credit: Jane Doe", ancestorRole: "generic",
+      controlRole: "button", controlName: "Search" }]);
+});
+
+test("a control ancestor that is itself UNNAMED does not exempt, and does not stop the search either", () => {
+  // The mirror case: the nearest control has no name of its own. This must not exempt (an unnamed
+  // control's role cannot discharge the requirement for a control that ISN'T named), and it correctly
+  // does not chase a MORE distant control either -- see `nearestNamedAncestor`'s own comment on why an
+  // image belongs to the control it is nearest to, not to a farther, unrelated one.
+  const census = fresh();
+  const unnamedButton = node("1", "button", "");
+  const img = node("2", "image", "", "1");
+  recordUnnamedGraphic(census, img, new Map<string, unknown>([["1", unnamedButton]]));
+  assert.equal(census.graphicUnnamed, 1, "an unnamed control's role cannot discharge the requirement");
+  assert.equal(census.graphicExempted, 0);
 });
 
 test("a node with no id cannot ADOPT an image that has no parent", () => {

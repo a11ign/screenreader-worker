@@ -86,6 +86,10 @@ test("headings, links and graphics are counted for the other sweeps", () => {
     // unnoticed, which is what the census's own comment warns about: "an assertion on named fields cannot
     // see a field that was ADDED".
     graphicUnnamedDetail: [],
+    // THE EXEMPTED SIBLING, added 2026-09-06 — see `census-detail.test.ts` for why an exempted image
+    // needed a record at all. Empty here for the same reason `graphicUnnamedDetail` is: nothing in this
+    // fixture is an unnamed graphic in the first place.
+    graphicExempted: 0, graphicExemptedDetail: [],
     // Every name here is unique, so distinct == raw. The case that matters is the next test.
     distinct: { landmark: 0, heading: 1, link: 1, graphic: 2, formControl: 0 },
   });
@@ -94,7 +98,7 @@ test("headings, links and graphics are counted for the other sweeps", () => {
 test("a malformed or empty tree yields zeros, not a throw", () => {
   // The oracle must never be the reason a capture fails.
   const empty = { landmark: 0, heading: 0, link: 0, graphicUnnamed: 0, graphic: 0, formControl: 0,
-    names: [], graphicUnnamedDetail: [],
+    names: [], graphicUnnamedDetail: [], graphicExempted: 0, graphicExemptedDetail: [],
     distinct: { landmark: 0, heading: 0, link: 0, graphic: 0, formControl: 0 } };
   assert.deepEqual(censusFromAXTree([]), empty);
   assert.deepEqual(censusFromAXTree(undefined), empty);

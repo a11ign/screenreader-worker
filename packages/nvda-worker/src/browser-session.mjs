@@ -404,7 +404,22 @@ function recordUnnamedGraphic(census, node, byId) {
   // NOT a blanket ancestor test. Only a CONTROL's name discharges the requirement, because that is what
   // the exception says -- an image inside a named `region` or `article` is still an unnamed image the
   // user meets, and is still a finding.
-  if (found.ancestorName && CONTROL_ROLES.has(found.ancestorRole)) return;
+  //
+  // `controlRole`/`controlName`, not `ancestorName`/`CONTROL_ROLES.has(ancestorRole)` -- see
+  // `nearestNamedAncestor`'s own comment for why the old proxy under-exempted through a named non-control
+  // wrapper. The two fields answer the exception's actual question: is there a control ancestor, and is
+  // THAT one named.
+  if (found.controlRole && found.controlName) {
+    // THE EXEMPTED POPULATION, MADE VISIBLE. Added 2026-09-06 for the same reason `graphicUnnamedDetail`
+    // was: an image that is correctly exempted left no record at all, so a 92-page search of the
+    // ALTERNATIVE (the finding side) could confirm "none of these 19 exhibit the shape" but could not
+    // examine the population where the shape would actually hide -- an exemption firing on the WRONG
+    // ancestor is invisible unless the exemption itself says which ancestor it used. Bounded for the same
+    // reason its sibling is: a page with hundreds of exempted icons must not become the cost of the capture.
+    if (census.graphicExemptedDetail.length < 12) census.graphicExemptedDetail.push(found);
+    census.graphicExempted += 1;
+    return;
+  }
   census.graphicUnnamed += 1;
   if (census.graphicUnnamedDetail.length < 12) census.graphicUnnamedDetail.push(found);
 }
@@ -423,16 +438,61 @@ const CONTROL_ROLES = new Set([
 ]);
 
 /**
- * The closest ancestor of an unnamed node that HAS a name, with its role.
+ * Fold one ancestor into the two answers being tracked, WITHOUT overwriting one already settled -- each
+ * answer is "the FIRST time this became true, walking outward", so a later, more distant ancestor must
+ * never replace an earlier one. Split out of `nearestNamedAncestor` purely to keep that function's
+ * complexity under gate: two independent trackers updated per step is what pushed it over, not a second
+ * concept -- this is the exact same per-ancestor decision, written out where it can be named.
  *
- * 1.1.1's Controls/Input exception turns on exactly this: "If non-text content is a control or accepts
- * user input, then it has a NAME that describes its purpose." An image inside a named button or link
- * already conforms through that control's name, so counting it as a missing text alternative is a false
- * positive -- and until this existed, telling the two apart meant loading the live page, which is a
- * different page from the one captured.
+ * @param {{ ancestorName: string|null, ancestorRole: string|null, controlRole: string|null,
+ *           controlName: string|null }} found
+ * @param {any} ancestor
+ */
+function noteAncestor(found, ancestor) {
+  const name = String(ancestor.name?.value ?? "").trim();
+  const role = String(ancestor.role?.value ?? "").toLowerCase();
+  if (found.ancestorName === null && name) {
+    found.ancestorName = name.slice(0, 60);
+    found.ancestorRole = role;
+  }
+  if (found.controlRole === null && CONTROL_ROLES.has(role)) {
+    found.controlRole = role;
+    found.controlName = name ? name.slice(0, 60) : null;
+  }
+  return found;
+}
+
+/**
+ * The closest ancestor of an unnamed node that HAS a name, AND separately the closest ancestor whose ROLE
+ * is a CONTROL — the exception's own question, asked directly rather than through the "nearest named
+ * ancestor happens to be a control" proxy that used to be the only thing computed here.
  *
- * Returns the node's own role either way, so a graphic with no named ancestor at all is still identifiable
- * as "an exposed unnamed image in no control", which is a real 1.1.1 finding rather than an exception.
+ * FOUND BY REVIEW, 2026-09-06 (`docs/backlog.md`): the proxy stops the walk at the FIRST named ancestor,
+ * whatever its role. An intermediate named NON-control wrapper -- a `<div aria-label="...">` unrelated to
+ * the image, which a component library adds routinely -- stops it there, the role test then fails against
+ * a node that was never the control the exception is asking about, and a genuinely conforming image (a
+ * NAMED control sits further out) is counted as a 1.1.1 finding. **A search of 92 real pages found 19
+ * candidate instances and confirmed none exhibited the shape** -- every one has `ancestorRole` `rootwebarea`
+ * or `main`, meaning the walk found no named ancestor at all before the document root, so there was no
+ * intermediate wrapper to stop at early. Unconfirmed, not refuted: an image that WAS correctly exempted
+ * never reaches `graphicUnnamedDetail`, so the exemption's own ancestor chains were the unexamined
+ * population -- which is exactly why `graphicExemptedDetail` exists now, on the exempted side.
+ *
+ * ONE BOUNDED WALK, not two, and not a rename: both questions read the SAME ancestor chain, so tracking
+ * both trackers in one pass costs nothing extra and stopping only once BOTH are settled preserves the one
+ * safety property that matters -- a malformed tree with a parent cycle cannot hang the capture. Splitting
+ * this into a second function would walk the identical chain twice for every unnamed image, for no reader
+ * benefit; the function still answers "what's the nearest named ancestor" as its name says, and now ALSO
+ * answers the question the exception actually poses.
+ *
+ * `controlRole` stops at the FIRST ancestor whose role is a control, whether or not it is named --
+ * deliberately not the first NAMED control further out. Nested interactive roles are not a shape this
+ * exception's wording anticipates ("the content"), and an image belongs to the control it is nearest to;
+ * asking whether a farther, unrelated control happens to be named would answer a different question than
+ * the one the exception poses about THIS image.
+ *
+ * Returns the node's own role either way, so a graphic with no named ancestor and no control ancestor at
+ * all is still identifiable as "an exposed unnamed image in no control", a real 1.1.1 finding.
  *
  * @param {any} node @param {Map<string, any>} byId
  */
@@ -441,17 +501,20 @@ function nearestNamedAncestor(node, byId) {
   // An ABSENT parentId is not a lookup key. Same reason as the map above: `String(undefined)` would find
   // whatever happened to be stored under "undefined".
   let current = node?.parentId == null ? undefined : byId.get(String(node.parentId));
+  /** @type {{ ancestorName: string|null, ancestorRole: string|null, controlRole: string|null,
+   *           controlName: string|null }} */
+  let found = { ancestorName: null, ancestorRole: null, controlRole: null, controlName: null };
   // Bounded rather than `while (current)`: a malformed tree with a parent cycle would hang the capture,
   // and this runs inside a page evaluation with no timeout of its own.
   for (let depth = 0; current && depth < 25; depth += 1) {
-    const name = String(current.name?.value ?? "").trim();
-    if (name) {
-      return { role, ancestorName: name.slice(0, 60),
-        ancestorRole: String(current.role?.value ?? "").toLowerCase() };
-    }
+    found = noteAncestor(found, current);
+    // BOTH SETTLED IS THE ONLY EARLY EXIT -- stopping on `ancestorName` alone, as the old walk did, is
+    // exactly the defect this rewrite fixes: a named non-control wrapper must not end the search for a
+    // control further out.
+    if (found.ancestorName !== null && found.controlRole !== null) break;
     current = current.parentId == null ? undefined : byId.get(String(current.parentId));
   }
-  return { role, ancestorName: null, ancestorRole: null };
+  return { role, ...found };
 }
 
 /** @param {Record<string, any> | null} node */
@@ -571,7 +634,8 @@ export function censusFromAXTree(nodes) {
     .filter((/** @type {any} */ n) => n?.nodeId != null)
     .map((/** @type {any} */ n) => [String(n.nodeId), n]));
   /** @type {{ landmark: number, heading: number, link: number, graphic: number,
-   *           graphicUnnamed: number, graphicUnnamedDetail: object[], names: string[] }
+   *           graphicUnnamed: number, graphicUnnamedDetail: object[],
+   *           graphicExempted: number, graphicExemptedDetail: object[], names: string[] }
    *           & Record<string, any>} */
   // EVERY BUCKET NEEDS A TOP-LEVEL COUNTER, because the loop below does `census[bucket] += 1`. Adding
   // `formControl` to ROLE_BUCKET without one made that `undefined + 1` -> NaN, which `JSON.stringify`
@@ -580,7 +644,7 @@ export function censusFromAXTree(nodes) {
   // test: the tests asserted the fields they knew about, and an assertion on named fields cannot see a
   // field that was ADDED. Same lesson as `browser-args.test.ts` asserting the whole command line.
   const census = { landmark: 0, heading: 0, link: 0, graphic: 0, formControl: 0, graphicUnnamed: 0,
-    graphicUnnamedDetail: [], names: [],
+    graphicUnnamedDetail: [], graphicExempted: 0, graphicExemptedDetail: [], names: [],
     // DISTINCT NAMES PER TYPE, because the raw element count is not comparable with what the sweep
     // produces and the cross-check was comparing them anyway.
     //
