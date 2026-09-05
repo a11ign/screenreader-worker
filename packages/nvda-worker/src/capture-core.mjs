@@ -3304,25 +3304,73 @@ async function probeFocusOrderWithEventLog({ deadline, diag, controlsOnPage, pro
   }
 }
 
+const FOCUS_EVENT_LOG_DIAGNOSTIC_LIMIT = 50;
+
 /**
  * Read the focus-event log, tear the listener down, mark what happened, and decide F55 from it — the
  * second half of `probeFocusOrderWithEventLog`, split out only because that function needs to call it from
  * both its success path and its catch, and a `try`/`finally` cannot also report a `throw`'s own error into
  * the same mark cleanly.
  *
- * @param {{ diag: Diag, install: { installed: boolean, targetMatch: string | null, error?: string,
- *           already?: boolean } }} ctx
+ * `installTargetUrl`/`collectTargetUrl`/`expectedUrl` and the bounded `events` array were added
+ * 2026-09-05, diagnosing the mechanism's first real capture: `installTargetMatch: "fallback"` on BOTH
+ * variants of `focus-removed-on-receipt-coupon`, on synthetic pages whose path should match trivially. A
+ * mark that says ONLY "fallback" cannot tell "the listener landed on an unrelated document" from "it
+ * landed on the right one anyway, for a reason `sameDocument` does not yet account for" -- two causes
+ * needing opposite fixes. `events` reported as a bare count previously; this file's own oldest lesson is
+ * that a count is where an investigation stops, and it did: `events: 24` could not say whether the coupon
+ * field's own focusin/focusout ever appeared in the log at all.
+ *
+ * @param {{ diag: Diag, install: { installed: boolean, targetMatch: string | null, targetUrl?: string,
+ *           expectedUrl?: string | null, error?: string, already?: boolean } }} ctx
  */
 async function finishFocusEventLog({ diag, install }) {
   const collected = await collectFocusEventLog();
-  diag.mark("focusEventLog", {
+  diag.mark("focusEventLog", focusEventLogMark(install, collected));
+  return focusEventVerdict(collected);
+}
+
+/**
+ * The install-side half of the mark, split out purely to keep `focusEventLogMark`'s complexity under gate.
+ * @param {{ installed?: boolean, targetMatch?: string | null, targetUrl?: string,
+ *           expectedUrl?: string | null, error?: string }} install
+ */
+function focusEventLogInstallFields(install) {
+  return {
     installed: install?.installed ?? false,
     installTargetMatch: install?.targetMatch ?? null,
+    installTargetUrl: install?.targetUrl ?? null,
+    installError: install?.error ?? null,
+  };
+}
+
+/**
+ * The collect-side half, same reason.
+ * @param {{ targetMatch?: string | null, targetUrl?: string,
+ *           events?: Array<{type: string, id: number, name: string, atMs: number}> | null,
+ *           expectedUrl?: string | null, error?: string }} collected
+ */
+function focusEventLogCollectFields(collected) {
+  return {
     collectTargetMatch: collected.targetMatch,
-    events: collected.events?.length ?? null,
-    error: install?.error ?? collected.error,
-  });
-  return focusEventVerdict(collected);
+    collectTargetUrl: collected.targetUrl ?? null,
+    eventCount: collected.events?.length ?? null,
+    events: collected.events?.slice(0, FOCUS_EVENT_LOG_DIAGNOSTIC_LIMIT) ?? null,
+    collectError: collected.error ?? null,
+  };
+}
+
+/**
+ * Split out of `finishFocusEventLog` purely to keep that function's complexity under the repo's gate.
+ * @param {Parameters<typeof focusEventLogInstallFields>[0]} install
+ * @param {Parameters<typeof focusEventLogCollectFields>[0]} collected
+ */
+function focusEventLogMark(install, collected) {
+  return {
+    ...focusEventLogInstallFields(install),
+    ...focusEventLogCollectFields(collected),
+    expectedUrl: install?.expectedUrl ?? collected.expectedUrl ?? null,
+  };
 }
 
 /** @param {{ deadline: number, diag: Diag, controlsOnPage: number }} ctx */
