@@ -209,7 +209,16 @@ export function screenReaderWasSilentAtStart(diag) {
 // Only the first was matched, so the second survived deduping and the same h2 was recorded twice --
 // three headings on a page with two. Found by the CDP census (sweep 3, page 2), which is exactly the
 // kind of miscount that is invisible without an independent count to compare against.
-export const CONTAINER_PREFIX = /^(?:\w[\w\s'-]*[,\s]\s*)?(?:landmark|region|banner|navigation|main|complementary|content info|form|article),\s*/i;
+// `section` joined this list on 2026-09-05, and it is the SAME FACT that lives in three other places:
+// `CONTAINER_ROLES` in announcement.ts, `CONTAINER_PREFIX` in screenreader_features.py, and the counter in
+// rules.ts. `w3c/html-aria#423` made the `form` role conditional on an accessible name, so Edge 152
+// announces an unnamed <form> as "section" -- measured on one unchanged page, 151 said "form, name at
+// example dot com, edit" and 152 says "section, ...". Every corpus form is unnamed.
+//
+// The comment on the Python copy already records these drifting apart once: "one fact in two languages,
+// and the copies drifted -- the shape this repo has paid for five times in a day". It was four copies,
+// not two, and this browser change moved all four at once.
+export const CONTAINER_PREFIX = /^(?:\w[\w\s'-]*[,\s]\s*)?(?:landmark|region|banner|navigation|main|complementary|content info|form|section|article),\s*/i;
 
 /**
  * The key `collectPhrase` dedupes on — every container prefix removed, not just the first.
