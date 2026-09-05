@@ -47,6 +47,20 @@ const HOST_TIMEOUT_MS = (() => {
   return Number(match[1]);
 })();
 
+/**
+ * How long desktop preparation may run BEFORE the hard-timeout-wrapped capture attempt even starts —
+ * architecture-audit.md §14.5 item 2. Read from `server.mjs` for the same reason `HOST_TIMEOUT_MS` above
+ * is read rather than copied: a hardcoded number here would keep asserting the old value once somebody
+ * changed the real one, which is the exact silent-drift failure this whole file exists to prevent.
+ */
+const DESKTOP_PREPARE_MS = (() => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const src = readFileSync(join(here, "server.mjs"), "utf8");
+  const match = src.match(/DESKTOP_PREPARE_TIMEOUT_MS\s*=\s*([\d_]+)/);
+  if (!match) throw new Error("could not read DESKTOP_PREPARE_TIMEOUT_MS — has that constant been renamed?");
+  return Number(match[1].replace(/_/g, ""));
+})();
+
 test("the ladder the shipped constants form is ordered", () => {
   // The whole point. If this fails, some edit has made a capture's own budget exceed what contains it,
   // and the symptom will be truncated evidence rather than an error.
@@ -248,7 +262,32 @@ test("the shared client ceiling sits above the worker's hard timeout", () => {
 });
 
 /**
- * No client may declare its OWN capture ceiling below the worker's hard timeout.
+ * THE LADDER MUST COVER THE COMPLETE SERVER-SIDE HANDLER, NOT ONLY THE CAPTURE ATTEMPT INSIDE IT —
+ * architecture-audit.md §14.5 item 2.
+ *
+ * `runCapture` (server.mjs) spends up to `DESKTOP_PREPARE_TIMEOUT_MS` clearing the desktop BEFORE the
+ * hard-timeout-wrapped capture attempt even starts, and the two run SEQUENTIALLY -- so the true worst case
+ * a worker can legitimately take is prepare + hard timeout, not the hard timeout alone. The test above only
+ * ever compared the client ceiling against `CAPTURE_HARD_TIMEOUT_DEFAULT_MS`, so it could not see this rung
+ * even though it was already the exact shape it exists to catch: a client that gives up before the worker
+ * finishes legitimate work reports that work as a failure.
+ */
+test("the shared client ceiling covers desktop preparation PLUS the hard timeout, not the hard timeout alone", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const clientSrc = readFileSync(join(here, "..", "..", "worker-fleet", "src", "worker-http.mjs"), "utf8");
+  const declaredCeiling = clientSrc.match(/CAPTURE_CLIENT_TIMEOUT_MS\s*=\s*([\d_]+)/);
+  assert.ok(declaredCeiling, "CAPTURE_CLIENT_TIMEOUT_MS is gone from worker-http.mjs — has it been renamed?");
+  const ceilingMs = Number(declaredCeiling[1].replace(/_/g, ""));
+
+  const worstCaseServerMs = DESKTOP_PREPARE_MS + CAPTURE_HARD_TIMEOUT_DEFAULT_MS;
+  assert.ok(ceilingMs > worstCaseServerMs,
+    `the client waits ${ceilingMs} ms, but the worker's own worst case is ${DESKTOP_PREPARE_MS} ms of desktop `
+    + `preparation PLUS ${CAPTURE_HARD_TIMEOUT_DEFAULT_MS} ms of capture = ${worstCaseServerMs} ms, `
+    + `sequentially. A client that gives up first reports legitimate worker-side work as a client failure.`);
+});
+
+/**
+ * No client may declare its OWN capture ceiling below the worker's TRUE worst case.
  *
  * The ladder test at the top reads ONE hardcoded path, so it could not see that seven clients capped at
  * 300-320 s against a 520 s hard timeout: `compare-workers`, `bench-capture`, `evidence-check`,
@@ -265,10 +304,17 @@ test("the shared client ceiling sits above the worker's hard timeout", () => {
  *
  * Matches `timeoutMs:` as well as `AbortSignal.timeout(...)`, because every one of the seven used the
  * former and neither existing pattern looked for it.
+ *
+ * The bound is `DESKTOP_PREPARE_MS + hard timeout`, not the hard timeout alone —
+ * architecture-audit.md §14.5 item 2 — because `runCapture` (server.mjs) spends up to that much time
+ * clearing the desktop BEFORE the hard-timeout-wrapped attempt even starts. A per-client check against
+ * the hard timeout alone would pass a client that repeats the exact defect this file's own history
+ * records: `DATASET_CAPTURE_TIMEOUT_MS` sat at 560 s, above 520 s and below the true 580 s.
  */
-test("no capture client declares its own ceiling below the worker's hard timeout", () => {
+test("no capture client declares its own ceiling below the worker's TRUE worst case (prepare + hard timeout)", () => {
   const clients = captureClients();
   assert.ok(clients.length >= 8, `only found ${clients.length} capture clients; the discovery walk is broken`);
+  const worstCaseServerMs = DESKTOP_PREPARE_MS + CAPTURE_HARD_TIMEOUT_DEFAULT_MS;
 
   for (const [name, src] of clients) {
     for (const [, argument] of src.matchAll(/(?:timeoutMs:\s*|AbortSignal\.timeout\(\s*)([A-Za-z0-9_]+)/g)) {
@@ -276,10 +322,11 @@ test("no capture client declares its own ceiling below the worker's hard timeout
       // capture ceiling, so anything under half the hard timeout is out of scope for this check.
       const ms = resolveMs(src, argument);
       if (ms === null || ms < CAPTURE_HARD_TIMEOUT_DEFAULT_MS / 2) continue;
-      assert.ok(ms > CAPTURE_HARD_TIMEOUT_DEFAULT_MS,
-        `${name} declares its own ${ms} ms capture ceiling, below the worker's `
-        + `${CAPTURE_HARD_TIMEOUT_DEFAULT_MS} ms hard timeout. Import CAPTURE_CLIENT_TIMEOUT_MS from `
-        + `worker-http.mjs instead of declaring a local one.`);
+      assert.ok(ms > worstCaseServerMs,
+        `${name} declares its own ${ms} ms capture ceiling, below the worker's true worst case of `
+        + `${DESKTOP_PREPARE_MS} ms desktop preparation + ${CAPTURE_HARD_TIMEOUT_DEFAULT_MS} ms hard `
+        + `timeout = ${worstCaseServerMs} ms. Import CAPTURE_CLIENT_TIMEOUT_MS from worker-http.mjs `
+        + `instead of declaring a local one.`);
     }
   }
 });
