@@ -36,7 +36,7 @@ import { faultCode } from "./capture-faults.mjs";
 import { createResultStore, isValidCaptureId, storedResultResponse } from "./capture-results.mjs";
 import { edgePolicy, guestDiagnostics, processCounts, screenReaderState, screenReaderDefaults, treeSize } from "./diagnostics.mjs";
 import { killStrayBrowsers, pruneEdgeProfile, reportBrowserPolicyDrift } from "./browser-profile.mjs";
-import { applyRequestedLogLevel, applyCaptureSettings, CAPTURE_SETTINGS } from "./nvda-logging.mjs";
+import { applyRequestedLogLevel, applyCaptureSettings, captureSettingsDigest } from "./nvda-logging.mjs";
 import { trimAlreadyDone } from "./windows-trim.mjs";
 import { createLogWriter, silenceStreamErrors } from "./server-log.mjs";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -790,21 +790,17 @@ function nvdaConfigPaths() {
   }).config ?? []).map((/** @type {{path: string}} */ c) => c.path);
 }
 
-/**
- * The settings this guest captures under, as one comparable value for the cache key.
- *
- * Derived from `CAPTURE_SETTINGS` rather than hand-written, so adding a setting cannot fail to move the
- * key — which is the failure that would matter: a new setting changing the evidence while every old
- * capture stays reusable. The `why` is deliberately NOT in the digest; the digest answers "is this the
- * same evidence", and a reworded comment is not a different capture.
- *
- * @returns {string}
- */
-function captureSettingsDigest() {
-  return CAPTURE_SETTINGS
-    .map((setting) => `${setting.section}.${setting.key}=${setting.value}`)
-    .sort()
-    .join(",");
+async function sampleDesktopDialogs() {
+  const dialogs = await listBlockingDialogs((reason) => log(`could not enumerate desktop dialogs: ${reason}`));
+  dialogCache = { at: Date.now(), dialogs };
+  if (dialogs.length) {
+    log(`  desktop is blocked by ${dialogs.length} dialog(s): `
+      + dialogs.map((d) => `${d.title}: ${d.message}`).join(" | "));
+  }
+  const foreground = await probeWindowOwner((reason) => log(`could not read the foreground window: ${reason}`));
+  foregroundCache = { at: Date.now(), foreground };
+  const blocker = foregroundBlocker(foreground);
+  if (blocker) log(`  the foreground is held by ${blocker.owner} (${blocker.title}) — Edge cannot take focus`);
 }
 
 // NOT on a timer. The first version sampled every 30 s, and on a 3 GB guest that is a PowerShell process
