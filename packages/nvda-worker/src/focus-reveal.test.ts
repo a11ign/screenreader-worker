@@ -201,3 +201,91 @@ focusRevealTest("logSuppressed is false whenever applied is false, regardless of
   focusRevealAssert.equal(focusResetOutcome({ blurred: true, logSuppressed: true, targetMatch: "fallback", candidates: 3 }).logSuppressed, false,
     "a suspect target discredits the whole reset, including any suppression it claims to have done");
 });
+
+/**
+ * AN UNTRUSTED BASELINE MUST NOT READ AS "NOTHING APPEARED" — issue #76, measured 2026-09-06.
+ *
+ * `probeFocusContext` presses Tab before this probe runs, which OPENS a panel revealed on focus.
+ * `anchorToTop` then presses Escape. On a CONFORMANT page that closes the panel, so the baseline is clean
+ * and the probe measures correctly; on a FAILING page Escape does nothing — the failure under test — so
+ * the panel is still open, the census does not grow, and the verdict read `revealed: false`, which is what
+ * a conformant page looks like.
+ *
+ * Both halves of the 1.4.13 fixture came back clean on the real-page path, for opposite reasons:
+ *
+ *   good.html   revealed:true  focusHeld:true  dismissed:true     correct
+ *   bad.html    revealed:false why:"nothing appeared on focus"    blind
+ *
+ * `packages/cli/src/cli.ts` runs both probes, so that is the product path, not a corpus quirk.
+ */
+const census = (link: number) => ({ landmark: 0, heading: 0, link, graphic: 0, formControl: 0 });
+
+focusRevealTest("an EMPTY growth on an untouched baseline still reads false — the ordinary conformant page", () => {
+  const v = focusRevealVerdict({
+    before: census(0), onFocus: census(0), afterEscape: census(0),
+    focusBefore: "a", focusAfter: "a", baselineUntouched: true,
+  });
+  focusRevealAssert.equal(v.revealed, false);
+  focusRevealAssert.equal(v.why, "nothing appeared on focus");
+});
+
+focusRevealTest("an EMPTY growth on a TOUCHED baseline reads null, never false", () => {
+  // This is the bad fixture half exactly: the panel was already open when `before` was taken, so no
+  // delta was possible. "Nothing appeared" and "we could not ask" stop sharing a value.
+  const v = focusRevealVerdict({
+    before: census(1), onFocus: census(1), afterEscape: census(1),
+    focusBefore: "a", focusAfter: "a", baselineUntouched: false,
+  });
+  focusRevealAssert.equal(v.revealed, null);
+  focusRevealAssert.match(String(v.why), /baseline was not the untouched document/);
+});
+
+focusRevealTest("a TOUCHED baseline that STILL grew is unaffected — the good fixture half keeps its verdict", () => {
+  // The narrowness is the design. A baseline that grew has proved itself adequate BY GROWING, so
+  // refusing on `focusReset.applied` alone would blind the conformant page too — trading one silent
+  // wrong answer for a louder one.
+  const v = focusRevealVerdict({
+    before: census(0), onFocus: census(1), afterEscape: census(0),
+    focusBefore: "trigger", focusAfter: "trigger", baselineUntouched: false,
+  });
+  focusRevealAssert.equal(v.revealed, true);
+  focusRevealAssert.equal(v.focusHeld, true);
+  focusRevealAssert.equal(v.dismissed, true);
+});
+
+focusRevealTest("baselineUntouched DEFAULTS to trusted, so every existing caller is unchanged", () => {
+  // The dataset path runs neither probeFocusContext nor probeNavigation, so its baseline genuinely is
+  // untouched and its 15 corpus firings must not move. An opt-in default is what keeps that true.
+  const v = focusRevealVerdict({
+    before: census(0), onFocus: census(0), afterEscape: census(0),
+    focusBefore: "a", focusAfter: "a",
+  });
+  focusRevealAssert.equal(v.revealed, false);
+});
+
+focusRevealTest("a failed census still wins over an untrusted baseline — absence of a reading is the stronger fact", () => {
+  // `census unavailable` means the CDP socket did not answer, which is not a statement about the page at
+  // all. Reporting the baseline complaint instead would name the wrong cause.
+  const v = focusRevealVerdict({
+    before: { error: "socket" }, onFocus: census(0), afterEscape: census(0),
+    focusBefore: "a", focusAfter: "a", baselineUntouched: false,
+  });
+  focusRevealAssert.equal(v.revealed, null);
+  focusRevealAssert.equal(v.why, "census unavailable");
+});
+
+focusRevealTest("the PROBE passes the baseline's trust to the verdict — a source check, like the ordering one above", () => {
+  // The verdict is pure and unit-tested; the WIRING is `.mjs` that needs NVDA to exercise, so there is no
+  // other way to catch it. Mutation-checked: replacing the expression with a literal `true` fails here,
+  // and nothing else in the suite notices — which is precisely why this test exists rather than being
+  // left to the four verdict tests above.
+  const source = readFileSync(resolve(import.meta.dirname, "./capture-probes.mjs"), "utf8");
+  const call = source.indexOf("focusRevealVerdict({");
+  focusRevealAssert.ok(call >= 0,
+    "the call to focusRevealVerdict is gone from capture-probes.mjs -- this test examines nothing; find "
+    + "where the verdict is computed now and assert the wiring there");
+  const args = source.slice(call, call + 400);
+  focusRevealAssert.match(args, /baselineUntouched:\s*focusReset\?\.applied !== true/,
+    "the probe must hand the verdict the baseline's trust, derived from `focusReset.applied` -- passing a "
+    + "literal restores issue #76, where a failing page reads exactly like a conformant one");
+});

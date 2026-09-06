@@ -3052,7 +3052,13 @@ async function probeFocusReveal({ interaction, deadline, diag }) {
     await withTimeout(nvda.press("Escape"), NAV_TIMEOUT_MS, "focusReveal").catch(() => undefined);
     const afterEscape = await structuralCensus();
     const focusAfter = await reportFocusedControlWithRetry(interaction);
-    const verdict = focusRevealVerdict({ before, onFocus, afterEscape, focusBefore, focusAfter });
+    // `focusReset.applied` is the record that a control held focus when this probe started -- so the
+    // document `before` was taken on had already been walked, and anything an earlier Tab revealed is in
+    // the baseline rather than in the delta. Passed rather than judged here: what an untrusted baseline
+    // MEANS is `focusRevealVerdict`'s decision, testable without NVDA, like every other verdict in that
+    // file.
+    const verdict = focusRevealVerdict({ before, onFocus, afterEscape, focusBefore, focusAfter,
+      baselineUntouched: focusReset?.applied !== true });
     // `tabs`, `focusBefore` and `focusAfter` are on the MARK and not in the verdict.
     //
     // `tabs` because "nothing revealed in 8 stops" and "we got one stop before the deadline" are different

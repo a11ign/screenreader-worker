@@ -1068,10 +1068,35 @@ export function censusGrowth(before, after) {
  * unchanged count with changed content reads as `revealed: false`, which is a MISS rather than an
  * invention, and that is the direction this file fails in deliberately.
  *
+ * WHEN THE BASELINE WAS NOT THE UNTOUCHED DOCUMENT, NOTHING-APPEARED IS NOT AN ANSWER.
+ *
+ * `probeFocusContext` runs before this probe and presses Tab, which OPENS a panel that appears on focus.
+ * `anchorToTop` then presses Escape. On a CONFORMANT page that Escape closes the panel, so the baseline is
+ * clean and the walk re-opens it and measures correctly. On a FAILING page Escape does nothing -- that is
+ * the failure under test -- so the panel is still open, the census does not grow, and the old verdict was
+ * `revealed: false`, which reads as a conformant page.
+ *
+ * **The property that makes a page fail 1.4.13 is the property that stopped this probe seeing it**, and
+ * both halves of the fixture pair came back clean for opposite reasons. Measured 2026-09-06 on the
+ * real-page path, same fleet, minutes apart (issue #76):
+ *
+ *   good.html   revealed:true  focusHeld:true  dismissed:true     correct
+ *   bad.html    revealed:false why:"nothing appeared on focus"    blind
+ *
+ * So an empty growth is only `false` when the baseline is TRUSTED. Otherwise it is `null` -- "we could not
+ * ask" -- which is this file's own rule that an absence and a negative must never share a value.
+ *
+ * THE GUARD IS DELIBERATELY NARROWER THAN "the baseline was touched", and that is the whole design. A
+ * touched baseline that STILL grew has proved itself adequate by growing, so `revealedBy.length > 0` is
+ * unaffected and the conformant half keeps reading `dismissed: true`. Refusing on `focusReset.applied`
+ * alone would blind the good page too, which trades one silent wrong answer for a louder one.
+ *
  * @param {{ before: unknown, onFocus: unknown, afterEscape: unknown,
- *           focusBefore: string | null, focusAfter: string | null }} reads
+ *           focusBefore: string | null, focusAfter: string | null,
+ *           baselineUntouched?: boolean }} reads
  */
-export function focusRevealVerdict({ before, onFocus, afterEscape, focusBefore, focusAfter }) {
+export function focusRevealVerdict({ before, onFocus, afterEscape, focusBefore, focusAfter,
+  baselineUntouched = true }) {
   // A FAILED CENSUS IS NOT A READING OF ZERO, AND IT DOES NOT ARRIVE AS `null`. `structuralCensus` returns
   // `{ error }` when the CDP socket did not answer — so the obvious `if (!before)` guard passes the failure
   // straight through, every count reads 0, and a dropped connection becomes "nothing appeared on focus",
@@ -1079,7 +1104,14 @@ export function focusRevealVerdict({ before, onFocus, afterEscape, focusBefore, 
   // question, and `tsc` caught it in the first version of this function rather than a capture run.
   const revealedBy = censusGrowth(before, onFocus);
   if (revealedBy === null) return { asked: true, why: "census unavailable", revealed: null };
-  if (revealedBy.length === 0) return { asked: true, revealed: false, why: "nothing appeared on focus" };
+  if (revealedBy.length === 0) {
+    if (!baselineUntouched) {
+      return { asked: true, revealed: null,
+        why: "a control held focus from an earlier probe, so the baseline was not the untouched document "
+          + "-- content already revealed before this probe began cannot appear in its delta" };
+    }
+    return { asked: true, revealed: false, why: "nothing appeared on focus" };
+  }
 
   // FOCUS MUST NOT HAVE MOVED, or Escape dismissed nothing — it navigated. The criterion's wording is the
   // whole reason this is checked rather than assumed: a mechanism that moves focus is not a mechanism to
