@@ -1472,7 +1472,10 @@ async function probeFocusOrderWithEventLog({ deadline, diag, controlsOnPage, pro
   }
 }
 
-const FOCUS_EVENT_LOG_DIAGNOSTIC_LIMIT = 50;
+// Kept equal to `capture-pure.mjs`'s `FOCUS_EVENT_LOG_LIMIT` (raised 50 -> 300 on 2026-09-06, see that
+// file's comment) so the diagnostic mark a human reads and the log a rule actually decides from never
+// silently disagree about how much of a busy page's focus activity is visible.
+const FOCUS_EVENT_LOG_DIAGNOSTIC_LIMIT = 300;
 
 /**
  * Read the focus-event log, tear the listener down, mark what happened, and decide F55 from it — the

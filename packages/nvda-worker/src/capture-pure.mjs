@@ -1105,8 +1105,6 @@ export function focusRevealVerdict({ before, onFocus, afterEscape, focusBefore, 
   };
 }
 
-const FOCUS_SCRIPT_BLUR_WINDOW_MS = 50;
-
 /**
  * Is the CDP target a focus-event log was read from one this pipeline actually confirmed?
  *
@@ -1140,68 +1138,55 @@ export function focusTargetIsSuspect({ targetMatch, candidates }) {
 }
 
 /**
- * ADJACENCY ALONE DOES NOT DISCRIMINATE, AND THE FIRST VERSION OF THIS FUNCTION GOT THAT WRONG — caught by
- * its own unit test, not by a capture. Per the UI Events spec, an ORDINARY Tab transition from A to B fires
- * `focusout(A)` and THEN `focusin(B)`, both as one browser-level change: focusout comes first, not second.
- * So across a whole walk the log reads `focusout(P), focusin(A), focusout(A), focusin(B), focusout(B), …` —
- * and `focusin(A)` is followed, a few events later, by `focusout(A)`, EXACTLY LIKE F55 would be. A pair
- * test with no timing component fires on every conformant control but the first, which the first version's
- * own test caught immediately once the fixture matched what a real page actually does rather than what the
- * comment above it assumed.
+ * The most events kept on the capture. Was 50, sized against the only captures measured at the time (17
+ * and 27 events, both synthetic). Raised to 300 on 2026-09-06 when a real page
+ * (`design-system.service.gov.uk/components/details/`) measured **296** events — at 50 that page's stored
+ * log held 17% of what happened and any F55 past event 50 was undetectable, silently: the same shape as
+ * `collectByType`'s truncation, which CLAUDE.md already treats as "a sweep that structurally cannot see
+ * one element is the same shape as a truncated one". `truncated` below is the honest half: even at 300 a
+ * busier page can still overflow, and the field says so rather than letting an overflow read as a clean
+ * page. At 300 events an entry (`type`, `id`, `name`, `atMs`) is ~24 KB per capture, ~67 MB across the
+ * 2,796-record corpus if every capture carried one -- still under the ~40 MB dataset export already
+ * fetched routinely.
+ */
+const FOCUS_EVENT_LOG_LIMIT = 300;
+
+/**
+ * CAPTURE RECORDS, RULES DECIDE — this function computed a VERDICT until 2026-09-06, when a false
+ * positive and a false negative on the same night, on the same rule, proved that wrong on both sides.
  *
- * THE REAL DISCRIMINATOR IS THE GAP. A script's `blur()` on `focus` runs synchronously (or on the next
- * microtask at the latest) — no human input and no round trip to NVDA happens in between, so the gap
- * between `focusin(X)` and its `focusout(X)` is on the order of a millisecond. An ORDINARY transition's
- * `focusout(A)` is caused by the NEXT Tab press, which cannot happen until `probeFocusOrder`'s loop has
- * sent the keystroke and read NVDA's announcement back — a round trip this codebase's own history puts at
- * a minimum of tens of milliseconds and typically far more (guidepup's speech-settle timers alone are
- * measured in the hundreds, per CLAUDE.md). So the two cases are separated by roughly two orders of
- * magnitude, and the comparison is between two ALREADY-RECORDED timestamps, not a guessed wait — this is
- * not the sleep-a-duration anti-pattern the rest of this codebase avoids, because nothing here is deciding
- * how long to wait; it is reading how long something that already happened actually took.
+ * The original version paired `focusin(X)`→`focusout(X)` within a synchronous window and called that F55,
+ * AT CAPTURE TIME. Two real captures refuted it in opposite directions:
  *
- * `FOCUS_SCRIPT_BLUR_WINDOW_MS` — THE MARGIN IS NOW MEASURED, THE THRESHOLD ITSELF STILL IS NOT.
+ * - `keyboard-trap-modal-escape.good` (CONFORMANT, wrongly ACCUSED): a 17-event log held two such pairs --
+ *   id 0 ("Full name") held 0ms entering a modal, id 5 ("A") held 0ms as the tab ring wrapped -- and BOTH
+ *   landed on a real destination (id 1, "House number") within 0-1ms. F55's own text
+ *   (w3.org/WAI/WCAG22/Techniques/failures/F55) is explicit that every example is a destination-less
+ *   `.blur()` and the mechanism "removes focus from the content ENTIRELY" — redirecting focus to a
+ *   different real control is not this failure, however fast.
+ * - `focus-removed-on-receipt-order.bad` (one of this criterion's own NINE POSITIVES, wrongly CLEARED):
+ *   the real failure is not a completed pair at all. `id 1 ("Delivery instructions")` appears in its
+ *   27-event log ONLY as a `focusout`, twice, with no matching `focusin` ever recorded — the script
+ *   intercepts so fast the browser's own focus event never completes before the blur does. A rule keyed
+ *   on completed pairs cannot see this: it is not a pair that arrived late, it is one that never formed.
+ *   Measured against the exported corpus: the old verdict caught 0 of 9 positives while firing on 10
+ *   conformant records.
  *
- * It was written as a placeholder justified only by an assumed two-orders-of-magnitude gap. Measured
- * 2026-09-05 against a real capture of `focus-panel-undismissable-fee+with-component-index.bad`:
- * `probeFocusOrder` ran from atMs 23953 to 58952 over 18 stops, so **1,944 ms per Tab stop — a 38.9x
- * margin** over this 50 ms window. That is a mean across the whole probe and therefore an UPPER bound
- * on the gap, since each stop also pays for `reportFocusedControlWithRetry`; the true focusout→focusin
- * gap is smaller. It is still bounded below by a real NVDA keystroke round trip, which this repo
- * measures in hundreds of milliseconds, never in tens.
+ * Both facts a decision needs — whether a receipt ever completed, and where focus went immediately after
+ * — live in the RAW SEQUENCE, and a threshold-based verdict baked in here meant the next wrong call cost a
+ * recapture rather than a rule change, against this project's own division: captures record, rules decide
+ * (ADR 0021). So this function no longer judges anything. It reports the log itself, bounded, so
+ * `addFocusEventFindings` (`rules.ts`) can walk it and decide both the orphaned-`focusout` shape and the
+ * redirect-destination shape from the same evidence. The arithmetic for the bound: an event is
+ * `{type, id, name, atMs}`, the cap is `FOCUS_EVENT_LOG_LIMIT`, so this is under 4 KB per capture at the
+ * cap and real captures measured so far (17, 27 events) are far under it.
  *
- * A SECOND, MORE DIRECT MEASUREMENT, from a real page rather than a probe-wide average: a real capture
- * carrying `interaction.focusEvents` (116 events, `scriptRemovedFocus: []`) was walked for every real
- * `focusin`→`focusout` pair sharing an id — 24 of them, ordinary Tab transitions, none scripted — and the
- * SMALLEST gap measured was 633 ms. That is **a 12.6x margin on the negative side, lower bound
- * unconfirmed**: 633 ms is an actual observed focusout-follows-Tab-press gap, not an upper bound derived
- * from a probe's mean, so it tightens the negative-side evidence beyond the 38.9x figure above rather than
- * merely repeating it. It says nothing new about the other side — no capture has yet recorded a script
- * `blur()` at all, so whether a real synchronous re-focus lands under 50 ms remains exactly as unmeasured
- * as the paragraph above already says. Both figures bound the SAME side; neither touches the lower one.
- *
- * So the SEPARATION is real and evidenced, twice over, on the negative side. What is still unmeasured is
- * the other side: no capture has yet recorded a script `blur()` to confirm it lands under 50 ms rather
- * than merely under 633. The first capture carrying a real F55 page settles that, and until one does this
- * threshold is a hypothesis with a large margin rather than a calibrated value.
- *
- * THE SEAM THIS CLOSED, 2026-09-06: `choosePageTarget` picking the wrong CDP target — the Cookiebot-iframe
- * shape `censusTargetIsSuspect` (`packages/evidence/src/verify.ts`) exists for — reaches this detector
- * through the identical `pageTarget()` machinery the census reads, and until now nothing here checked it.
- * `evaluateOnPageTarget` (`browser-session.mjs`) always computed `targetMatch`/`candidates`;
- * `collectFocusEventLog` passed `targetMatch` on but silently dropped `candidates`; this function did not
- * even destructure `targetMatch`. So a mistargeted capture correctly suppressed a census finding (`null`,
- * per `censusTargetIsSuspect`) while still reporting a REAL F55 finding computed from focus events on the
- * wrong document — "a remedy applied at ONE call site when the behaviour reaches several", CLAUDE.md's own
- * name for this repo's most expensive recurring defect shape, one seam further along the same pipe.
- *
- * `focusTargetIsSuspect` below is the WORKER-SIDE TWIN of `censusTargetIsSuspect`, not a shared import: this
- * file is `.mjs` running under plain Node on the Windows guest, `verify.ts` is TypeScript compiled to
- * `dist`, and depending on a build from here is how a stale `dist` scored the wrong rules once already (see
- * `name-normalisation.test.ts`'s header). Two copies that CANNOT be merged across that boundary are pinned
- * equal by a test instead — `focus-target-suspect-parity.test.ts` — which is this file's own third remedy
- * for "a fact stated twice": delete the copy (impossible here), derive one from the other (impossible
- * here), so pin them with a test that fails the moment they disagree.
+ * THE SEAM THIS CLOSED, 2026-09-06 (unaffected by the shape change above): `choosePageTarget` picking the
+ * wrong CDP target — the Cookiebot-iframe shape `censusTargetIsSuspect` (`packages/evidence/src/verify.ts`)
+ * exists for — reaches this detector through the identical `pageTarget()` machinery the census reads.
+ * `focusTargetIsSuspect` below is the WORKER-SIDE TWIN of `censusTargetIsSuspect`, kept as two copies
+ * because this file is plain `.mjs` on the Windows guest and that one is TypeScript compiled to `dist`;
+ * `focus-target-suspect-parity.test.ts` pins them equal instead.
  *
  * @param {{ events: {type: string, id: number, name: string, atMs: number}[] | null | undefined,
  *           error?: string | undefined, targetMatch?: string | null | undefined,
@@ -1209,29 +1194,27 @@ export function focusTargetIsSuspect({ targetMatch, candidates }) {
  */
 export function focusEventVerdict({ events, error, targetMatch, candidates }) {
   if (!Array.isArray(events)) {
-    return { asked: true, checked: false, why: error || "no event log", scriptRemovedFocus: null };
+    return { asked: true, checked: false, why: error || "no event log", log: null };
   }
   if (focusTargetIsSuspect({ targetMatch, candidates })) {
     // "Cannot say", never "no findings" -- identical to the no-log branch above, and for the same reason:
-    // a verdict computed from the wrong document is not evidence about the right one. `mapping: "secondary"`
+    // a reading computed from the wrong document is not evidence about the right one. `mapping: "secondary"`
     // in `rules.ts` already means a referral rather than an assertion, but a wrong referral is still wrong.
     return {
       asked: true, checked: false,
       why: `focus-event log target unconfirmed (targetMatch=${targetMatch}, candidates=${candidates})`,
-      scriptRemovedFocus: null,
+      log: null,
     };
   }
-  const scriptRemovedFocus = [];
-  for (let i = 0; i < events.length - 1; i += 1) {
-    const receipt = events[i];
-    const next = events[i + 1];
-    const heldMs = next?.atMs - receipt?.atMs;
-    if (receipt?.type === "focusin" && next?.type === "focusout" && receipt.id === next.id
-      && heldMs < FOCUS_SCRIPT_BLUR_WINDOW_MS) {
-      scriptRemovedFocus.push({ id: receipt.id, name: receipt.name, heldMs });
-    }
-  }
-  return { asked: true, checked: true, events: events.length, scriptRemovedFocus };
+  // `truncated` is the honest half of raising the cap rather than trusting it: a busier page than any
+  // measured so far must say it overflowed, not read as a clean one. `addFocusEventFindings` still reports
+  // any F55 it finds within the visible slice -- a real finding in the part that DID arrive is still real
+  // -- but a caller reading the ABSENCE of a finding on a truncated log knows not to bank that absence.
+  return {
+    asked: true, checked: true, events: events.length,
+    log: events.slice(0, FOCUS_EVENT_LOG_LIMIT),
+    truncated: events.length > FOCUS_EVENT_LOG_LIMIT,
+  };
 }
 
 /**
