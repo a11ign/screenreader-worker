@@ -46,8 +46,9 @@ import {
   pageServedRefusal,
   DEFAULT_BUDGET_MS,
   screenReaderWasSilentAtStart,
+  shouldInstallFocusEventListenerEarly,
 } from "./capture-pure.mjs";
-import { setExpectedPageUrl } from "./browser-session.mjs";
+import { setExpectedPageUrl, installFocusEventLog } from "./browser-session.mjs";
 import { parkPointer } from "./pointer.mjs";
 import {
   reuseBrowserFor, openPage, assertLandedOnRequestedPage, assertPageWasServed, waitForPageToSettle,
@@ -253,6 +254,33 @@ async function bringUpCaptureEnvironment({ browserWaitMs, reuse, diag }) {
   await resetSpeechLogs(diag);
 }
 
+/**
+ * Install the focus-event listener before the capture's OWN first `anchorToTop()`, rather than
+ * immediately before `probeFocusOrder` where it used to attach — `known-gaps.md` §42's fix.
+ *
+ * The listener used to install well after the sweep, `probeFocusContext` and `probeFocusReveal`, any of
+ * which can move real DOM focus first (a sweep activating a control under `probeForms`;
+ * `probeFocusContext`/`probeFocusReveal` each walking the tab order themselves). `probeFocusOrder`'s own
+ * `anchorToTop()` then blurred whatever was left focused, and that blur was the log's first event — a
+ * `focusout` with no matching `focusin`, byte-for-byte 2.4.7's F55 signature and nothing of the kind, on
+ * all 37 conformant real pages measured (`not-working.md` §22). Installing here means even THIS
+ * function's own first `anchorToTop()` call, two lines after this one runs, is a real paired event if the
+ * page autofocused something on load.
+ *
+ * Gated on `shouldInstallFocusEventListenerEarly` (capture-pure.mjs), not called unconditionally: without
+ * `probeFocus` nothing downstream ever walks the tab order or reads this log, so installing would be a CDP
+ * round trip and a page-level listener paid by every capture for evidence nothing will consume. Idempotent
+ * either way -- `probeFocusOrderWithEventLog` still installs again immediately before its own walk, and
+ * the page-side script's `already: true` branch makes the second call a no-op.
+ *
+ * @param {Record<string, any>} opts @param {Diag} diag
+ */
+async function installFocusEventListenerBeforeFirstFocus(opts, diag) {
+  if (!shouldInstallFocusEventListenerEarly(opts)) return;
+  const install = await installFocusEventLog();
+  diag.mark("focusEventListenerEarlyInstall", install);
+}
+
 /** @param {string} url @param {Record<string, any>} opts @param {Diag} diag */
 async function runCapturePhases(url, opts, diag) {
   const steps = Number(opts.steps || DEFAULT_STEPS);
@@ -276,6 +304,9 @@ async function runCapturePhases(url, opts, diag) {
   // regardless, so the earlier one was pure cost: measured at ~3s of a 15.8s capture, since
   // each anchorToTop is two keystroke round trips plus a settle.
   const documentTitle = await waitForDocument(diag);
+  // BEFORE the first `anchorToTop()` below -- `known-gaps.md` §42's fix. See
+  // `installFocusEventListenerBeforeFirstFocus`'s own comment for why here, specifically.
+  await installFocusEventListenerBeforeFirstFocus(opts, diag);
   // Anchor AFTER the gate. waitForDocument asks NVDA to report the document title, which
   // leaves that title as `lastSpokenPhrase` -- and the read-through deliberately reads the
   // current line in place before its first move, so it captured the TITLE instead of the
