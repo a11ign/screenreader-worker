@@ -181,9 +181,19 @@ function sameDocument(actualUrl, expectedUrl) {
  * page's own.
  */
 /**
+ * How many candidate target URLs a census records when the choice was ambiguous.
+ *
+ * A cap rather than all of them: this rides on every census mark of every capture, and the question it
+ * answers -- "which OTHER document was Edge offering?" -- is answered by the first few. Four covers the
+ * measured worst case (2) with room, and a page with forty targets is a different investigation.
+ */
+const CANDIDATE_URLS_RECORDED = 4;
+
+/**
  * @typedef {{ type?: string, url?: string, webSocketDebuggerUrl?: string }} CdpTarget
  * @typedef {CdpTarget & { webSocketDebuggerUrl: string,
- *   targetMatch: "matched" | "fallback" | "no-expected-url", candidates: number }} UsablePageTarget
+ *   targetMatch: "matched" | "fallback" | "no-expected-url", candidates: number,
+ *   candidateUrls: (string | null)[] }} UsablePageTarget
  *
  * The `filter` below already REQUIRES `typeof webSocketDebuggerUrl === "string"`, so a returned target
  * always has one -- but a predicate inside `find`/`filter` cannot narrow the result, and every caller then
@@ -217,10 +227,28 @@ export function choosePageTarget(targets, expectedUrl) {
   ));
   if (!pages.length) return null;
   const candidates = pages.length;
-  if (!expectedUrl) return { ...pages[0], targetMatch: "no-expected-url", candidates };
+  // THE URLS, NOT JUST THE COUNT -- added 2026-09-06 because an investigation stopped on the count.
+  //
+  // `rules:real-pages` reported 30 of 85 conformant real pages with a census it does not trust, each
+  // saying `targetMatch: "fallback", candidates: 2` and nothing else. That is enough to REFUSE the census,
+  // which is the right call and is why the number is 30 rather than a corpus of wrong documents. It is not
+  // enough to FIX anything: the whole question is WHICH second target Edge was offering -- a consent
+  // vendor's iframe promoted to a page target, an about:blank the `--app` window left behind, or the real
+  // page under a URL it normalised itself -- and those need three different remedies.
+  //
+  // This is `graphicUnnamed`'s defect exactly, one field along: a count with no identity, which tells you
+  // an investigation cannot proceed rather than letting it proceed. That one was fixed the same way, by
+  // recording `graphicUnnamedDetail` beside the number, and it is what made the ONS 1.1.1 finding
+  // adjudicable in one read instead of a live-site expedition.
+  //
+  // Bounded and diagnostic-only: the FIRST FEW urls, never the target objects (a `webSocketDebuggerUrl`
+  // is a live handle, not evidence), and every consumer already treats this whole block as a diagnostic
+  // rather than as evidence -- `capture-probes.mjs` takes `.elements` only, saying so at its own call site.
+  const candidateUrls = pages.slice(0, CANDIDATE_URLS_RECORDED).map((t) => t.url ?? null);
+  if (!expectedUrl) return { ...pages[0], targetMatch: "no-expected-url", candidates, candidateUrls };
   const match = pages.find((t) => sameDocument(t.url, expectedUrl));
-  if (match) return { ...match, targetMatch: "matched", candidates };
-  return { ...pages[0], targetMatch: "fallback", candidates };
+  if (match) return { ...match, targetMatch: "matched", candidates, candidateUrls };
+  return { ...pages[0], targetMatch: "fallback", candidates, candidateUrls };
 }
 
 /**
@@ -743,6 +771,10 @@ export async function structuralCensus() {
       // forced (a real second target, unconfirmed) or vacuous (one target, so it is also the only correct
       // answer). See the typedef on `choosePageTarget`.
       census.candidates = target.candidates;
+      // AND WHICH ones, because the count alone stops an investigation rather than starting it -- see
+      // `choosePageTarget`. Only recorded when the choice was actually ambiguous: on the ~55 pages where
+      // one target existed the urls add nothing the census does not already carry in `targetUrl`.
+      if (target.candidates > 1) census.candidateUrls = target.candidateUrls;
       // WHERE the target actually was, and what was wanted — so a fallback's REASON can be READ, not
       // guessed. `evaluateOnPageTarget` already carries `targetUrl` for the identical reason; this census
       // went without it, and a fallback read as "a real second CDP target existed" even when `candidates`
@@ -995,6 +1027,7 @@ export async function domCensus() {
       // expected URL all travel WITH the count they describe.
       return value && typeof value === "object"
         ? { ...value, targetMatch: target.targetMatch, candidates: target.candidates,
+            ...(target.candidates > 1 ? { candidateUrls: target.candidateUrls } : {}),
             targetUrl: target.url, expectedUrl: expectedPageUrl }
         : null;
     } finally {

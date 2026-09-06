@@ -162,3 +162,36 @@ test("reusable args add ONLY the debugging port to the existing flags", () => {
   assert.deepEqual(args.slice(0, base.length), base, "existing flags must be untouched and in order");
   assert.deepEqual(args.slice(base.length), [`--remote-debugging-port=${CDP_PORT}`]);
 });
+
+test("an ambiguous choice records WHICH targets were on offer, not just how many", () => {
+  // A COUNT WITH NO IDENTITY STOPS AN INVESTIGATION RATHER THAN STARTING ONE, and this is the second time
+  // that exact defect has been paid for here. `graphicUnnamed` was fixed the same way, by recording
+  // `graphicUnnamedDetail` beside the number -- and it is what made the ONS 1.1.1 finding adjudicable in
+  // one read instead of a live-site expedition.
+  //
+  // The instance: `rules:real-pages` reported 30 of 85 conformant real pages with a census it does not
+  // trust, each saying `targetMatch: "fallback", candidates: 2` and NOTHING ELSE. Refusing the census on
+  // that is right. Fixing it is impossible, because the whole question is WHICH second target Edge was
+  // offering -- a consent vendor's iframe promoted to a page target, an `about:blank` the `--app` window
+  // left behind, or the real page under a URL it normalised itself -- and those need three different
+  // remedies.
+  const target = choosePageTarget([
+    { type: "page", url: "https://consent.example.com/banner", webSocketDebuggerUrl: "ws://a" },
+    { type: "page", url: "https://caselaw.example.gov.uk/search?query=", webSocketDebuggerUrl: "ws://b" },
+  ], "https://caselaw.example.gov.uk/nowhere");
+  assert.equal(target?.targetMatch, "fallback");
+  assert.equal(target?.candidates, 2);
+  assert.deepEqual(target?.candidateUrls,
+    ["https://consent.example.com/banner", "https://caselaw.example.gov.uk/search?query="],
+    "a fallback must name the documents it was choosing between, in the order the browser offered them");
+});
+
+test("the recorded urls are BOUNDED, because this rides on every census of every capture", () => {
+  const many = Array.from({ length: 9 }, (_, i) => (
+    { type: "page", url: `https://example.com/${i}`, webSocketDebuggerUrl: `ws://${i}` }));
+  const target = choosePageTarget(many, "https://example.com/nowhere");
+  assert.equal(target?.candidates, 9, "the COUNT is never capped -- it is the cheap part and the alarm");
+  assert.equal(target?.candidateUrls?.length, 4,
+    "the urls are capped: four covers the measured worst case (2) with room, and a page with forty "
+    + "targets is a different investigation");
+});
