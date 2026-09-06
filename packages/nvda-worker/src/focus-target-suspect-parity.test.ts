@@ -83,8 +83,17 @@ const CASES: { name: string; input: { targetMatch?: string | null; candidates?: 
 ];
 
 test("focusTargetIsSuspect and censusTargetIsSuspect agree on every case", () => {
+  // `censusTargetIsSuspect` GAINED A SECOND PARAMETER (known-gaps.md §41) THAT `focusTargetIsSuspect`
+  // DOES NOT YET HAVE -- deliberately. Catching up the worker twin is a worker-file change, and a worker
+  // file change makes all ten fleet machines stale and needs a recapture to validate; it is held back to
+  // its own unit. Passing a NON-absent `navigatedOnSubmit` here forces `censusTargetIsSuspect`'s new
+  // widening branch closed on every row below, which is exactly what `focusTargetIsSuspect` still always
+  // does -- so this keeps proving the two agree on the boundary BOTH currently implement, rather than
+  // silently exercising a branch only one side has. The new branch has its own coverage in
+  // `verify.test.ts`.
+  const navigatedOnSubmit = { from: "https://example.test/", to: "https://example.test/other" };
   for (const { name, input, suspect } of CASES) {
     assert.equal(focusTargetIsSuspect(input), suspect, `focusTargetIsSuspect: ${name}`);
-    assert.equal(censusTargetIsSuspect(input), suspect, `censusTargetIsSuspect: ${name}`);
+    assert.equal(censusTargetIsSuspect(input, navigatedOnSubmit), suspect, `censusTargetIsSuspect: ${name}`);
   }
 });
