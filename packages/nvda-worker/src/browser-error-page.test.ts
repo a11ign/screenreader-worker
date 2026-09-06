@@ -77,8 +77,8 @@ test("a genuinely different document is still caught", () => {
  * THE STATUS CHECK IS THE TITLE CHECK'S SUCCESSOR, AND THE FIRST TEST BELOW IS WHY IT EXISTS.
  *
  * The guard above matches Chromium's error PHRASES. Chromium titles a network-error page with the HOST,
- * so an unserved `http://REDACTED-INTERNAL-ADDRESS:3000/x` is titled `REDACTED-INTERNAL-ADDRESS`, matches nothing, and the capture
- * comes back reading `"REDACTED-INTERNAL-ADDRESS, document, read only"` — a valid-looking document. That happened four
+ * so an unserved `http://203.0.113.15:3000/x` is titled `203.0.113.15`, matches nothing, and the capture
+ * comes back reading `"203.0.113.15, document, read only"` — a valid-looking document. That happened four
  * times in one session, twice AFTER the person hitting it had fixed it somewhere else.
  *
  * Both guards are kept. The title check fails fast on a phrase NVDA announces before anything else; the
@@ -88,10 +88,10 @@ test("a genuinely different document is still caught", () => {
  */
 test("the title guard CANNOT see the fault the status guard exists for", () => {
   // Not an invented example: this is the title of the page a real unserved capture returned.
-  assert.equal(isBrowserErrorTitle("REDACTED-INTERNAL-ADDRESS"), false);
+  assert.equal(isBrowserErrorTitle("203.0.113.15"), false);
   assert.equal(isBrowserErrorTitle("localhost"), false);
   // And the status guard does see it.
-  assert.match(String(pageServedRefusal("http://REDACTED-INTERNAL-ADDRESS:3000/x", { status: 0 })), /nothing is serving/);
+  assert.match(String(pageServedRefusal("http://203.0.113.15:3000/x", { status: 0 })), /nothing is serving/);
 });
 
 test("a status outside 2xx is refused, and the message says which kind", () => {

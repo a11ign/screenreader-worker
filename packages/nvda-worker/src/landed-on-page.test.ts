@@ -34,8 +34,8 @@ import assert from "node:assert/strict";
 // module scope on any host without a screen reader, so this file died on CI while passing on a Mac.
 import { addressesSamePage, landedVerdict } from "./capture-pure.mjs";
 
-const PAGE = "http://REDACTED-INTERNAL-ADDRESS:5050/link-vague-ferry/good.html";
-const OTHER = "http://REDACTED-INTERNAL-ADDRESS:5050/image-filename-alt-exhibit/bad";
+const PAGE = "http://203.0.113.79:5050/link-vague-ferry/good.html";
+const OTHER = "http://203.0.113.79:5050/image-filename-alt-exhibit/bad";
 
 /** A clock and a sleep that advance together, so a 30 s budget costs no real time. */
 function fakeClock() {

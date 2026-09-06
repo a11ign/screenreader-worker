@@ -74,10 +74,10 @@ test("a trailing slash is not a different document", () => {
 
 test("host-vs-IP is not a different document -- every synthetic fixture looks exactly like this", () => {
   // case-matrix.mjs declares every fixture against localhost:5050; the lab serves it from whatever box
-  // is running the capture, e.g. REDACTED-INTERNAL-ADDRESS:5050. Requiring the host to match would tag EVERY synthetic
+  // is running the capture, e.g. 203.0.113.79:5050. Requiring the host to match would tag EVERY synthetic
   // capture "fallback" for a reason that has nothing to do with a wrong document.
   const target = choosePageTarget([
-    { type: "page", url: "http://REDACTED-INTERNAL-ADDRESS:5050/skip-link-broken/bad.html", webSocketDebuggerUrl: "ws://a" },
+    { type: "page", url: "http://203.0.113.79:5050/skip-link-broken/bad.html", webSocketDebuggerUrl: "ws://a" },
   ], "http://localhost:5050/skip-link-broken/bad.html");
   assert.equal(target?.targetMatch, "matched");
 });
@@ -89,9 +89,9 @@ test("a requested .html and a landed extensionless path are the same document --
   // capture ever taken "fallback" -- undetected because a single target still falls back onto the right
   // page, so no evidence was wrong, but the protection this file exists for was off the whole time.
   const target = choosePageTarget([
-    { type: "page", url: "http://REDACTED-INTERNAL-ADDRESS:5050/focus-removed-on-receipt-coupon/bad",
+    { type: "page", url: "http://203.0.113.79:5050/focus-removed-on-receipt-coupon/bad",
       webSocketDebuggerUrl: "ws://a" },
-  ], "http://REDACTED-INTERNAL-ADDRESS:5050/focus-removed-on-receipt-coupon/bad.html");
+  ], "http://203.0.113.79:5050/focus-removed-on-receipt-coupon/bad.html");
   assert.equal(target?.targetMatch, "matched");
 });
 

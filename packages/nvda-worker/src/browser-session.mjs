@@ -133,7 +133,7 @@ export function expectedPageUrlForTest() {
  * corpus made that the right line to draw, not a guess:
  *
  *   - Every synthetic fixture is declared against `localhost:5050` in `case-matrix.mjs` and served from
- *     whichever lab box runs the capture, e.g. `REDACTED-INTERNAL-ADDRESS:5050` — a real, permanent host mismatch on
+ *     whichever lab box runs the capture, e.g. `<the lab's address>:5050` — a real, permanent host mismatch on
  *     every synthetic capture this project has ever taken, not a hypothetical.
  *   - The contaminating target is never confusable by PATH: a Cookiebot consent panel's own document has
  *     a path like `/what-is-behind-powered-by-cookiebot`, nothing close to `/action-weve-taken/enforcement/`
@@ -930,8 +930,8 @@ export async function structuralCensus() {
  *
  * A GUARD FOR THIS ALREADY EXISTED AND COULD NOT SEE IT. `BROWSER_ERROR_TITLE_RE` matches Chromium's error
  * PHRASES ("can't reach this page", "refused to connect"), but Chromium titles a network-error page with
- * the HOST -- so an unserved `http://REDACTED-INTERNAL-ADDRESS:3000/x` is titled `REDACTED-INTERNAL-ADDRESS` and matched nothing. The
- * capture read `"REDACTED-INTERNAL-ADDRESS, document, read only"` and passed. That is this repo's oldest lesson in a new
+ * the HOST -- so an unserved `http://<host>:3000/x` is titled with that bare host and matched nothing. The
+ * capture read `"<host>, document, read only"` and passed. That is this repo's oldest lesson in a new
  * place: prefer the authoritative answer over an inference about behaviour. The title is a proxy for the
  * status; the status is the status.
  *
