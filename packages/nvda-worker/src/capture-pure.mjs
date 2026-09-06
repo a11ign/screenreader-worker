@@ -1258,6 +1258,33 @@ export function focusEventVerdict({ events, error, targetMatch, candidates }) {
 }
 
 /**
+ * Should the focus-event listener install NOW, before anything else touches the page — rather than
+ * later, immediately before `probeFocusOrder` walks the tab order, which is where it installed until
+ * `known-gaps.md` §42.
+ *
+ * THE DEFECT THIS CLOSES: the listener used to attach right before `probeFocusOrder`, which runs AFTER
+ * the sweep, `probeFocusContext` and `probeFocusReveal` — every one of which can move real DOM focus
+ * before the listener ever existed to see it (a sweep activating a control under `probeForms`;
+ * `probeFocusContext`/`probeFocusReveal` each walking the tab order themselves, per their own comments in
+ * `capture-probes.mjs`'s `runFocus`). `probeFocusOrder`'s own `anchorToTop()` then blurs whatever was left
+ * focused, and that blur is the log's first event — a `focusout` with no matching `focusin`, byte-for-byte
+ * the F55 signature and nothing of the kind. Measured on the real-page corpus: 37 of 37 conformant pages
+ * carried exactly this shape at `log[0]` (`not-working.md` §22). `rules.ts`'s `focusLossEvidence` excluded
+ * `log[0]` as a trade rather than fixing the cause; this is the fix, and the exclusion comes out with it.
+ *
+ * THE PREDICATE, not just the call site, because installing unconditionally would attach a page-level
+ * listener — and pay a CDP round trip — on every capture, including the majority that never ask for
+ * `probeFocus` at all and so can never reach a step that would have needed it. `PROBE_FLAGS` above already
+ * treats `probeFocus` as the gate for the whole focus-evidence family; this reads the identical flag for
+ * the identical reason, not a new judgement about when focus evidence matters.
+ *
+ * @param {{ probeFocus?: boolean } | null | undefined} opts
+ */
+export function shouldInstallFocusEventListenerEarly(opts) {
+  return Boolean(opts?.probeFocus);
+}
+
+/**
  * The plain boolean probe flags the worker's request boundary accepts.
  *
  * LIVES HERE, NOT IN `server.mjs`, so a test can READ it. `probe-chain.test.ts` used to regex that file

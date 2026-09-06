@@ -12,7 +12,7 @@
  */
 import { test as focusEventTest } from "node:test";
 import focusEventAssert from "node:assert/strict";
-import { focusEventVerdict } from "./capture-pure.mjs";
+import { focusEventVerdict, shouldInstallFocusEventListenerEarly } from "./capture-pure.mjs";
 
 focusEventTest("no event log at all reads 'cannot say', never as zero findings", () => {
   const v = focusEventVerdict({ events: null, error: "not installed" });
@@ -104,4 +104,26 @@ focusEventTest("targetMatch absent entirely (every capture before this field exi
   const v = focusEventVerdict({ events: SOME_EVENTS });
   focusEventAssert.equal(v.checked, true);
   focusEventAssert.deepEqual(v.log, SOME_EVENTS);
+});
+
+// `shouldInstallFocusEventListenerEarly`, `known-gaps.md` §42's fix: the listener installs before the
+// capture's first `anchorToTop()` rather than immediately before `probeFocusOrder`, so whatever the sweep,
+// `probeFocusContext` or `probeFocusReveal` focus first is a real, paired focusin/focusout rather than an
+// orphan. Gated on `probeFocus` alone -- without it nothing in the capture ever walks the tab order, so
+// installing would be a CDP round trip and a page-level listener for evidence nothing downstream reads.
+focusEventTest("installs early only when probeFocus is set -- nothing downstream would ever read the log otherwise", () => {
+  focusEventAssert.equal(shouldInstallFocusEventListenerEarly({ probeFocus: true }), true);
+  focusEventAssert.equal(shouldInstallFocusEventListenerEarly({ probeFocus: false }), false);
+});
+
+focusEventTest("an options object missing probeFocus entirely reads as false, not as a crash", () => {
+  focusEventAssert.equal(shouldInstallFocusEventListenerEarly({}), false);
+  focusEventAssert.equal(shouldInstallFocusEventListenerEarly(undefined), false);
+});
+
+focusEventTest("a truthy non-boolean probeFocus (a stray string from a lax caller) still reads as installing", () => {
+  // `Boolean(...)`, not `=== true` -- the request boundary (`PROBE_FLAGS`, capture-pure.mjs) already
+  // coerces every probe flag to a real boolean before this is reached, but the predicate itself does not
+  // assume that has happened, the same defensive shape `focusTargetIsSuspect` uses one function up.
+  focusEventAssert.equal(shouldInstallFocusEventListenerEarly({ probeFocus: "yes" as unknown as boolean }), true);
 });
