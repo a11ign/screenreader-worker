@@ -2250,9 +2250,8 @@ const NOTHING_FURTHER_RE = /\bno (next|previous) \w+/i;
  * page it is measuring. That is the 353-capture contamination this file already documents at length,
  * reintroduced by a probe that borrowed focus and did not give it back.
  *
- * Measured 2026-09-01, and it never reached the corpus: `training:capture` rejected all three attempts on
- * both cases with *"the read-through announced a heading but the heading sweep found none — the page was
- * not traversed"*. The cross-check that refuses a capture contradicting itself is what stopped it.
+ * It never reached the corpus -- the cross-check that refuses a self-contradicting capture caught it.
+ * `docs/capture-probe-incidents.md` has the three 2026-09-01 measurements.
  *
  * Uses the same `BROWSE_MODE_REMEDIES` ladder the sweep uses rather than a second spelling of Escape:
  * `press("Escape")` first, then `moveToContainingBrowseModeDocument` for a panel behaving like an embedded
@@ -2268,22 +2267,14 @@ async function restoreBrowseMode(label, diag) {
   // sequence it is worse than the first remedy alone, because `moveToContainingBrowseModeDocument` is a
   // TOGGLE: run when Escape has already left focus mode, it goes back in.
   //
-  // Measured 2026-09-01: the arrow probe worked perfectly -- arrows moved 1 -> 2 -> 3 through the radio
-  // group -- and the capture was still rejected, because the sweep that followed sweept 0 headings on a
-  // page with an h1. `arrowNavBrowseRestored` was marked, so the restore HAD run; it was the restore
-  // itself that put the mode back.
-  //
   // `anchorToTop` is the proven route and does both halves at once: it presses Escape -- NVDA's own way
   // out, and `press` rather than `perform(exitFocusMode)`, measured -- and then `Control+End`, which is
   // exactly where the sweep expects the caret. Quick navigation cannot reach an element the caret is ON,
   // so leaving the caret mid-page silently costs the sweep one element of each type.
   // AND REBUILD THE BUFFER. `anchorToTop` restores the MODE and the caret; it does not rebuild NVDA's
   // browse-mode buffer, which belongs to the window and which focus mode leaves stale.
-  //
-  // Measured 2026-09-01 with the anchor alone: the sweep ran and NVDA was SILENT in both directions --
-  // `observed.headings.stop = {prev: "silent", next: "silent"}`, 0 headings and 0 form fields on a page
-  // that has both. That is not a mode that failed to restore, it is a buffer with nothing in it, and
-  // `refreshBrowseBuffer` is this file's existing remedy for exactly that.
+  // A mode that restored and a buffer with nothing in it look identical from the sweep's side; measured
+  // 2026-09-01, in `docs/capture-probe-incidents.md`.
   await refreshBrowseBuffer(diag);
   await anchorToTop();
   // MARKED WHENEVER IT RUNS, so "did not need to restore" and "never ran" can never be the same silence --
@@ -3021,10 +3012,8 @@ async function probeFocusReveal({ interaction, deadline, diag }) {
     // It used to be taken here with focus already on a control, because `probeFocusOrder` had run --
     // reasoned at the time as "the baseline for what this page shows WHILE something is focused", to avoid
     // counting what the focus probe itself revealed. Counting exactly that IS the finding, and the
-    // inversion cost all 18 of the 1.4.13 cases. Measured 2026-09-05, from the tab ring of
-    // `focus-panel-undismissable-fee.bad`: stop 2 is the trigger and stop 3 is the link inside the
-    // `hidden` panel, so the panel was already open before this probe took its first census, and the
-    // delta was zero by construction.
+    // inversion cost all 18 of the 1.4.13 cases -- the delta was zero by construction, because the panel
+    // was already open before this probe took its first census. `docs/capture-probe-incidents.md`.
     const before = await structuralCensus();
     const { onFocus, revealedAt, tabs } = await walkToReveal({ before, interaction, deadline });
     if (!onFocus) {
@@ -3037,16 +3026,11 @@ async function probeFocusReveal({ interaction, deadline, diag }) {
     //
     // NVDA consumes the first Escape to leave focus mode and the page never sees it, which is why this
     // presses twice. The consequence for the focus READS was missed: taken before any Escape, `focusBefore`
-    // is a FOCUS-MODE reading and `focusAfter` a BROWSE-MODE one, so they can never be equal and
-    // `focusHeld` was false on every capture. Measured 2026-09-05, and the two strings say it outright:
-    //
-    //   focusBefore  "B, o, o, k, i, n, g, space, r, e, f, e, r, e, n, c, e"
-    //   focusAfter   "Booking reference, edit, focused, blank"
-    //
-    // Focus had not moved at all. NVDA spells a field's name character by character in focus mode, so this
-    // was two alphabets compared as strings -- the U+FFFC and U+E604 lesson a third time. Reading BETWEEN
-    // the Escapes puts both in browse mode and leaves the second Escape, the one the page actually sees,
-    // as the only thing between them.
+    // is a FOCUS-MODE reading and `focusAfter` a BROWSE-MODE one, so they can never be equal --
+    // NVDA SPELLS A FIELD'S NAME CHARACTER BY CHARACTER IN FOCUS MODE, so comparing them is two alphabets
+    // compared as strings, the U+FFFC and U+E604 lesson a third time. Reading BETWEEN the Escapes puts
+    // both in browse mode and leaves the second Escape, the one the page actually sees, as the only thing
+    // between them. The 2026-09-05 measurement is in `docs/capture-probe-incidents.md`.
     await withTimeout(nvda.press("Escape"), NAV_TIMEOUT_MS, "focusReveal").catch(() => undefined);
     const focusBefore = await reportFocusedControlWithRetry(interaction);
     await withTimeout(nvda.press("Escape"), NAV_TIMEOUT_MS, "focusReveal").catch(() => undefined);
@@ -3065,11 +3049,10 @@ async function probeFocusReveal({ interaction, deadline, diag }) {
     // findings and the verdict cannot tell them apart.
     //
     // THE TWO FOCUS STRINGS BECAUSE `focusHeld` IS A BOOLEAN AND A BOOLEAN IS WHERE AN INVESTIGATION
-    // STOPS. Measured 2026-09-05: it read `false` on BOTH variants of every 1.4.13 case, which makes the
-    // signal — `focusHeld === true && dismissed === false` — unable to fire on the bad page, and makes
-    // `vanished` fire on the conformant one. Whether that is focus genuinely moving, or the same control
-    // announced differently once Escape has left focus mode, is not decidable from `false`. The strings
-    // are the evidence; recording them costs nothing and one capture then answers it.
+    // STOPS. Whether a `false` is focus genuinely moving, or the same control announced differently once
+    // Escape has left focus mode, is not decidable from the boolean -- the strings are the evidence, they
+    // cost nothing, and one capture then answers it. What `false` on both variants of every 1.4.13 case
+    // did to the signal is measured in `docs/capture-probe-incidents.md`.
     mark({ ...verdict, tabs, revealedAt, focusBefore, focusAfter, startedFrom, focusReset });
     return verdict;
   } catch (e) {
