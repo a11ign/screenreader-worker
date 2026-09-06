@@ -273,6 +273,13 @@ async function bringUpCaptureEnvironment({ browserWaitMs, reuse, diag }) {
  * either way -- `probeFocusOrderWithEventLog` still installs again immediately before its own walk, and
  * the page-side script's `already: true` branch makes the second call a no-op.
  *
+ * INSTALLING THIS EARLY IS ALSO WHAT PUT `resetFocusToDocumentStart` (`browser-session.mjs`) AT RISK.
+ * `probeFocusReveal` (`§43`) blurs whatever an earlier probe left focused, before this listener existed
+ * that blur's `focusout` had no watcher and could not be misread; now it does, and an unbracketed blur
+ * would be F55's exact signature against a page that did nothing wrong. See that function's own comment
+ * for the bracket that closes it — this file, `rules.ts`'s `focusLossEvidence` and `browser-session.mjs`
+ * are the three points of one interaction, and none of the three names the other two on its own.
+ *
  * @param {Record<string, any>} opts @param {Diag} diag
  */
 async function installFocusEventListenerBeforeFirstFocus(opts, diag) {

@@ -164,3 +164,40 @@ focusRevealTest("a suspect target overrides blurred:true -- an unconfirmed docum
   focusRevealAssert.equal(r.applied, false);
   focusRevealAssert.match(r.why, /unconfirmed document target/);
 });
+
+/**
+ * `logSuppressed` -- known-gaps.md §42 interaction, found by worker-judge. §42 moved the focus-event
+ * listener install to before this probe ever runs and deleted `focusLossEvidence`'s `i === 0` exception
+ * (rules.ts), on the reasoning that a real listener now watches from the start. That reasoning is right
+ * about the PAGE and wrong about THIS blur: `resetFocusToDocumentStart`'s `el.blur()` is capture-side
+ * bookkeeping, not a page behaviour, and an unbracketed `focusout` from it is F55's exact signature
+ * against a page that did nothing wrong. `logSuppressed` records whether that bracket was needed AND
+ * applied -- kept SEPARATE from `blurred`, because "we suppressed our own log entry" and "there was no
+ * log to suppress" must not collapse into one reading of `blurred: true`, the same discipline the three
+ * `blurred` outcomes already get.
+ */
+focusRevealTest("a control blurred WITH the log bracketed reads logSuppressed:true, and says so", () => {
+  const r = focusResetOutcome({ blurred: true, logSuppressed: true, targetMatch: "matched", candidates: 1 });
+  focusRevealAssert.equal(r.applied, true);
+  focusRevealAssert.equal(r.logSuppressed, true);
+  focusRevealAssert.match(r.why, /kept out of the focus-event log/);
+});
+
+focusRevealTest("a control blurred with NO log installed reads logSuppressed:false, and is not mistaken for a failed bracket", () => {
+  // `probeFocus` off means the listener never installs at all, so nothing was at risk -- this is the
+  // ordinary, safe case and must read differently from a bracket that was needed and did not apply.
+  const r = focusResetOutcome({ blurred: true, logSuppressed: false, targetMatch: "matched", candidates: 1 });
+  focusRevealAssert.equal(r.applied, true);
+  focusRevealAssert.equal(r.logSuppressed, false);
+  focusRevealAssert.match(r.why, /no focus-event log was installed to suppress/);
+  focusRevealAssert.doesNotMatch(r.why, /kept out of the focus-event log/,
+    "suppressed and not-installed must not share a reason string");
+});
+
+focusRevealTest("logSuppressed is false whenever applied is false, regardless of what the page reported", () => {
+  focusRevealAssert.equal(focusResetOutcome({ blurred: null, logSuppressed: true, targetMatch: "matched", candidates: 1 }).logSuppressed, false);
+  focusRevealAssert.equal(focusResetOutcome({ blurred: false, logSuppressed: true, targetMatch: "matched", candidates: 1 }).logSuppressed, false,
+    "nothing was blurred, so there is nothing a suppression claim could refer to");
+  focusRevealAssert.equal(focusResetOutcome({ blurred: true, logSuppressed: true, targetMatch: "fallback", candidates: 3 }).logSuppressed, false,
+    "a suspect target discredits the whole reset, including any suppression it claims to have done");
+});
