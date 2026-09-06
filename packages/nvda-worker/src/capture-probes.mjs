@@ -3091,9 +3091,17 @@ async function probeFormSubmit(phrase, { interaction }) {
   const before = await currentPageUrl();
   const result = await activateAndCaptureDelta(phrase, interaction, "submit");
   const after = await currentPageUrl();
-  if (before && after && before !== after) {
-    interaction.navigatedOnSubmit = { from: before, to: after };
-  }
+  // ALWAYS set this once the probe runs -- never only on a positive finding. The old version set it only
+  // when `before !== after`, so its ABSENCE conflated three states this project has already been burned
+  // reading as one: the submit genuinely did not navigate, `currentPageUrl()` returned falsy on either
+  // side (we could not ask), or this probe never ran at all. Measured on `w3.org/.../survey.html`'s real
+  // capture: the submit demonstrably navigated (`formChanges[0].after` names a different document's
+  // title) and this field was absent anyway, because `currentPageUrl()` failed on at least one side.
+  // `checked: false` names that third state explicitly, the same shape `focusEvents.checked` already
+  // uses for "the oracle could not run" -- so an absent field can now mean only "this probe never ran".
+  interaction.navigatedOnSubmit = (before && after)
+    ? { checked: true, navigated: before !== after, from: before, to: after }
+    : { checked: false };
   // What the page SHOWS after submitting, from the accessibility tree.
   //
   // This is the oracle 3.3.1 and 4.1.3 were missing, and without it neither can be judged honestly.
