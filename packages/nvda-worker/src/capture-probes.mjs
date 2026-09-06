@@ -1550,6 +1550,20 @@ function focusEventLogMark(install, collected) {
 /** @param {{ deadline: number, diag: Diag, controlsOnPage: number }} ctx */
 async function probeFocusOrder({ deadline, diag, controlsOnPage }) {
   await anchorToTop();
+  // WHERE DID THIS WALK START FROM? — architecture-audit.md §43, and `probe-side-effects.md`'s finding
+  // that this probe has the identical exposure `probeFocusReveal` was fixed for.
+  //
+  // `anchorToTop` resets the CARET and NVDA's mode; it has never reset DOM FOCUS, and Tab moves focus
+  // RELATIVE to whatever `document.activeElement` currently is. This is the channel 2.1.1, 2.1.2, 2.4.1
+  // and 2.4.3 all read, so a walk that starts mid-ring rather than at the page's true first tab stop
+  // rotates `stops` relative to reading order without any count moving — the exact shape that already
+  // cost this project a false 2.4.3 finding once, from a different cause. `startedFrom` records what
+  // was inherited; `resetFocusToDocumentStart` (browser-session.mjs) then blurs it, bracketing the
+  // resulting `focusout` out of the focus-event log the same way `probeFocusReveal` already does, so
+  // this probe's own bookkeeping cannot manufacture the F55 finding `probeFocusOrderWithEventLog` exists
+  // to detect a page ACTUALLY doing.
+  const startedFrom = await reportFocusedControl();
+  const focusReset = focusResetOutcome(await resetFocusToDocumentStart());
   const stops = [];
   const budget = Math.min(deadline, Date.now() + FOCUS_PROBE_BUDGET_MS);
   let repeats = 0;
@@ -1578,6 +1592,7 @@ async function probeFocusOrder({ deadline, diag, controlsOnPage }) {
     cycled,
     stalled: repeats >= TRAP_REPEATS,
     truncated: !cycled && repeats < TRAP_REPEATS && stops.length > 0,
+    startedFrom, focusReset,
   });
   markFocusConfinement({ stops, cycled, controlsOnPage, diag });
   return stops;
@@ -2611,6 +2626,14 @@ async function probeFocusContext({ interaction, deadline, diag }) {
   try {
     if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
     await anchorToTop();
+    // WHERE DID THIS WALK START FROM? — the same §43 exposure `probeFocusOrder` and `probeFocusReveal`
+    // share, and `probe-side-effects.md`'s finding that this probe never had the fix either. `anchorToTop`
+    // resets the caret and NVDA's mode, never DOM focus, so the first Tab below moves relative to
+    // whatever an earlier probe (a disclosure the sweep activated, if this runs after it) left focused.
+    // `resetFocusToDocumentStart` blurs it and brackets the resulting `focusout` out of the focus-event
+    // log, exactly as `probeFocusReveal` already does.
+    const startedFrom = await reportFocusedControlWithRetry(interaction);
+    const focusReset = focusResetOutcome(await resetFocusToDocumentStart());
     const titleBefore = await currentTitle(diag);
     // WALK THE TAB ORDER, do not press Tab once.
     //
@@ -2643,10 +2666,10 @@ async function probeFocusContext({ interaction, deadline, diag }) {
       // NOTHING FOCUSABLE is not "the context did not change" — nothing was focused, so the question was
       // never asked. Nulls, for the reason every absence in this file is a null rather than an empty
       // string: an empty title reads as a title that stayed the same, which is the conformant answer.
-      mark({ focused: false, why: "nothing focusable on this page" });
+      mark({ focused: false, why: "nothing focusable on this page", startedFrom, focusReset });
       return { focused: false, control: "", titleBefore: null, titleAfter: null };
     }
-    mark({ focused: true, control, stops, titleBefore, titleAfter });
+    mark({ focused: true, control, stops, titleBefore, titleAfter, startedFrom, focusReset });
     return { focused: true, control, titleBefore, titleAfter };
   } catch (e) {
     // A probe that threw and a page that changed nothing are opposite findings, and this file has paid a
