@@ -166,13 +166,35 @@ test("the resolved URL is CLEARED before each navigation, so it can never be a p
   // navigate, not merely follow the load. A reset placed after `Page.navigate` would leave the window
   // between the two calls holding the old value, which is the moment `pageTarget()` reads it.
   const src = readFileSync(new URL("./browser-session.mjs", import.meta.url), "utf8");
-  // THE INDENTED one — inside `navigateExisting`. The module-level `let resolvedPageUrl = null;` also
-  // matches the bare string, and it sits above everything, so searching for that made this assertion pass
-  // with the reset deleted. Caught by mutation; it is the wrong-population defect inside the guard for it.
-  const reset = src.indexOf("\n    resolvedPageUrl = null;");
-  const navigate = src.indexOf('method: "Page.navigate"');
-  const assign = src.indexOf("resolvedPageUrl = resolvedNavigationUrl(");
-  assert.ok(reset > 0, "resolvedPageUrl must be explicitly cleared; it never becomes null on its own");
+  // SCOPED TO THE FUNCTION rather than anchored on an indent. This searched for
+  // `"\n    resolvedPageUrl = null;"` — four spaces, i.e. inside the `try` — which pinned the statement's
+  // INDENTATION as though that were the property. It is not: the property is that nothing can read the
+  // value before it is cleared, and the fix for the defect this test describes moves the reset OUT to the
+  // function's first statement, where it is indented by two. A guard that fails on its own remedy is
+  // worse than no guard, and the earlier bare-string version passed with the reset deleted. Slicing the
+  // function is what makes both mistakes unavailable.
+  const fn = src.slice(src.indexOf("export async function navigateExisting("));
+  const reset = fn.indexOf("resolvedPageUrl = null");
+  const readsIt = fn.indexOf("await pageTarget()");
+  const navigate = fn.indexOf('method: "Page.navigate"');
+  const assign = fn.indexOf("resolvedPageUrl = resolvedNavigationUrl(");
+  assert.ok(fn.length > 0, "navigateExisting not found -- this guard is reading the wrong thing");
+  assert.ok(reset > -1, "resolvedPageUrl must be explicitly cleared; it never becomes null on its own");
+  assert.ok(readsIt > -1, "navigateExisting no longer calls pageTarget() -- re-check what this guards");
+
+  // THE ASSERTION THIS TEST'S OWN COMMENT ALWAYS DESCRIBED, and did not make until 2026-09-06.
+  //
+  // Everything above says the defect is `pageTarget()` reading the value at the TOP of the next
+  // `navigateExisting`. The check was `reset < navigate` — and the reset sat after `pageTarget()` and
+  // before `Page.navigate`, so the defective arrangement SATISFIED IT. A correct diagnosis in prose,
+  // above an assertion of a weaker property that the described defect passes: the shape
+  // `not-working.md` §26 is about, occurring inside the guard written for it.
+  assert.ok(reset < readsIt,
+    "`resolvedPageUrl = null` must come before `await pageTarget()`, which is the call that READS it on "
+    + "its way to choosePageTarget. A reset that is merely before Page.navigate is too late: by then "
+    + "capture N+1 has already chosen its target against capture N's resolved URL, on a reused window "
+    + "still showing capture N's page. The stale value is a real URL, so it neither throws nor reads as "
+    + "absent -- the run reports a matched target and captures the wrong document.");
   assert.ok(reset < navigate, "the clear must come BEFORE Page.navigate, not after");
   assert.ok(navigate < assign, "and the assignment after the navigation it describes");
 });
