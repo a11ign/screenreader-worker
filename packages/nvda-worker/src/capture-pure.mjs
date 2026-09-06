@@ -1363,3 +1363,56 @@ export const PROBE_FLAGS = Object.freeze([
   "probeDialog",
   "probeFocusReveal",
 ]);
+
+/**
+ * Where a navigation WE INITIATED actually landed, from the redirect chain it followed — PURE, so the
+ * bracketing rule is testable without a browser.
+ *
+ * ## Why this is not "trusting the browser's report", which is the objection it has to answer
+ *
+ * `sameDocument`'s own comment (browser-session.mjs) rejects comparing against CDP's `target.url`:
+ * *"exactly the value this function exists to doubt, so trusting it as the oracle would remove the check
+ * it is performing."* That objection is right and this does not walk into it. A `Page.frameNavigated` seen
+ * BETWEEN our own `Page.navigate` and its `Page.loadEventFired` is a CAUSAL event tied to a navigation we
+ * ourselves initiated — not a free-floating report of where some target happens to be sitting.
+ *
+ * **THE BRACKETING IS THE WHOLE OF IT.** The chain is only rooted at the requested URL if the events are
+ * taken from the moment the navigate is sent and no later than its load event. Take "the last
+ * `frameNavigated` we saw" without those brackets and the objection returns wearing a new event name.
+ *
+ * Three rules, each of which is a way to get it wrong:
+ *
+ *   - **MAIN FRAME ONLY.** `frameNavigated` fires for subframes too, and a consent iframe navigating is
+ *     exactly the noise this exists to cut through. A main frame has no `parentId`.
+ *   - **THE LAST ONE, NOT THE FIRST.** A redirect chain emits several; the first is where we were sent, the
+ *     last is where we arrived.
+ *   - **AFTER `loadEventFired` IS A DIFFERENT FINDING.** A page that navigates itself post-load is real and
+ *     worth recording, but it is not where our request resolved to — folding it in would let a page's own
+ *     later navigation rewrite what we believe we asked for. It is returned separately, never merged.
+ *
+ * @param {{ events: {method?: string, params?: {frame?: {url?: string, parentId?: string}}}[],
+ *           requested: string }} ctx
+ * @returns {{ url: string, redirected: boolean, afterLoad: string | null, hops: number }}
+ *   `url` is the resolved destination — the requested one when nothing redirected, so a caller never has
+ *   to decide what "no events" means. `afterLoad` is the separate finding, `null` when there was none.
+ */
+export function resolvedNavigationUrl({ events, requested }) {
+  const mainFrameUrl = (/** @type {any} */ event) => {
+    if (event?.method !== "Page.frameNavigated") return null;
+    const frame = event?.params?.frame;
+    // A main frame has no parent. Checked as ABSENT rather than falsy-or-empty: a subframe with an empty
+    // parentId is not a thing CDP produces, and treating "" as main frame would silently admit one.
+    if (!frame || frame.parentId !== undefined) return null;
+    return typeof frame.url === "string" ? frame.url : null;
+  };
+  const loadAt = events.findIndex((event) => event?.method === "Page.loadEventFired");
+  const inWindow = loadAt === -1 ? events : events.slice(0, loadAt);
+  const chain = inWindow.map(mainFrameUrl).filter((url) => url !== null);
+  const after = loadAt === -1 ? [] : events.slice(loadAt + 1).map(mainFrameUrl).filter((url) => url !== null);
+  return {
+    url: chain.length ? /** @type {string} */ (chain[chain.length - 1]) : requested,
+    redirected: chain.length > 0 && chain[chain.length - 1] !== requested,
+    afterLoad: after.length ? /** @type {string} */ (after[after.length - 1]) : null,
+    hops: chain.length,
+  };
+}

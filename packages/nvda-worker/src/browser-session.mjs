@@ -41,7 +41,7 @@
  */
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { samePath } from "./capture-pure.mjs";
+import { samePath , resolvedNavigationUrl } from "./capture-pure.mjs";
 
 /** Chromium's DevTools endpoint. Loopback only — it is never reachable off the guest. */
 export const CDP_PORT = 9222;
@@ -193,7 +193,7 @@ const CANDIDATE_URLS_RECORDED = 4;
  * @typedef {{ type?: string, url?: string, webSocketDebuggerUrl?: string }} CdpTarget
  * @typedef {CdpTarget & { webSocketDebuggerUrl: string,
  *   targetMatch: "matched" | "fallback" | "no-expected-url", candidates: number,
- *   candidateUrls: (string | null)[] }} UsablePageTarget
+ *   candidateUrls: (string | null)[], resolvedUrl?: string }} UsablePageTarget
  *
  * The `filter` below already REQUIRES `typeof webSocketDebuggerUrl === "string"`, so a returned target
  * always has one -- but a predicate inside `find`/`filter` cannot narrow the result, and every caller then
@@ -221,7 +221,7 @@ const CANDIDATE_URLS_RECORDED = 4;
  * @param {string | null} [expectedUrl]
  * @returns {UsablePageTarget | null}
  */
-export function choosePageTarget(targets, expectedUrl) {
+export function choosePageTarget(targets, expectedUrl, resolvedUrl = /** @type {string | null} */ (null)) {
   const pages = /** @type {(CdpTarget & { webSocketDebuggerUrl: string })[]} */ ((targets ?? []).filter((t) =>
     t.type === "page" && typeof t.webSocketDebuggerUrl === "string" && !t.url?.startsWith("devtools://")
   ));
@@ -248,6 +248,29 @@ export function choosePageTarget(targets, expectedUrl) {
   if (!expectedUrl) return { ...pages[0], targetMatch: "no-expected-url", candidates, candidateUrls };
   const match = pages.find((t) => sameDocument(t.url, expectedUrl));
   if (match) return { ...match, targetMatch: "matched", candidates, candidateUrls };
+  // THE REDIRECT CASE. Nothing matched what we ASKED for, so ask where our own navigation actually landed
+  // -- the chain bracketed by `Page.navigate` and its `loadEventFired` (`resolvedNavigationUrl`). A page
+  // that redirects is not a page we failed to find, and reporting it as `fallback` is what makes
+  // `censusTargetIsSuspect` suppress a census of the right document.
+  //
+  // `matched` WITH `resolvedUrl` ALONGSIDE, rather than a new `matched-after-redirect` state, and the
+  // reason is scope rather than preference. A distinct state is arguably the better model -- "the URL we
+  // asked for" and "the URL our request resolved to" are different facts, and this repo's rule is not to
+  // collapse states. But `targetMatch` is read by `censusSuspectReason` (packages/evidence/src/verify.ts)
+  // and by `focusTargetIsSuspect` (capture-pure.mjs), which are pinned equal by
+  // `focus-target-suspect-parity.test.ts`; a fourth value changes SUPPRESSION SEMANTICS in another package
+  // and would have to land with both twins and the parity table at once.
+  //
+  // So the redirect is not hidden, it is RECORDED: `resolvedUrl` rides on the target and reaches the mark,
+  // so `targetMatch: "matched"` beside a `resolvedUrl` that differs from the requested URL says exactly
+  // what happened. A reader can tell the two apart; no downstream trust rule has to learn a new word.
+  if (resolvedUrl && resolvedUrl !== expectedUrl) {
+    const afterRedirect = pages.find((t) => sameDocument(t.url, resolvedUrl));
+    if (afterRedirect) {
+      return /** @type {UsablePageTarget} */ (
+        { ...afterRedirect, targetMatch: "matched", candidates, candidateUrls, resolvedUrl });
+    }
+  }
   return { ...pages[0], targetMatch: "fallback", candidates, candidateUrls };
 }
 
@@ -276,7 +299,7 @@ async function pageTarget() {
         signal: AbortSignal.timeout(CDP_LIST_TIMEOUT_MS),
       });
       if (!response.ok) throw new Error(`CDP /json/list returned HTTP ${response.status}`);
-      const target = choosePageTarget(await response.json(), expectedPageUrl);
+      const target = choosePageTarget(await response.json(), expectedPageUrl, resolvedPageUrl);
       if (!target) throw new Error("CDP listed no page target to navigate");
       return target;
     } catch (error) {
@@ -295,16 +318,54 @@ async function pageTarget() {
  * caller's next move is to ask NVDA to read the document, and reading a page that has not finished
  * loading is precisely the "blank, blank" transcript this pipeline already learned to avoid.
  */
+/**
+ * `resolvedPageUrl` is where the LAST navigation actually landed, and it exists because the requested URL
+ * is not always the document being shown.
+ *
+ * `sameDocument` compares a CDP target against the REQUESTED url, so a page that redirects reads as a
+ * different document, `choosePageTarget` returns `targetMatch: "fallback"`, and
+ * `censusTargetIsSuspect`/`focusTargetIsSuspect` then suppress census findings and `focusEvents` on a page
+ * that was the right one all along.
+ *
+ * KEPT SEPARATE FROM `expectedPageUrl`, DELIBERATELY, and this is the half that is easy to lose. The
+ * requested URL stays the oracle for "did we land on the page we asked for" — `addressesSamePage` and the
+ * error-page guards still compare against it, so a redirect to a different host is still caught. This
+ * value answers only the narrower question `choosePageTarget` asks: of the targets Edge is offering, which
+ * one is the document our own navigation ended on. Overwriting `expectedPageUrl` with it would remove the
+ * wrong-page check entirely, which is the objection `sameDocument`'s own comment raises.
+ */
+/** @type {string | null} */
+let resolvedPageUrl = null;
+
+/** Where the last navigation resolved to, or null when nothing has navigated in this capture. */
+export function lastResolvedPageUrl() {
+  return resolvedPageUrl;
+}
+
 /** @param {string} url */
 export async function navigateExisting(url) {
   const target = await pageTarget();
   const socket = new WebSocket(target.webSocketDebuggerUrl);
+  // THE BRACKETS ARE THE MECHANISM. Collection starts before `Page.navigate` is sent and the resolved URL
+  // is taken no later than its `loadEventFired` -- outside that window a `frameNavigated` is just the
+  // browser reporting where a target sits, which is the value `sameDocument`'s comment refuses to trust.
+  // Rooted inside it, the chain is the redirect trail of a navigation we ourselves caused.
+  /** @type {{method?: string, params?: {frame?: {url?: string, parentId?: string}}}[]} */
+  const events = [];
+  socket.addEventListener("message", (event) => {
+    try {
+      events.push(JSON.parse(String(event.data)));
+    } catch (error) {
+      void error; // not a frame we can read; the resolver treats absence as "no redirect seen"
+    }
+  });
   try {
     await once(socket, "open", CDP_READY_TIMEOUT_MS);
     const loaded = waitForMethod(socket, "Page.loadEventFired", NAVIGATE_TIMEOUT_MS);
     socket.send(JSON.stringify({ id: 1, method: "Page.enable" }));
     socket.send(JSON.stringify({ id: 2, method: "Page.navigate", params: { url } }));
     await loaded;
+    resolvedPageUrl = resolvedNavigationUrl({ events, requested: url }).url;
   } finally {
     try {
       socket.close();
