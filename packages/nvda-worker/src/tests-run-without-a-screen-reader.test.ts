@@ -12,7 +12,8 @@ import { dirname, join, resolve } from "node:path";
  *
  * It is INVISIBLE ON MACOS, because VoiceOver satisfies guidepup's availability check. The suite passes
  * locally, the pre-push hook passes, and the only environment that can see it is the one nobody watches —
- * `lint.yml` runs on pushes to `main` and on pull requests, so branch work never fires it.
+ * `ci.yml` (successor to `lint.yml`) runs on a push to `main` and on a pull request, never on a bare
+ * branch push, so branch work alone never fires it.
  *
  * WHY A SECOND GUARD. `no-win32-imports.test.ts` was written for exactly this and cannot see it: its
  * `isSource` is `!/\.test\.ts$/`, so it examines SOURCE files for poisoned imports and never the test
