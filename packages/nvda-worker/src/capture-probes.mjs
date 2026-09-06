@@ -443,6 +443,15 @@ function probePasses(ctx) {
  * strictly before it. Do not add a future navigating probe to `navigateByStructure` without moving this
  * call below it too.
  *
+ * **`crossCheckAgainstElementsList` is the SAME rule, applied to a fourth reader this fix did not reach
+ * when it first ran** — found by `docs/probe-side-effects.md`'s audit, 2026-09-06. It compares `structure`
+ * counts (captured during the sweep, long before this function runs) against NVDA's live Elements List,
+ * and its call site in `navigateByStructure` used to sit AFTER `probeRouteChange` — so if that probe
+ * navigated, the cross-check silently read the ELEMENTS LIST OF THE NEW PAGE against the ORIGINAL page's
+ * sweep counts, the identical "two moments compared as one" shape this comment already describes for the
+ * census. Moved to run alongside these three, for the same reason and by the same rule this paragraph
+ * already states: do not add a future navigating probe without moving BOTH this call and that one below it.
+ *
  * @returns {Promise<{ census: Record<string, any>, dom: Record<string, any> | null,
  *                      mediaCensus: Record<string, any> | null }>}
  */
@@ -523,13 +532,14 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   // measurement. See `censusBeforeNavigating`'s own header for why this moved, and do not add a future
   // navigating probe below this line without moving the census below IT too.
   const { census, dom, mediaCensus: mediaCensus_ } = await censusBeforeNavigating();
+  // AND SO IS THIS, for the identical reason — `censusBeforeNavigating`'s header carries both call sites.
+  if (probeElementsList) await crossCheckAgainstElementsList({ structure, deadline, diag });
 
-  // LAST of the three [probes]: `probeRouteChange` is the only one that can leave the page under
+  // LAST of the four [probes]: `probeRouteChange` is the only one that can leave the page under
   // measurement, activating a link to test 2.4.2.
   const routeChange = probeNavigation
     ? await probeRouteChange({ interaction, deadline, diag })
     : null;
-  if (probeElementsList) await crossCheckAgainstElementsList({ structure, deadline, diag });
   recordWhatWasAsked({
     // EVERY probe flag, named. This call is the one that made `observed.focusContext` say `asked: false`
     // while the probe's own mark in the same capture said `focused: true` — the flag simply was not passed.
@@ -767,6 +777,14 @@ async function rescanFormFieldsAfterSubmit({ interaction, deadline, diag, trips 
  * Records a mark and changes no field. That is the point: the sweep's numbers stay as measured and the
  * comparison is evidence *about* them, because "quick navigation could not reach it" and "the page does not
  * have it" are different findings and correcting one with the other would erase the distinction.
+ *
+ * **BOTH HALVES OF THIS COMPARISON MUST DESCRIBE THE SAME PAGE, and until 2026-09-06 they did not have
+ * to.** `structure` is captured during the sweep; the Elements List is read live, here. This call sat
+ * AFTER `probeRouteChange` in `navigateByStructure`, so on a page whose first link navigated, the live
+ * half described wherever that link led while the sweep half still described the page under test — the
+ * exact defect `known-gaps.md` §40 found for the CENSUS and fixed by moving it, in the one call site that
+ * fix did not reach. It now runs alongside `censusBeforeNavigating`, and that function's header carries
+ * the rule for both.
  */
 /** @param {{ structure: CapturedStructure, deadline: number, diag: Diag }} ctx */
 async function crossCheckAgainstElementsList({ structure, deadline, diag }) {
