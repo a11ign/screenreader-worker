@@ -1237,7 +1237,23 @@ export async function collectFocusEventLog() {
  * condition, the same status `anchorToTop`/`parkPointer` already have. It runs once, before the very
  * first Tab of `walkToReveal`'s loop, so it cannot retroactively change what an EARLIER probe observed.
  *
- * @returns {Promise<{ blurred: boolean | null, targetMatch: UsablePageTarget["targetMatch"] | null,
+ * **THIS `el.blur()` FIRES A REAL `focusout`, AND THAT IS THE WHOLE RISK.** `known-gaps.md` §42 moved the
+ * focus-event listener install to before the capture's own first `anchorToTop()` and deleted
+ * `focusLossEvidence`'s (`packages/judge/src/rules.ts`) `i === 0` exception, on the reasoning that a real
+ * listener is now watching from the very start — so `log[0]` no longer needs a special case. That reasoning
+ * is right about every OTHER blur on the page and wrong about THIS one: this blur is not a page behaviour,
+ * it is capture-side bookkeeping (`installFocusEventListenerBeforeFirstFocus`, `capture-core.mjs`, is what
+ * connects the two files, and neither names the other). An orphaned `focusout` with no matching `focusin`
+ * is F55's exact signature, so without the bracket below this probe's OWN diagnostic action would be
+ * reported as a WCAG 2.4.7 failure against a page that did nothing wrong -- worse than the false positives
+ * §42 fixed, because it is caused by us and indistinguishable from a real one. So the listener is detached
+ * immediately before the blur and reattached immediately after, INSIDE the same page-side expression --
+ * an omission rather than a marker, so no future reorder of the probes or of §42's own fix can silently
+ * reopen this. `focusin` is deliberately not bracketed: `blur()` alone never gives DOM focus to anything
+ * (the implicit new focus target, `document.body`, does not fire `focusin`), so only `focusout` is ever at
+ * risk here.
+ *
+ * @returns {Promise<{ blurred: boolean | null, logSuppressed: boolean, targetMatch: UsablePageTarget["targetMatch"] | null,
  *                      targetUrl: string | undefined, expectedUrl: string | null, candidates: number | undefined,
  *                      error?: string }>}
  */
@@ -1245,17 +1261,31 @@ export async function resetFocusToDocumentStart() {
   try {
     const { value, targetMatch, targetUrl, expectedUrl, candidates } = await evaluateOnPageTarget(`(() => {
       const el = document.activeElement;
-      if (el && el !== document.body) { el.blur(); return { blurred: true }; }
-      return { blurred: false };
+      if (!el || el === document.body) return { blurred: false, logSuppressed: false };
+      // Detach-blur-reattach, inside ONE page-side script so nothing between the three steps can be
+      // interrupted by a separate CDP round trip. \`finally\` guarantees the reattach runs even if
+      // \`blur()\` itself throws, so a probe that suppresses its own event can never leave the log
+      // permanently unable to see anyone else's.
+      const listener = window.__a11yFocusOut;
+      if (listener) document.removeEventListener("focusout", listener, true);
+      try {
+        el.blur();
+      } finally {
+        if (listener) document.addEventListener("focusout", listener, true);
+      }
+      return { blurred: true, logSuppressed: !!listener };
     })()`);
-    return { blurred: value?.blurred ?? null, targetMatch, targetUrl, expectedUrl, candidates };
+    return {
+      blurred: value?.blurred ?? null, logSuppressed: !!value?.logSuppressed,
+      targetMatch, targetUrl, expectedUrl, candidates,
+    };
   } catch (error) {
     // A failed reset is not a claim that focus is still wherever it was -- it is a claim that NOTHING is
     // known, and `focusResetOutcome` (capture-pure.mjs) reads `blurred: null` as exactly that: `applied:
     // false`, distinct from `blurred: false` ("confirmed nothing needed blurring").
     return {
-      blurred: null, targetMatch: null, targetUrl: undefined, expectedUrl: null, candidates: undefined,
-      error: /** @type {Error} */ (error).message,
+      blurred: null, logSuppressed: false, targetMatch: null, targetUrl: undefined, expectedUrl: null,
+      candidates: undefined, error: /** @type {Error} */ (error).message,
     };
   }
 }

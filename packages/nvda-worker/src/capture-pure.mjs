@@ -1156,25 +1156,44 @@ export function focusTargetIsSuspect({ targetMatch, candidates }) {
  * checked and there was nothing to do" indistinguishable from "we never checked", which is the exact
  * defect this whole file exists to keep out of every OTHER probe.
  *
- * @param {{ blurred: boolean | null | undefined,
+ * `logSuppressed` IS A SEPARATE FACT FROM `blurred`, and the same discipline applies: "we suppressed our
+ * own focus-event log entry" and "there was no log to suppress" must not collapse into one reading of
+ * `blurred: true`. `known-gaps.md` §42 made the log watch from before this probe ever runs, which means
+ * this blur's `focusout` is now real evidence to that log unless bracketed — see
+ * `resetFocusToDocumentStart`'s own comment for the F55 risk this closes. A capture with `probeFocus` off
+ * never installs the log at all, so `blurred: true, logSuppressed: false` there is the ordinary, safe
+ * case ("nothing was watching, so nothing needed suppressing") — never a sign the bracket failed.
+ *
+ * @param {{ blurred: boolean | null | undefined, logSuppressed?: boolean | undefined,
  *           targetMatch: string | null | undefined, candidates: number | undefined }} outcome
  *   the return value of `resetFocusToDocumentStart` (browser-session.mjs), passed straight through.
- * @returns {{ applied: boolean, why: string }}
+ * @returns {{ applied: boolean, logSuppressed: boolean, why: string }}
  */
-export function focusResetOutcome({ blurred, targetMatch, candidates }) {
+export function focusResetOutcome({ blurred, logSuppressed, targetMatch, candidates }) {
   if (focusTargetIsSuspect({ targetMatch, candidates })) {
     return {
-      applied: false,
+      applied: false, logSuppressed: false,
       why: `reset attempted against an unconfirmed document target (targetMatch=${targetMatch ?? "?"}, `
         + `candidates=${candidates ?? "?"})`,
     };
   }
   if (blurred === null || blurred === undefined) {
-    return { applied: false, why: "the reset script did not run" };
+    return { applied: false, logSuppressed: false, why: "the reset script did not run" };
   }
-  return blurred
-    ? { applied: true, why: "a control held focus from an earlier probe and was blurred" }
-    : { applied: true, why: "confirmed nothing held focus already" };
+  if (!blurred) {
+    return { applied: true, logSuppressed: false, why: "confirmed nothing held focus already" };
+  }
+  return logSuppressed
+    ? {
+        applied: true, logSuppressed: true,
+        why: "a control held focus from an earlier probe and was blurred; the resulting focusout was "
+          + "kept out of the focus-event log",
+      }
+    : {
+        applied: true, logSuppressed: false,
+        why: "a control held focus from an earlier probe and was blurred; no focus-event log was "
+          + "installed to suppress",
+      };
 }
 
 /**
