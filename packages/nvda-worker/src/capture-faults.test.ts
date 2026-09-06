@@ -44,6 +44,13 @@ test("every captureFault call site passes the code first", () => {
   // `capture-setup.mjs`, not `capture-core.mjs`: every captureFault call site lives there since the
   // 2026-09-05 split (neither `capture-core.mjs` nor `capture-probes.mjs` imports FAULT/captureFault).
   const source = readFileSync(new URL("./capture-setup.mjs", import.meta.url), "utf8");
+  // This asserts an ABSENCE, so a moved file, an empty read, or a broken regex all produce the identical
+  // "0 swapped" pass -- proving the population it is checking is real, not merely that nothing bad was
+  // found in it. 5 real call sites at the time this guard was added; a floor, not a pin.
+  const realCallSites = [...source.matchAll(/captureFault\(/g)];
+  assert.ok(realCallSites.length >= 3,
+    `only found ${realCallSites.length} captureFault( call site(s) in capture-setup.mjs -- the read or `
+    + "the file moved, this is not a clean file");
   const swapped = [...source.matchAll(/captureFault\(\s*new Error/g)];
   assert.equal(swapped.length, 0,
     "captureFault takes (code, message) — an Error in the first position is the swap that made seven "
