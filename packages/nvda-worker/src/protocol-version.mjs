@@ -55,4 +55,4 @@
  * The three channels are bundled deliberately, per this repo's own rule that the cheap moment to pay a
  * recapture is alongside any other pending bump rather than twice.
  */
-export const CAPTURE_PROTOCOL_VERSION = 15;
+export const CAPTURE_PROTOCOL_VERSION = 16;
