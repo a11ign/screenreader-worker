@@ -264,7 +264,20 @@ export function choosePageTarget(targets, expectedUrl, resolvedUrl = /** @type {
   // So the redirect is not hidden, it is RECORDED: `resolvedUrl` rides on the target and reaches the mark,
   // so `targetMatch: "matched"` beside a `resolvedUrl` that differs from the requested URL says exactly
   // what happened. A reader can tell the two apart; no downstream trust rule has to learn a new word.
-  if (resolvedUrl && resolvedUrl !== expectedUrl) {
+  // `sameDocument` rather than `!==`, for consistency with every other URL comparison here -- but NOT as a
+  // bug fix, and the difference matters enough to record.
+  //
+  // It was reported as one: a raw `!==` calls a page "redirected" when the resolved URL differs only by
+  // NORMALISATION, which on the dataset page server is a same-every-time difference. Plausible, and
+  // REFUTED by the branch ordering directly above. `pages.find(sameDocument(t.url, expectedUrl))` returns
+  // at the line before this one, so this branch is reached ONLY when nothing matched what we asked for --
+  // and if `resolvedUrl` is the same document as `expectedUrl`, anything matching it would have matched
+  // there. `!==` could be true here and still find nothing. Mutation-checked: restoring `!==` fails no
+  // test, because there is no case where it changes the answer.
+  //
+  // So the `postSubmitNames` movement is NOT explained by this line. See `resolvedPageUrl`'s reset below,
+  // which reaches this branch for real.
+  if (resolvedUrl && !sameDocument(resolvedUrl, expectedUrl)) {
     const afterRedirect = pages.find((t) => sameDocument(t.url, resolvedUrl));
     if (afterRedirect) {
       return /** @type {UsablePageTarget} */ (
@@ -361,6 +374,15 @@ export async function navigateExisting(url) {
   });
   try {
     await once(socket, "open", CDP_READY_TIMEOUT_MS);
+    // RESET BEFORE NAVIGATING, not merely assign after. `resolvedNavigationUrl` returns the REQUESTED url
+    // when nothing redirected, so this never becomes null on its own: after a capture of page A it holds A.
+    // `pageTarget()` runs at the TOP of the next `navigateExisting`, before that capture has navigated, so
+    // capture N+1 of page B would call `choosePageTarget(expectedUrl = B, resolvedUrl = A)` against a
+    // reused window still showing A. `A11Y_REUSE_BROWSER` is ON by default, so that is the normal path.
+    //
+    // Clearing it here means the value is only ever "where THIS navigation landed" or null -- never a
+    // previous capture's answer wearing this one's clothes.
+    resolvedPageUrl = null;
     const loaded = waitForMethod(socket, "Page.loadEventFired", NAVIGATE_TIMEOUT_MS);
     socket.send(JSON.stringify({ id: 1, method: "Page.enable" }));
     socket.send(JSON.stringify({ id: 2, method: "Page.navigate", params: { url } }));

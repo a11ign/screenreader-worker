@@ -17,6 +17,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { choosePageTarget } from "./browser-session.mjs";
 
 import { resolvedNavigationUrl } from "./capture-pure.mjs";
 
@@ -118,4 +120,59 @@ test("a frame with an EMPTY parentId is still a subframe, not a main frame", () 
     requested: REQUESTED,
   });
   assert.equal(out.url, REQUESTED);
+});
+
+test("a URL differing only by NORMALISATION is not a redirect", () => {
+  // THE GUARD USED `!==`, inside the one function that exists because raw URL comparison is wrong.
+  // `samePath` reconciles `.html`/`.php` and trailing-slash forms; a raw comparison calls those a redirect
+  // and fires the branch on a page that never redirected. Measured 2026-09-06: three of 48 synthetic cases
+  // moved `postSubmitNames` — identical text, different AX node boundaries — while 45 did not, which is a
+  // fixed repeatable URL difference, not a redirect.
+  const pages = [{ id: "t", type: "page", url: "http://h:5050/case/bad", webSocketDebuggerUrl: "ws://x" }];
+  const withResolved = choosePageTarget(pages, "http://h:5050/case/bad.html", "http://h:5050/case/bad");
+  const without = choosePageTarget(pages, "http://h:5050/case/bad.html");
+  // THE DISCRIMINATOR IS `resolvedUrl`, not the label. Both paths answer `matched`; only the redirect
+  // branch attaches a `resolvedUrl`, so its absence is what proves the branch was not taken. My first
+  // version of this asserted a `targetMatch: "exact"` that does not exist — the labels are
+  // matched | fallback | no-expected-url — and would have failed against a correct fix.
+  assert.equal(withResolved?.targetMatch, without?.targetMatch,
+    "a normalised-only difference must reach the same verdict as no resolvedUrl at all");
+  assert.equal(withResolved?.resolvedUrl, undefined,
+    "the redirect branch must NOT fire on a URL that differs only by normalisation");
+});
+
+test("a genuine redirect still resolves to the landed target", () => {
+  // The other direction, so the fix above cannot be 'never take the branch'.
+  const pages = [{ id: "t", type: "page", url: "https://site/status#x", webSocketDebuggerUrl: "ws://x" }];
+  const chosen = choosePageTarget(pages, "https://site/modes/tube/", "https://site/status#x");
+  assert.equal(chosen?.targetMatch, "matched");
+  assert.equal(chosen?.resolvedUrl, "https://site/status#x");
+});
+
+test("the resolved URL is CLEARED before each navigation, so it can never be a previous capture's answer", () => {
+  // THE REAL DEFECT, and the one that reaches `choosePageTarget`'s redirect branch.
+  //
+  // `resolvedNavigationUrl` returns the REQUESTED url when nothing redirected, so `resolvedPageUrl` never
+  // becomes null on its own: after a capture of page A it holds A. `pageTarget()` runs at the TOP of the
+  // next `navigateExisting`, BEFORE that capture has navigated, and `A11Y_REUSE_BROWSER` is on by default
+  // so the window is still showing A. Capture N+1 of page B therefore calls
+  // `choosePageTarget(expectedUrl = B, resolvedUrl = A)`: nothing matches B, the branch fires, it finds
+  // the target still showing A, and returns `targetMatch: "matched"` for THE PREVIOUS PAGE'S DOCUMENT.
+  //
+  // That is a capture reading the wrong document and calling it a confident match — which is exactly what
+  // `targetMatch` exists to prevent, arriving through stale state instead of through a bad comparison.
+  //
+  // Asserted on SOURCE ORDER because the behaviour needs a live CDP socket: the reset must precede the
+  // navigate, not merely follow the load. A reset placed after `Page.navigate` would leave the window
+  // between the two calls holding the old value, which is the moment `pageTarget()` reads it.
+  const src = readFileSync(new URL("./browser-session.mjs", import.meta.url), "utf8");
+  // THE INDENTED one — inside `navigateExisting`. The module-level `let resolvedPageUrl = null;` also
+  // matches the bare string, and it sits above everything, so searching for that made this assertion pass
+  // with the reset deleted. Caught by mutation; it is the wrong-population defect inside the guard for it.
+  const reset = src.indexOf("\n    resolvedPageUrl = null;");
+  const navigate = src.indexOf('method: "Page.navigate"');
+  const assign = src.indexOf("resolvedPageUrl = resolvedNavigationUrl(");
+  assert.ok(reset > 0, "resolvedPageUrl must be explicitly cleared; it never becomes null on its own");
+  assert.ok(reset < navigate, "the clear must come BEFORE Page.navigate, not after");
+  assert.ok(navigate < assign, "and the assignment after the navigation it describes");
 });
