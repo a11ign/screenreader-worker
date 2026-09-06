@@ -743,6 +743,13 @@ export async function structuralCensus() {
       // forced (a real second target, unconfirmed) or vacuous (one target, so it is also the only correct
       // answer). See the typedef on `choosePageTarget`.
       census.candidates = target.candidates;
+      // WHERE the target actually was, and what was wanted — so a fallback's REASON can be READ, not
+      // guessed. `evaluateOnPageTarget` already carries `targetUrl` for the identical reason; this census
+      // went without it, and a fallback read as "a real second CDP target existed" even when `candidates`
+      // said there was only one. See `censusTargetIsSuspect` (`@a11y-witness/evidence`) for what reads
+      // these two fields.
+      census.targetUrl = target.url;
+      census.expectedUrl = expectedPageUrl;
       return census;
     } finally {
       try { socket.close(); } catch (error) { void error; }
@@ -984,10 +991,11 @@ export async function domCensus() {
         params: { expression: DOM_CENSUS_EXPRESSION, returnByValue: true },
       }));
       const value = (await result)?.result?.value;
-      // Same reasoning as `structuralCensus`: the match status AND the candidate count travel WITH the
-      // count they describe.
+      // Same reasoning as `structuralCensus`: the match status, the candidate count, and the actual vs.
+      // expected URL all travel WITH the count they describe.
       return value && typeof value === "object"
-        ? { ...value, targetMatch: target.targetMatch, candidates: target.candidates }
+        ? { ...value, targetMatch: target.targetMatch, candidates: target.candidates,
+            targetUrl: target.url, expectedUrl: expectedPageUrl }
         : null;
     } finally {
       try { socket.close(); } catch (error) { void error; }
@@ -1275,8 +1283,20 @@ export async function launchReusable({ exe, args, onEvent = () => {} }) {
  * the synthetic speech a screen-reader user is listening to. It masks the interface rather than merely
  * annoying.
  *
- * Returns null rather than throwing, and null means NOT CHECKED. The rule that reads it makes no claim on
- * null, so a probe failure can never become a silent pass.
+ * Returns `null` rather than throwing on total failure, and `null` means NOT CHECKED.
+ *
+ * **Carries `targetMatch`/`candidates`/`targetUrl`/`expectedUrl`, exactly like `structuralCensus`/
+ * `domCensus` — added 2026-09-06, and the gap it closes was worse than either of those two.** This is a
+ * `pageTarget()`-dependent read like both of them, and until now it was the ONE census with no way to tell
+ * a confirmed page from a fallback: 1.4.2's evidence could describe whatever document a navigating probe
+ * (`probeRouteChange`) had left the tab on, with nothing recorded that could ever detect it, unlike the
+ * other two censuses which at least reported `fallback` and were mistrusted only by an unrelated `candidates`
+ * heuristic. See `known-gaps.md` §40.
+ *
+ * The caller (`navigateByStructureThenAudit`) still exports `.elements` to `result.media` unconditionally —
+ * this function does not decide whether the read is trustworthy, matching `structuralCensus`/`domCensus`'s
+ * own split between recording (here) and judging (`censusTargetIsSuspect`, `@a11y-witness/evidence`, which
+ * this worker cannot import — see `field-match.mjs`'s header for why).
  */
 export async function mediaCensus() {
   const EXPRESSION = `Array.from(document.querySelectorAll("audio,video")).slice(0, 20).map((el) => ({
@@ -1300,7 +1320,11 @@ export async function mediaCensus() {
         params: { expression: EXPRESSION, returnByValue: true },
       }));
       const value = (await result)?.result?.value;
-      return Array.isArray(value) ? value : null;
+      return {
+        elements: Array.isArray(value) ? value : null,
+        targetMatch: target.targetMatch, candidates: target.candidates,
+        targetUrl: target.url, expectedUrl: expectedPageUrl,
+      };
     } finally {
       try { socket.close(); } catch (error) { void error; }
     }

@@ -160,7 +160,8 @@ const SWEEP_SILENT_RETRIES = 3;
 // the announcements only interaction reveals. Returns the structure model and
 // the interaction model.
 /**
- * Run the sweeps, then ask Chromium how much there WAS to find.
+ * Ask Chromium how much there WAS to find — the census, taken during `navigateByStructure` itself — then
+ * mark it and cross-check it against the sweep.
  *
  * A sweep that under-reports reads exactly like a page with nothing on it, and until now nothing could
  * tell them apart: `structure.landmarks` misses a `<main>` wrapping the page on 2,063 of 2,064 corpus
@@ -171,21 +172,31 @@ const SWEEP_SILENT_RETRIES = 3;
  * call on an already-open DevTools socket; asking NVDA's own Elements List for the same answer costs
  * ~11s, which is why that stays opt-in. It only ever adds a diagnostic, so no cached capture is
  * invalidated and no evidence field moves.
+ *
+ * **The three census calls THEMSELVES moved into `navigateByStructure`, 2026-09-06 — this function no
+ * longer takes them.** They used to run here, after `navigateByStructure` had already returned, which put
+ * them AFTER `probeRouteChange` — the one probe in that function that can leave the page under
+ * measurement. On any real page whose route-change probe followed a real link (GOV.UK Design System's own
+ * cookie-settings link, on both captures that found this), the census silently described wherever that
+ * link led rather than the page under test: two pages differing by 11 headings and 136 links produced
+ * byte-identical post-navigation censuses. See `known-gaps.md` §40 and `navigateByStructure`'s own comment
+ * at the point they now run.
  */
 /** @param {Record<string, any> & { diag: Diag, deadline: number }} options */
 export async function navigateByStructureThenAudit(options) {
-  // The audit ADDS to what the structural pass produced -- `media` here, and the cross-check marks
-  // below -- so the accumulator is declared rather than inferred, for the same reason as the two inside
+  // The audit ADDS to what the structural pass produced -- the cross-check marks below -- so the
+  // accumulator is declared rather than inferred, for the same reason as the two inside
   // `navigateByStructure`: an inferred type makes adding evidence the error and dropping it the default.
   /** @type {{ structure: CapturedStructure, interaction: CapturedInteraction,
-   *           observed: Record<string, Observation>, media?: Record<string, unknown>[] | null }} */
+   *           observed: Record<string, Observation>, media?: Record<string, unknown>[] | null,
+   *           census: Record<string, any>, dom: Record<string, any> | null,
+   *           mediaCensus: Record<string, any> | null }} */
   const result = await navigateByStructure(options);
-  const census = await structuralCensus();
+  const { census, dom, mediaCensus: mediaRead } = result;
   // BESIDE the tree census, never instead of it. The two answer different questions — what Chromium
   // EXPOSES versus what the markup CONTAINS — and it is their disagreement that is informative:
   // `dom.heading 40, census.heading 0` is a finding about the page, `0 and 0` is a finding about us.
   // Recorded as a diagnostic so it reaches the rules without ever reaching the model.
-  const dom = await domCensus();
   options.diag.mark("structureCensus", census);
   // Marked even when NULL, because "the DOM was not counted" and "the DOM has none of these" must never
   // be the same silence — the rule `refreshBrowseBuffer` cost this project a whole corpus by breaking.
@@ -194,8 +205,13 @@ export async function navigateByStructureThenAudit(options) {
   // this is the one field here that no screen reader could have produced. Null means the probe did not
   // run, and the rule reading it makes no claim on null — a probe failure must never become a silent pass.
   // Assigned onto `result` rather than a new top-level field so it travels with the rest of the evidence.
-  result.media = await mediaCensus();
-  options.diag.mark("mediaCensus", { count: result.media?.length ?? null });
+  // `.elements` only — `targetMatch`/`candidates`/`targetUrl`/`expectedUrl` are diagnostic, not evidence,
+  // and go on the mark below instead, exactly like `census`/`dom` above.
+  result.media = mediaRead?.elements ?? null;
+  options.diag.mark("mediaCensus", mediaRead
+    ? { count: mediaRead.elements?.length ?? null, targetMatch: mediaRead.targetMatch,
+        candidates: mediaRead.candidates, targetUrl: mediaRead.targetUrl, expectedUrl: mediaRead.expectedUrl }
+    : { error: "not counted" });
   // `"error" in census` rather than `!census.error`. Both are true at runtime, but only the first NARROWS
   // -- the success branch carries an index signature, so reading `.error` off it is legal and tells the
   // compiler nothing. This check is the one place that already handled the error branch correctly;
@@ -409,6 +425,32 @@ function probePasses(ctx) {
 }
 
 /**
+ * The three `pageTarget()`-dependent censuses, taken TOGETHER, right before the one probe in
+ * `navigateByStructure` that can navigate the page away — `probeRouteChange`.
+ *
+ * Moved here from the CALLER (`navigateByStructureThenAudit`), 2026-09-06, which used to take them AFTER
+ * `navigateByStructure` had already returned — which put them after `probeRouteChange` too. On any real
+ * page whose route-change probe followed a real link rather than a same-page fragment, the census
+ * silently described wherever that link led rather than the page under test: two GOV.UK Design System
+ * pages' post-navigation censuses were byte-identical to each other despite differing by 11 headings and
+ * 136 links on the real page, both reading the site's own `/cookies` settings page reached by "View
+ * cookies, visited, link" — the exact control `probeRouteChange` activates to test 2.4.2. `known-gaps.md`
+ * §40. Extracted into its own function so the ordering guarantee is one call this file's own tests can
+ * name, rather than a position inside a 90-line function nobody can pin.
+ *
+ * `probeRouteChange`'s own comment used to also claim "so navigating away costs nothing" — true of the
+ * position-dependent probes it was reasoning about and false of these three, which is why they now run
+ * strictly before it. Do not add a future navigating probe to `navigateByStructure` without moving this
+ * call below it too.
+ *
+ * @returns {Promise<{ census: Record<string, any>, dom: Record<string, any> | null,
+ *                      mediaCensus: Record<string, any> | null }>}
+ */
+async function censusBeforeNavigating() {
+  return { census: await structuralCensus(), dom: await domCensus(), mediaCensus: await mediaCensus() };
+}
+
+/**
  * @param {{ deadline: number, diag: Diag, probeForms?: boolean, probeFocus?: boolean, probeTables?: boolean,
  *           probeNavigation?: boolean, probeElementsList?: boolean, probeOrder?: string,
  *           probeDialog?: boolean, probeArrows?: boolean, probeTyping?: boolean, probeFocusReveal?: boolean,
@@ -477,8 +519,13 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   const { postSubmitFields, focusOrder, dialogEscape, arrowNavigation, typedFeedback,
     focusContext, focusReveal, focusEvents } = results;
 
-  // LAST of the three, because it is the only probe that can leave the page under measurement: it activates
-  // a link. Everything position-dependent has finished by here, so navigating away costs nothing.
+  // TAKEN HERE — before `probeRouteChange`, the only probe below that can leave the page under
+  // measurement. See `censusBeforeNavigating`'s own header for why this moved, and do not add a future
+  // navigating probe below this line without moving the census below IT too.
+  const { census, dom, mediaCensus: mediaCensus_ } = await censusBeforeNavigating();
+
+  // LAST of the three [probes]: `probeRouteChange` is the only one that can leave the page under
+  // measurement, activating a link to test 2.4.2.
   const routeChange = probeNavigation
     ? await probeRouteChange({ interaction, deadline, diag })
     : null;
@@ -498,7 +545,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   return { structure, interaction: assembleAndMark({
     structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape, arrowNavigation,
     typedFeedback, focusContext, focusReveal, focusEvents, diag,
-  }), observed };
+  }), observed, census, dom, mediaCensus: mediaCensus_ };
 }
 
 /**
