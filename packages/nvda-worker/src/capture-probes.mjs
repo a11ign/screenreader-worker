@@ -2906,6 +2906,25 @@ async function probeDialogEscape({ interaction, deadline, diag }) {
     mark({ error: errMsg(e) });
     interaction.sweepLog.push(`dialogEscape ERROR ${errMsg(e)}`);
     return null;
+  } finally {
+    // THE ONLY FOCUS-RIDING PROBE THAT DID NOT GIVE THE MODE BACK, and nothing said why — found by
+    // `docs/probe-side-effects.md`'s audit. `probeFocusContext`, `probeFocusReveal`, `probeArrowNavigation`
+    // and `probeTypedFeedback` all end here; this one returned straight out of a page that may have left
+    // NVDA in focus mode, and in focus mode a quick-navigation letter is INPUT rather than a command --
+    // the 353-capture contamination this file documents at length.
+    //
+    // IT WAS ABSORBED BY ACCIDENT, WHICH IS NOT THE SAME AS BEING SAFE. Whatever runs next inside
+    // `runFocus` -- `probeArrowNavigation`, then `probeTypedFeedback` -- opens with `landOnControl`, which
+    // anchors and so silently corrected the mode. Both are OPT-IN (`probeArrows`, `probeTyping`), so with
+    // both off this probe is last in the pass and nothing resets anything; and `crossCheckAgainstElementsList`,
+    // which now runs earlier for `known-gaps.md` §40's reason, drives NVDA without anchoring first. No
+    // corruption has been MEASURED -- what is measured is that the protection was a property of which
+    // optional flags happened to be set, which is this file's own definition of a precondition established
+    // by another probe.
+    //
+    // Safe to add after the readings: `focusBefore`/`announced`/`focusAfter` are all taken above, and
+    // `anchorToTop`'s own Escape is the third press of a key this probe has already sent twice.
+    await restoreBrowseMode("dialogEscape", diag);
   }
 }
 
