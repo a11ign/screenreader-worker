@@ -1119,15 +1119,23 @@ const FOCUS_SCRIPT_BLUR_WINDOW_MS = 50;
  * accuse evidence nobody computed this for, so it reads as NOT suspect — never as "we don't know, so
  * assume the worst", which would silently blind every capture on disk today. `"matched"` is the CDP target
  * whose URL was confirmed against the one this capture asked for, so it is never suspect regardless of how
- * many pages were open. Anything else — `"fallback"`, `"no-expected-url"` — is unconfirmed, and whether it
- * is WORTH doubting turns on `candidates`: exactly one page open makes "fallback" the only page there ever
- * was, so `candidates <= 1` is safe and `> 1` (or the count itself missing) is not.
+ * many pages were open.
+ *
+ * **`"fallback"` is now ALWAYS suspect, regardless of `candidates`** — corrected 2026-09-06, in parity
+ * with `censusTargetIsSuspect`'s own correction (see that function for the full reasoning and the
+ * measurement). `candidates <= 1` used to read as safe on "exactly one page open makes fallback the only
+ * page there ever was" — true only while the one known benign cause (a `.html`/trailing-slash mismatch)
+ * was still open; `sameDocument`'s `samePath` normalises that now, so a surviving `fallback` means the
+ * SAME single tab navigated to a different real document — exactly what a focus-event log captured from
+ * the wrong page would also produce. `"no-expected-url"` is unchanged: no comparison was attempted, so
+ * `candidates <= 1` remains the only information available and stays the deciding factor there.
  *
  * @param {{ targetMatch?: string | null | undefined, candidates?: number | undefined }} target
  */
 export function focusTargetIsSuspect({ targetMatch, candidates }) {
   if (targetMatch === undefined) return false;
   if (targetMatch === "matched") return false;
+  if (targetMatch === "fallback") return true;
   return typeof candidates !== "number" || candidates > 1;
 }
 

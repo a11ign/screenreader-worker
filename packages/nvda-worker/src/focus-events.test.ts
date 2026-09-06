@@ -129,10 +129,17 @@ focusEventTest("a mistargeted log (fallback, several candidates) is 'cannot say'
   focusEventAssert.match(String(v.why), /target unconfirmed/);
 });
 
-focusEventTest("fallback with exactly one candidate is NOT suspect -- fallback IS the only page there was", () => {
+focusEventTest("fallback with exactly one candidate is NOW ALSO suspect -- corrected 2026-09-06", () => {
+  // This used to assert the OPPOSITE ("fallback IS the only page there was, so it is safe"), matching
+  // `focusTargetIsSuspect`'s own pre-fix logic. That reasoning held only while the one known benign cause
+  // of a single-candidate fallback (a `.html`/trailing-slash mismatch) was open; `samePath` normalises it
+  // now, so a surviving fallback means the SAME tab navigated to a different real document -- exactly the
+  // shape that would make an F55 "finding" here evidence about the wrong page. See
+  // `focus-target-suspect-parity.test.ts` and `known-gaps.md` §40 for the measurement that forced this.
   const v = focusEventVerdict({ events: F55_LOOKING_EVENTS, targetMatch: "fallback", candidates: 1 });
-  focusEventAssert.equal(v.checked, true, "a guard that suppresses everything is not a guard");
-  focusEventAssert.equal(v.scriptRemovedFocus?.length, 1);
+  focusEventAssert.equal(v.checked, false, "a verdict computed from a page that has since navigated away "
+    + "is not evidence about the page under test");
+  focusEventAssert.equal(v.scriptRemovedFocus, null);
 });
 
 focusEventTest("a MATCHED target still fires, however many other pages were open", () => {

@@ -46,9 +46,14 @@ const CASES: { name: string; input: { targetMatch?: string | null; candidates?: 
     suspect: false,
   },
   {
-    name: "fallback with exactly one candidate -- fallback IS the only page there ever was, so it is safe",
+    name: "fallback with exactly one candidate -- CORRECTED 2026-09-06, now ALWAYS suspect. This case used "
+      + "to read \"fallback IS the only page there ever was, so it is safe\": true only while the one known "
+      + "benign cause (a .html/trailing-slash mismatch) was open, which `samePath` now normalises. A "
+      + "surviving fallback means the SAME single tab navigated to a different real document -- measured on "
+      + "two real GOV.UK Design System pages whose post-navigation censuses were byte-identical to each "
+      + "other despite the requested pages differing by 11 headings and 136 links (known-gaps.md §40).",
     input: { targetMatch: "fallback", candidates: 1 },
-    suspect: false,
+    suspect: true,
   },
   {
     name: "fallback with several candidates -- one of many was chosen by default, worth doubting",
