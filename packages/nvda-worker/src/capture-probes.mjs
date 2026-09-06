@@ -22,11 +22,11 @@ import { nvda } from "@guidepup/guidepup";
 import {
   crossCheckStructure, dedupeKey, elementsListRowName, MIN_CONTROL_NAME_LEN, probeKindFor,
   sweepStepFromSpeech, focusOrderCycled, sweepObservation, notObserved, recordWhatWasAsked,
-  focusRevealVerdict, focusEventVerdict, censusGrowth, focusResetOutcome,
+  focusRevealVerdict, focusEventVerdict, censusGrowth, focusResetOutcome, titleSourceVerdict,
 } from "./capture-pure.mjs";
 import {
   currentPageUrl, mediaCensus, structuralCensus, domCensus, truncatedAnnouncements,
-  installFocusEventLog, collectFocusEventLog, resetFocusToDocumentStart,
+  installFocusEventLog, collectFocusEventLog, resetFocusToDocumentStart, documentTitle,
 } from "./browser-session.mjs";
 import { matchesFieldName, matchesWithin, fillActionFor } from "./field-match.mjs";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -2558,6 +2558,36 @@ async function landOnControl({ to, label, interaction, diag }) {
 }
 
 /**
+ * The title to compare, for `probeFocusContext` (3.2.1), `probeTypedFeedback` (3.2.2) and
+ * `probeRouteChange` (2.4.2) alike — known-gaps.md §44.
+ *
+ * `reportedTitle` returns the LAST THING NVDA SAID, which is the title only if nothing else spoke in
+ * between. On `design-system.service.gov.uk/components/checkboxes/` a search autocomplete's live region
+ * fired on focus and substituted `"No search results"` for the real title, and 3.2.1 reported a false
+ * context change on a page that had none. `document.title` cannot be confused with anything else that
+ * spoke, so it is read here and used whenever the CDP target it came from is one this capture actually
+ * confirmed.
+ *
+ * NVDA's own report is kept BESIDE it as a diagnostic, not discarded: what a screen-reader user actually
+ * HEARS when they ask for the title is this project's whole subject, and the two diverging is itself
+ * evidence -- of exactly this defect, on every page it still occurs. `titleSourceVerdict` (capture-pure.mjs)
+ * is the pure decision of which one to trust, reusing `focusTargetIsSuspect` rather than inventing a THIRD
+ * answer to "is this the right document" -- that question is already `censusTargetIsSuspect`'s
+ * (packages/evidence/src/verify.ts) and this function's own worker-side twin's to answer.
+ *
+ * @param {Diag} diag
+ */
+async function currentTitle(diag) {
+  const dom = await documentTitle();
+  const spoken = await reportedTitle(diag);
+  const verdict = titleSourceVerdict({
+    domTitle: dom.title, spokenTitle: spoken, targetMatch: dom.targetMatch, candidates: dom.candidates,
+  });
+  diag.mark("titleSource", { ...verdict, targetMatch: dom.targetMatch, candidates: dom.candidates });
+  return verdict.title;
+}
+
+/**
  * 3.2.1 On Focus — does merely FOCUSING a control change the page's context?
  *
  * WCAG's failure is a control that navigates, opens a window or moves focus elsewhere the moment it
@@ -2581,7 +2611,7 @@ async function probeFocusContext({ interaction, deadline, diag }) {
   try {
     if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
     await anchorToTop();
-    const titleBefore = await reportedTitle(diag);
+    const titleBefore = await currentTitle(diag);
     // WALK THE TAB ORDER, do not press Tab once.
     //
     // The first version pressed once and every one of its 28 corpus cases came back BLIND. The reason is
@@ -2604,7 +2634,7 @@ async function probeFocusContext({ interaction, deadline, diag }) {
       const focused = await reportFocusedControlWithRetry(interaction);
       if (!focused) break;
       control = focused;
-      titleAfter = await reportedTitle(diag);
+      titleAfter = await currentTitle(diag);
       // Stop at the FIRST change. Carrying on would report the last control rather than the one that
       // moved the user, and the evidence has to name which control did it.
       if (titleAfter !== titleBefore) break;
@@ -2679,7 +2709,7 @@ async function probeTypedFeedback({ interaction, deadline, diag }) {
     //
     // Read HERE rather than at the top of the probe, so it brackets the typing and nothing else: the
     // landing above navigates, and a title read before that would be measuring the navigation too.
-    const titleBefore = await reportedTitle(diag);
+    const titleBefore = await currentTitle(diag);
     const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "typing")) || []).length;
     await withTimeout(nvda.type(TYPED_PROBE_TEXT), NAV_TIMEOUT_MS, "typing").catch(() => undefined);
     // WAIT FOR SPEECH TO SETTLE, do not read the log the instant `type` returns. The first version did,
@@ -2700,7 +2730,7 @@ async function probeTypedFeedback({ interaction, deadline, diag }) {
     const announced = spoken.filter((/** @type {string} */ phrase) => !sent.has(phrase)).join(" | ");
     // AFTER the speech has settled, or the title read races the page's own announcement and returns the
     // OLD title on a page that did change context -- reporting conformance for the failure.
-    const titleAfter = await reportedTitle(diag);
+    const titleAfter = await currentTitle(diag);
     mark({ typed: true, echoed: echoed.length, announced: announced.slice(0, 120), focusBefore,
       titleBefore, titleAfter });
     return { typed: true, focusBefore, echoed: echoed.join(" "), announced, titleBefore, titleAfter };
@@ -2997,7 +3027,7 @@ async function probeRouteChange({ interaction, deadline, diag }) {
     if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
     const headingBefore = await firstHeadingFromTop("routeChangeHeadingBefore");
     await anchorToTop();
-    const titleBefore = await reportedTitle(diag);
+    const titleBefore = await currentTitle(diag);
 
     // Quick-nav to the first link, and prove we MOVED by a log delta rather than by a changed phrase.
     // `sweepInDirection` records why: silence is unambiguous evidence of not moving, while an unchanged
@@ -3026,7 +3056,7 @@ async function probeRouteChange({ interaction, deadline, diag }) {
     // the page for every variant of every case, identically, which reads as "the skip link did nothing" on
     // a page where it worked perfectly.
     const nextFocusAfter = await focusedAfterTab("routeChangeFocusAfter");
-    const titleAfter = await reportedTitle(diag);
+    const titleAfter = await currentTitle(diag);
     // The FIRST HEADING, before and after, and it is the signal that makes this probe sound.
     //
     // The obvious corroboration -- "was anything announced?" -- is wrong, and the corpus said so on the

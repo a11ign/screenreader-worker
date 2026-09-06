@@ -1138,6 +1138,31 @@ export function focusTargetIsSuspect({ targetMatch, candidates }) {
 }
 
 /**
+ * Which title `probeFocusContext`/`probeTypedFeedback`/`probeRouteChange` should COMPARE — PURE, so it is
+ * testable without NVDA. known-gaps.md §44: NVDA's spoken report of the title is the LAST THING NVDA SAID,
+ * which on a page whose focus lands in a live region (a search autocomplete, say) is that region's
+ * announcement, not the title. `document.title` read over CDP cannot be confused with anything else that
+ * spoke, so it is preferred whenever the CDP target it came from is one this capture actually confirmed —
+ * REUSING `focusTargetIsSuspect` rather than deciding "is this the right document" a third time, exactly
+ * as `focusResetOutcome` above already does for the same question.
+ *
+ * NVDA's own report is the fallback, not discarded: it is what a screen-reader user actually HEARS, which
+ * is this project's whole subject, and it is the only answer available when the document-side read is
+ * unconfirmed. `diverged` is reported only when the document read WAS trusted — comparing an unconfirmed
+ * document title against what NVDA said proves nothing about either one.
+ *
+ * @param {{ domTitle: string | null | undefined, spokenTitle: string,
+ *           targetMatch?: string | null | undefined, candidates?: number | undefined }} args
+ * @returns {{ title: string, source: "document" | "spoken", diverged: boolean }}
+ */
+export function titleSourceVerdict({ domTitle, spokenTitle, targetMatch, candidates }) {
+  if (typeof domTitle === "string" && !focusTargetIsSuspect({ targetMatch, candidates })) {
+    return { title: domTitle, source: "document", diverged: domTitle !== spokenTitle };
+  }
+  return { title: spokenTitle, source: "spoken", diverged: false };
+}
+
+/**
  * What did `resetFocusToDocumentStart` actually achieve, in words — PURE, so it is testable without NVDA.
  * architecture-audit.md §43: `revealed: false` used to mean either "this page reveals nothing on focus"
  * or "nothing was revealed from wherever a PREVIOUS probe happened to leave focus", and those need

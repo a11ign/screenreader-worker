@@ -1040,6 +1040,31 @@ export async function domCensus() {
 }
 
 /**
+ * The document's own title, read via CDP -- known-gaps.md §44. NVDA's spoken report of the title
+ * (`reportedTitle`, capture-setup.mjs) is the LAST THING NVDA SAID, which on a page whose focus lands in a
+ * live region (a search autocomplete, say) is that region's announcement, not the title -- measured on
+ * `design-system.service.gov.uk/components/checkboxes/`: `titleAfter` read `"No search results"`, missing
+ * the ` - Profile 1 - Microsoft Edge` browser-chrome suffix every real title carries. `document.title`
+ * cannot be confused with anything else that spoke, because nothing else is being asked.
+ *
+ * `targetMatch`/`candidates` travel out for the identical reason `domCensus` and `evaluateOnPageTarget`'s
+ * other callers already carry them -- a title read against the wrong CDP target is not evidence about the
+ * page this capture was asked for, and `focusTargetIsSuspect` (capture-pure.mjs) is the one place that
+ * decides "wrong target" is already answered elsewhere in this file; this does not invent a second answer.
+ */
+export async function documentTitle() {
+  try {
+    const { value, targetMatch, targetUrl, expectedUrl, candidates } = await evaluateOnPageTarget("document.title");
+    return {
+      title: typeof value === "string" ? value : null, targetMatch, targetUrl, expectedUrl, candidates,
+    };
+  } catch (error) {
+    void error; // a diagnostic-grade read must never fail a capture; null reads as "not checked"
+    return { title: null, targetMatch: undefined, targetUrl: undefined, expectedUrl: null, candidates: undefined };
+  }
+}
+
+/**
  * Run one `Runtime.evaluate` expression against the page target, with the same open/send/close shape
  * `structuralCensus` and `domCensus` already use.
  *
