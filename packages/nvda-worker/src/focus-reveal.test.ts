@@ -9,7 +9,7 @@ import { test as focusRevealTest } from "node:test";
 import focusRevealAssert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { focusRevealVerdict, censusGrowth } from "./capture-pure.mjs";
+import { focusRevealVerdict, censusGrowth, focusResetOutcome } from "./capture-pure.mjs";
 
 const BASE = { formControl: 2, link: 3, graphic: 0, heading: 1, landmark: 1 };
 const GREW = { ...BASE, link: 4 };
@@ -117,4 +117,50 @@ focusRevealTest("a role that SHRANK is not growth", () => {
   // would make one verdict answer two bullets, which is how a criterion gets reported more confidently
   // than its evidence allows.
   focusRevealAssert.deepEqual(censusGrowth(GREW, BASE), []);
+});
+
+/**
+ * `focusResetOutcome` -- architecture-audit.md §43. `resetFocusToDocumentStart` (browser-session.mjs)
+ * blurs whatever a PREVIOUS probe left focused, so `walkToReveal`'s first Tab starts at the first
+ * tabbable element rather than wherever an earlier probe happened to land. This is the PURE half: given
+ * that CDP call's return value, what actually happened, in words a mark can carry.
+ *
+ * THREE OUTCOMES, not two, and the third is the one worth a dedicated test: `blurred: null` (the reset
+ * script never ran) must not read the same as `blurred: false` (it ran and confirmed nothing needed
+ * clearing) -- collapsing them is the exact "absence read as a value" defect this file exists to keep out
+ * of 1.4.13's own evidence, applied one call earlier.
+ */
+focusRevealTest("a control that held focus and was blurred reads applied:true", () => {
+  const r = focusResetOutcome({ blurred: true, targetMatch: "matched", candidates: 1 });
+  focusRevealAssert.equal(r.applied, true);
+  focusRevealAssert.match(r.why, /held focus.*blurred/);
+});
+
+focusRevealTest("confirmed nothing held focus reads applied:true, with a DIFFERENT reason", () => {
+  const r = focusResetOutcome({ blurred: false, targetMatch: "matched", candidates: 1 });
+  focusRevealAssert.equal(r.applied, true);
+  focusRevealAssert.match(r.why, /confirmed nothing held focus/);
+  focusRevealAssert.doesNotMatch(r.why, /held focus.*blurred/,
+    "true and false must not share a reason string, or a mark reader cannot tell which happened");
+});
+
+focusRevealTest("the reset script never running reads applied:false, and is NOT the same as blurred:false", () => {
+  const r = focusResetOutcome({ blurred: null, targetMatch: "matched", candidates: 1 });
+  focusRevealAssert.equal(r.applied, false);
+  focusRevealAssert.match(r.why, /did not run/);
+});
+
+focusRevealTest("blurred:undefined (a shape the CDP call never actually returns) is treated the same as null", () => {
+  const r = focusResetOutcome({ blurred: undefined, targetMatch: "matched", candidates: 1 });
+  focusRevealAssert.equal(r.applied, false);
+  focusRevealAssert.match(r.why, /did not run/);
+});
+
+focusRevealTest("a suspect target overrides blurred:true -- an unconfirmed document cannot vouch for its own reset", () => {
+  // `focusTargetIsSuspect` is the SAME predicate `1.4.13`'s own census check reuses
+  // (focus-target-suspect-parity.test.ts) -- so a reset evaluated against the wrong page must be
+  // distrusted the same way a census would be, even when the script itself claims success.
+  const r = focusResetOutcome({ blurred: true, targetMatch: "fallback", candidates: 3 });
+  focusRevealAssert.equal(r.applied, false);
+  focusRevealAssert.match(r.why, /unconfirmed document target/);
 });

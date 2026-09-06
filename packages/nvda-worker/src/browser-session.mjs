@@ -1214,6 +1214,53 @@ export async function collectFocusEventLog() {
 }
 
 /**
+ * Take DOM FOCUS off whatever a PREVIOUS probe left it on, so the next Tab press starts from the FIRST
+ * tabbable element rather than from wherever focus happens to be — architecture-audit.md §43.
+ *
+ * `probeFocusReveal` walks the tab order with Tab, and Tab moves focus RELATIVE to whatever currently
+ * holds it. `anchorToTop` (Ctrl+End) resets NVDA's own quick-navigation CARET, which is a completely
+ * separate piece of state from DOM focus — so a probe that ran earlier and left a form field focused (a
+ * disclosure probe, a form fill) left it focused THROUGH the anchor, and every Tab after that walked from
+ * THAT control rather than from the top. Measured on one real page, one URL, two capture paths: the
+ * corpus path happened to leave focus on "Security question" (panel reachable in 1 Tab); the real-page
+ * path left it on "Daytime telephone" (8 Tabs never reached it) — the SAME page, reported two different
+ * verdicts, because of a precondition established by an earlier, unrelated probe.
+ *
+ * DELIBERATELY NOT THE SAME FIX AS THE CARET'S. Moving the CARET to a known position costs an element —
+ * "quick navigation can never reach the element the caret is on" — which is why the anchor is `Control+End`
+ * and not `Control+Home`. DOM focus has no such defect: `document.activeElement.blur()` produces the
+ * identical `focusout` a real Tab-away would, and the browser's own behaviour when NOTHING is focused
+ * (`document.activeElement === document.body`) is to start the NEXT Tab at the first tabbable element in
+ * the document — which is the property this probe needs and cannot get from the caret anchor.
+ *
+ * A DIAGNOSTIC ACTION, not evidence: blurring is something THIS PROBE does to establish a known starting
+ * condition, the same status `anchorToTop`/`parkPointer` already have. It runs once, before the very
+ * first Tab of `walkToReveal`'s loop, so it cannot retroactively change what an EARLIER probe observed.
+ *
+ * @returns {Promise<{ blurred: boolean | null, targetMatch: UsablePageTarget["targetMatch"] | null,
+ *                      targetUrl: string | undefined, expectedUrl: string | null, candidates: number | undefined,
+ *                      error?: string }>}
+ */
+export async function resetFocusToDocumentStart() {
+  try {
+    const { value, targetMatch, targetUrl, expectedUrl, candidates } = await evaluateOnPageTarget(`(() => {
+      const el = document.activeElement;
+      if (el && el !== document.body) { el.blur(); return { blurred: true }; }
+      return { blurred: false };
+    })()`);
+    return { blurred: value?.blurred ?? null, targetMatch, targetUrl, expectedUrl, candidates };
+  } catch (error) {
+    // A failed reset is not a claim that focus is still wherever it was -- it is a claim that NOTHING is
+    // known, and `focusResetOutcome` (capture-pure.mjs) reads `blurred: null` as exactly that: `applied:
+    // false`, distinct from `blurred: false` ("confirmed nothing needed blurring").
+    return {
+      blurred: null, targetMatch: null, targetUrl: undefined, expectedUrl: null, candidates: undefined,
+      error: /** @type {Error} */ (error).message,
+    };
+  }
+}
+
+/**
  * What URL is the browser showing RIGHT NOW?
  *
  * Needed because a form probe on a real site can NAVIGATE. Submitting Wikipedia's search moved the browser

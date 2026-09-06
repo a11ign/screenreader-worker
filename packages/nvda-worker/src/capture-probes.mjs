@@ -22,11 +22,11 @@ import { nvda } from "@guidepup/guidepup";
 import {
   crossCheckStructure, dedupeKey, elementsListRowName, MIN_CONTROL_NAME_LEN, probeKindFor,
   sweepStepFromSpeech, focusOrderCycled, sweepObservation, notObserved, recordWhatWasAsked,
-  focusRevealVerdict, focusEventVerdict, censusGrowth,
+  focusRevealVerdict, focusEventVerdict, censusGrowth, focusResetOutcome,
 } from "./capture-pure.mjs";
 import {
   currentPageUrl, mediaCensus, structuralCensus, domCensus, truncatedAnnouncements,
-  installFocusEventLog, collectFocusEventLog,
+  installFocusEventLog, collectFocusEventLog, resetFocusToDocumentStart,
 } from "./browser-session.mjs";
 import { matchesFieldName, matchesWithin, fillActionFor } from "./field-match.mjs";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -2914,6 +2914,18 @@ async function probeFocusReveal({ interaction, deadline, diag }) {
   try {
     if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
     await anchorToTop();
+    // WHERE DID THE WALK START FROM, AND WAS THAT CHOSEN OR INHERITED? — architecture-audit.md §43.
+    //
+    // `anchorToTop` resets NVDA's own quick-navigation CARET, which is a completely separate piece of
+    // state from DOM FOCUS -- so a control left focused by an earlier probe (a disclosure, a form fill)
+    // stayed focused straight through the anchor, and `walkToReveal`'s first Tab walked from THERE. Two
+    // real captures of the same page and probe order disagreed on `revealed` for exactly this reason: one
+    // path left focus on "Security question" (the panel one Tab away), the other on "Daytime telephone"
+    // (eight Tabs never reached it). `startedFrom` names the control the walk actually started from, and
+    // `resetFocusToDocumentStart` (browser-session.mjs) then blurs it so the walk starts at the FIRST
+    // tabbable element instead -- the property `revealed: false` needs to mean anything at all.
+    const startedFrom = await reportFocusedControlWithRetry(interaction);
+    const focusReset = focusResetOutcome(await resetFocusToDocumentStart());
     // BEFORE IS THE UNTOUCHED DOCUMENT, and this is the whole correctness of the probe.
     //
     // It used to be taken here with focus already on a control, because `probeFocusOrder` had run --
@@ -2928,7 +2940,7 @@ async function probeFocusReveal({ interaction, deadline, diag }) {
     if (!onFocus) {
       // NOTHING FOCUSABLE is not "nothing appeared" — the question was never asked. Kept apart for the
       // same reason every absence in this file is, and `tabs` says which of the two it was.
-      mark({ asked: true, revealed: null, tabs, why: "nothing focusable on this page" });
+      mark({ asked: true, revealed: null, tabs, startedFrom, focusReset, why: "nothing focusable on this page" });
       return { asked: true, revealed: null, why: "nothing focusable on this page" };
     }
     // THE FIRST ESCAPE IS THE TOLL, AND THE BASELINE READ GOES BETWEEN THE TWO.
@@ -2962,7 +2974,7 @@ async function probeFocusReveal({ interaction, deadline, diag }) {
     // `vanished` fire on the conformant one. Whether that is focus genuinely moving, or the same control
     // announced differently once Escape has left focus mode, is not decidable from `false`. The strings
     // are the evidence; recording them costs nothing and one capture then answers it.
-    mark({ ...verdict, tabs, revealedAt, focusBefore, focusAfter });
+    mark({ ...verdict, tabs, revealedAt, focusBefore, focusAfter, startedFrom, focusReset });
     return verdict;
   } catch (e) {
     // RECORDED, never dropped -- a probe that threw and a page that revealed nothing are different

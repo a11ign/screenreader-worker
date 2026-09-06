@@ -1138,6 +1138,46 @@ export function focusTargetIsSuspect({ targetMatch, candidates }) {
 }
 
 /**
+ * What did `resetFocusToDocumentStart` actually achieve, in words — PURE, so it is testable without NVDA.
+ * architecture-audit.md §43: `revealed: false` used to mean either "this page reveals nothing on focus"
+ * or "nothing was revealed from wherever a PREVIOUS probe happened to leave focus", and those need
+ * opposite responses. This function is what lets `probeFocusReveal`'s mark say which kind of attempt it
+ * was, rather than only whether it worked.
+ *
+ * REUSES `focusTargetIsSuspect` rather than re-deciding "was this evaluated against the right document" a
+ * third time — `censusTargetIsSuspect` (packages/evidence/src/verify.ts) and this function's own worker-
+ * side twin already answer exactly that question, and a third copy is the fact-stated-twice shape this
+ * repo keeps paying for. A reset attempted against a document this pipeline never confirmed cannot be
+ * trusted to have blurred the RIGHT page's control, whatever the script itself reports.
+ *
+ * THREE OUTCOMES, not two: `blurred: true` (a control held focus and was cleared), `blurred: false`
+ * (confirmed nothing needed clearing — focus was already at `document.body`), and `blurred: null` (the
+ * script did not run at all, e.g. the CDP call itself failed) — collapsing the last two would make "we
+ * checked and there was nothing to do" indistinguishable from "we never checked", which is the exact
+ * defect this whole file exists to keep out of every OTHER probe.
+ *
+ * @param {{ blurred: boolean | null | undefined,
+ *           targetMatch: string | null | undefined, candidates: number | undefined }} outcome
+ *   the return value of `resetFocusToDocumentStart` (browser-session.mjs), passed straight through.
+ * @returns {{ applied: boolean, why: string }}
+ */
+export function focusResetOutcome({ blurred, targetMatch, candidates }) {
+  if (focusTargetIsSuspect({ targetMatch, candidates })) {
+    return {
+      applied: false,
+      why: `reset attempted against an unconfirmed document target (targetMatch=${targetMatch ?? "?"}, `
+        + `candidates=${candidates ?? "?"})`,
+    };
+  }
+  if (blurred === null || blurred === undefined) {
+    return { applied: false, why: "the reset script did not run" };
+  }
+  return blurred
+    ? { applied: true, why: "a control held focus from an earlier probe and was blurred" }
+    : { applied: true, why: "confirmed nothing held focus already" };
+}
+
+/**
  * The most events kept on the capture. Was 50, sized against the only captures measured at the time (17
  * and 27 events, both synthetic). Raised to 300 on 2026-09-06 when a real page
  * (`design-system.service.gov.uk/components/details/`) measured **296** events — at 50 that page's stored
