@@ -6,21 +6,44 @@ the source". Three of these failed in three different ways while the port was be
 failure would have produced a plausible-looking wrong announcement rather than an error.
 
     python3 -m pytest packages/nvda-speech/tests -q
+
+## Needs `reference/symbols.dic`, which is fetched, not committed
+
+`nvda-speech/README.md` states why: "the repo keeps generated output and the generator, not a vendored
+copy" of NVDA's own upstream source — the same principle `.gitignore` applies to `runs/`, stated here for
+a different resource. Six of these seven tests call `expand()`/`load_symbols()` with no dictionary of
+their own, which reads `nvda_speech.symbols.DIC_PATH` by default and previously raised a bare
+`FileNotFoundError` in a checkout that had never fetched it — six failures indistinguishable from a real
+porting regression, in a worktree with nothing wrong. `needs_symbols_dic` below skips them honestly
+instead, naming the file and the one command that gets it, matching the shape `npm test`'s Python half
+and `verify.corpus.test.ts` already use for their own gitignored dependencies.
 """
 
 import pathlib
 import sys
 
+import pytest
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from nvda_speech.symbols import DEFAULT_LEVEL, expand, load_symbols  # noqa: E402
+from nvda_speech.symbols import DEFAULT_LEVEL, DIC_PATH, expand, load_symbols  # noqa: E402
+
+needs_symbols_dic = pytest.mark.skipif(
+    not DIC_PATH.is_file(),
+    reason=(
+        f"{DIC_PATH} is gitignored and fetched on demand, not committed — run "
+        "`python3 packages/nvda-speech/scripts/fetch_reference.py` to get it. Honest skip, not a pass."
+    ),
+)
 
 
+@needs_symbols_dic
 def test_the_dictionary_parses():
     rules = load_symbols()
     assert len(rules) > 500, "the English symbol dictionary has ~570 rules; a short parse means the format moved"
 
 
+@needs_symbols_dic
 def test_filename_alt_text_is_spoken_as_dot():
     """The finding this whole layer exists for, verified against a live capture.
 
@@ -33,6 +56,7 @@ def test_filename_alt_text_is_spoken_as_dot():
     assert expand("IMG_4821.JPG") == "IMG_4821 dot JPG"
 
 
+@needs_symbols_dic
 def test_a_sentence_ending_full_stop_is_NOT_spoken():
     """The same character, silent — because context and level decide, not the character.
 
@@ -45,6 +69,7 @@ def test_a_sentence_ending_full_stop_is_NOT_spoken():
     assert expand("Open 9am to 8pm on weekdays.") == "Open 9am to 8pm on weekdays."
 
 
+@needs_symbols_dic
 def test_a_decimal_point_is_preserved_and_silent():
     """`preserve` is a third independent decision, and ignoring it turned "3.5" into "3 5".
 
@@ -56,6 +81,7 @@ def test_a_decimal_point_is_preserved_and_silent():
     assert expand("Version 2.10 released") == "Version 2.10 released"
 
 
+@needs_symbols_dic
 def test_a_claimed_span_is_not_reconsidered():
     """NVDA tokenises; a span owned by one rule is not offered to the next.
 
@@ -66,6 +92,7 @@ def test_a_claimed_span_is_not_reconsidered():
     assert expand("Children's story time") == "Children's story time"
 
 
+@needs_symbols_dic
 def test_ordinary_text_is_untouched():
     """The commonest case, and the one a regression would be loudest in."""
     for text in ("Core components", "Welcome to the City Library", "Sign up", "Email address (required)"):

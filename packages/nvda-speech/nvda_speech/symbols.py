@@ -40,7 +40,10 @@ LEVELS = ("none", "some", "most", "all", "char")
 # comparison against that corpus must use.
 DEFAULT_LEVEL = "some"
 
-_DIC = Path(__file__).resolve().parent.parent / "reference" / "symbols.dic"
+
+# Public (not `_`-prefixed) so a caller — a test deciding whether to skip, `fetch_reference.py`'s
+# consumers — can ask where this resolves to without restating the path. One computation, not two.
+DIC_PATH = Path(__file__).resolve().parent.parent / "reference" / "symbols.dic"
 
 
 @dataclass(frozen=True)
@@ -76,7 +79,7 @@ def load_symbols(path: Path | None = None) -> list[Symbol]:
     Order is load-bearing rather than incidental — see the module docstring. Returned as a list, not a
     dict, because application order is part of the behaviour.
     """
-    text = (path or _DIC).read_text(encoding="utf-8-sig")
+    text = (path or DIC_PATH).read_text(encoding="utf-8-sig")
     complex_patterns: dict[str, str] = {}
     symbols: list[Symbol] = []
     section = None
@@ -106,7 +109,7 @@ def load_symbols(path: Path | None = None) -> list[Symbol]:
                 ),
             )
     if not symbols:
-        raise RuntimeError(f"no symbol rules parsed from {path or _DIC} — has the format changed?")
+        raise RuntimeError(f"no symbol rules parsed from {path or DIC_PATH} — has the format changed?")
     # Complex (regex) rules first, then literals longest-first so "..." beats "." — otherwise the
     # single-character rule fires three times and "dot dot dot" never appears.
     return sorted(symbols, key=lambda s: (s.pattern is None, -len(s.identifier)))
