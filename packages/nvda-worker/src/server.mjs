@@ -790,19 +790,6 @@ function nvdaConfigPaths() {
   }).config ?? []).map((/** @type {{path: string}} */ c) => c.path);
 }
 
-async function sampleDesktopDialogs() {
-  const dialogs = await listBlockingDialogs((reason) => log(`could not enumerate desktop dialogs: ${reason}`));
-  dialogCache = { at: Date.now(), dialogs };
-  if (dialogs.length) {
-    log(`  desktop is blocked by ${dialogs.length} dialog(s): `
-      + dialogs.map((d) => `${d.title}: ${d.message}`).join(" | "));
-  }
-  const foreground = await probeWindowOwner((reason) => log(`could not read the foreground window: ${reason}`));
-  foregroundCache = { at: Date.now(), foreground };
-  const blocker = foregroundBlocker(foreground);
-  if (blocker) log(`  the foreground is held by ${blocker.owner} (${blocker.title}) — Edge cannot take focus`);
-}
-
 // NOT on a timer. The first version sampled every 30 s, and on a 3 GB guest that is a PowerShell process
 // compiling C# on a repeating schedule — measured timing out at 8 s, then still at 25 s, on a guest already
 // starved by Edge. A detector that loads the machine it is watching makes the condition it looks for more
