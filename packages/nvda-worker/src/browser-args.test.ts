@@ -45,7 +45,7 @@ test("Edge's command line is EXACTLY what the corpus was captured with", () => {
       "--disable-features=msEdgeWelcomePage,AutofillServerCommunication,"
       + "AutofillAddressProfileSavePrompt,AutofillEnableAccountWalletStorage,msEdgeImageMagnifyUI",
       "--disable-sync", "--disable-background-networking", "--disable-save-password-bubble",
-      "--user-data-dir=C:\\Users\\w\\AppData\\Local\\a11y-witness\\edge-profile",
+      "--user-data-dir=C:\\Users\\w\\AppData\\Local\\a11ign\\edge-profile",
       "--app=http://pages/case/good",
     ]);
   });
@@ -134,7 +134,7 @@ test("A11Y_EDGE_PROFILE still overrides, and only for Edge", () => {
   // unprepared profile is a first-run browser, which is the phantom-element fault above.
   withEnv({ LOCALAPPDATA: "C:\\L", A11Y_EDGE_PROFILE: "D:\\edge", A11Y_BROWSER_PROFILE: undefined }, () => {
     assert.equal(browserProfileDir(BROWSERS.edge), "D:\\edge");
-    assert.equal(browserProfileDir(BROWSERS.chrome), "C:\\L\\a11y-witness\\chrome-profile");
+    assert.equal(browserProfileDir(BROWSERS.chrome), "C:\\L\\a11ign\\chrome-profile");
   });
 });
 

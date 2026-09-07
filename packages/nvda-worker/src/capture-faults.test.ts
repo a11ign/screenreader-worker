@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { stripComments } from "@a11y-witness/evidence/source-text";
+import { stripComments } from "@a11ign/evidence/source-text";
 import { captureFault, faultCode, FAULT } from "./capture-faults.mjs";
 
 
@@ -68,7 +68,7 @@ test("the settle wait is a CONDITION, not a duration, and cannot hang on an empt
   // its published HTML carries forty headings. Two WCAG findings against faults the page does not have.
   // Comments stripped before matching -- unbounded to end of file, and this file discusses
   // headings/census logic extensively in prose elsewhere, so a bare regex here risks matching a LATER,
-  // unrelated comment rather than this function's own code. See `@a11y-witness/evidence/source-text`.
+  // unrelated comment rather than this function's own code. See `@a11ign/evidence/source-text`.
   // `waitForPageToSettle` lives in `capture-setup.mjs` since the 2026-09-05 split.
   const source = stripComments(readFileSync(new URL("./capture-setup.mjs", import.meta.url), "utf8"));
   const settle = source.slice(source.indexOf("async function waitForPageToSettle"));

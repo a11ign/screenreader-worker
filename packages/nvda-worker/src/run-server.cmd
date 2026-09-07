@@ -4,7 +4,7 @@ rem use LogonType Interactive so this runs inside the logged-on desktop session 
 rem is a GUI app and announces nothing without one).
 rem
 rem Paths derive from this script's own location (%~dp0) rather than being hardcoded. A
-rem hardcoded C:\Users\<name>\a11y-witness breaks the moment the worker is set up under a
+rem hardcoded C:\Users\<name>\a11ign breaks the moment the worker is set up under a
 rem different account -- which is exactly what happens when a prebuilt VM image is reused.
 rem See docs/local-worker-vm.md.
 rem

@@ -1270,7 +1270,7 @@ if (IS_MAIN) server.listen(PORT, () => {
   // No rotate call here: the writer is seeded with the size already on disk and rotates on the append path,
   // so a log inherited from a dead worker is retired by this very line. Rotating only HERE is what let one
   // process write 354 GB without the bound ever being consulted.
-  log(`a11y-witness NVDA worker listening on :${PORT} (reuse NVDA: ${REUSE_NVDA})`);
+  log(`a11ign NVDA worker listening on :${PORT} (reuse NVDA: ${REUSE_NVDA})`);
   // Hygiene AFTER the log line and deliberately not awaited, for the same reason warm-up is not: a caller
   // must see "not ready yet" rather than silence. These used to run BEFORE the log, synchronously, which is
   // why a guest with a large Edge profile reported NOT ready for three minutes after every deploy.

@@ -66,7 +66,7 @@ export const NVDA_REMOTE_PORT = 6837;
 const KEEPALIVE_MS = 15_000;
 
 /** Marker so a second install is a no-op rather than a shim wrapping a shim. */
-const INSTALLED = Symbol.for("a11y-witness.speechChannelShim");
+const INSTALLED = Symbol.for("a11ign.speechChannelShim");
 
 /**
  * Start tracking a socket, and give it the keepalive guidepup never sets.

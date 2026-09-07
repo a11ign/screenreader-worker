@@ -14,8 +14,8 @@
  * This file is the same shape as `worker-files.mjs`, `code-version.mjs` and `capture-pure.mjs` — a bare
  * constant, safe to import from anywhere, so the number can be READ rather than parsed out of prose.
  * `capture-core.mjs` imports and re-exports it, so every existing importer of `CAPTURE_PROTOCOL_VERSION`
- * from `capture-core.mjs` or `@a11y-witness/nvda-worker` is unchanged; `deploy-worker.mjs` and
- * `check-worker-code.mjs` (in `@a11y-witness/worker-fleet`, which already depends on this package) now
+ * from `capture-core.mjs` or `@a11ign/nvda-worker` is unchanged; `deploy-worker.mjs` and
+ * `check-worker-code.mjs` (in `@a11ign/worker-fleet`, which already depends on this package) now
  * import it directly for the WORKING-TREE value. The git-HEAD comparison both scripts also make cannot
  * become an import — `git show HEAD:<path>` returns historical file TEXT, not a loadable module — so that
  * half stays a regex by necessity, not by omission.
