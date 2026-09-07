@@ -454,9 +454,11 @@ const FAST_FOCUS_MS = 15_000;
  * recurring shape: a remedy applied at one call site when the behaviour reaches several, so the remedy now
  * lives in the only place either caller can use.
  *
+ */
+/**
+ * @param {number} deadline
  * @returns {Promise<{ok: boolean, via: string, error: string, fastReason: string}>}
  */
-/** @param {number} deadline */
 async function activateBrowserWithinDeadline(deadline) {
   const remaining = () => deadline - Date.now();
   if (remaining() <= 0) return { ok: false, via: "none", error: "no time left to activate", fastReason: "" };
@@ -1482,10 +1484,13 @@ const SPEECH_QUIET_BUDGET_MS = 5_000;
  *
  * Polling is the only option: the client is request/response with no emitter to await.
  *
+ */
+/**
+ * @param {string} label
+ * @param {number} [budgetMs]
  * @returns {Promise<{quiet: boolean, waitedMs: number, reads: number}>} `quiet: false` means the budget
  *   ran out with NVDA still talking -- recorded, never silently treated as settled.
  */
-/** @param {string} label @param {number} [budgetMs] */
 export async function waitForSpeechQuiet(label, budgetMs = SPEECH_QUIET_BUDGET_MS) {
   const startedAt = Date.now();
   const deadline = startedAt + budgetMs;

@@ -186,11 +186,6 @@ const TRIMMED_SERVICES = [
 ];
 
 /**
- * Everything a human would otherwise reach for `utmctl exec` to find out.
- *
- * @param {{ edgeProfile: string, logPath: string }} paths
- */
-/**
  * Where a profile's bulk actually is, one level down.
  *
  * A total tells you the profile is big; it does not tell you what to do about it. Pruning the obvious
@@ -261,13 +256,6 @@ export function windowsTrimReport(markerPath = resolve(process.cwd(), ".windows-
 }
 
 /**
- * Normalise PowerShell's `ConvertTo-Json`, which emits a bare object for one result and an array for
- * several. Pure, because that inconsistency is a classic source of "works with two, breaks with one".
- *
- * @param {string} raw
- * @returns {object[]}
- */
-/**
  * Everything a failed probe can tell us.
  *
  * `error.message` from execFileSync is just the command line; the actual complaint is on stderr, and
@@ -288,7 +276,13 @@ export function probeError(error) {
   };
 }
 
-/** @param {string} raw */
+/**
+ * Normalise PowerShell's `ConvertTo-Json`, which emits a bare object for one result and an array for
+ * several. Pure, because that inconsistency is a classic source of "works with two, breaks with one".
+ *
+ * @param {string} raw
+ * @returns {object[]}
+ */
 export function parsePowerShellJson(raw) {
   const text = String(raw).trim();
   if (!text) return [];
@@ -794,7 +788,11 @@ export function edgeUpdaterState() {
   }
 }
 
-/** @param {{ edgeProfile: string, logPath: string }} where */
+/**
+ * Everything a human would otherwise reach for `utmctl exec` to find out.
+ *
+ * @param {{ edgeProfile: string, logPath: string }} where
+ */
 export function guestDiagnostics({ edgeProfile, logPath }) {
   return {
     measuredAt: new Date().toISOString(),

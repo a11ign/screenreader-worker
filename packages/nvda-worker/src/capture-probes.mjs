@@ -2008,9 +2008,12 @@ async function reportFocusedControl() {
  * allowed to announce nothing. So this returns an empty delta only after STATE_WAIT_MS of genuine
  * silence, never because a fixed sleep expired first.
  *
+ */
+/**
+ * @param {number} before
+ * @param {string} kind
  * @returns {Promise<string[]>} the full spoken log, for the caller to slice from `before`
  */
-/** @param {number} before @param {string} kind */
 async function waitForAnnouncement(before, kind) {
   const deadline = Date.now() + STATE_WAIT_MS;
   let log = [];
