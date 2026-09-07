@@ -52,9 +52,12 @@ test("a failed screen-reader start is recoverable — the guest is still settlin
 });
 
 test("a hard timeout is NOT retried locally — it has already spent the whole budget", () => {
-  // Carries no fault code, so it falls through to the run, which reissues it.
+  // #336 gave this a real fault code (server.mjs's `withHardTimeout` now throws via `captureFault`), so
+  // this is excluded by NAME from RECOVERABLE, not because it carries no code at all -- the shape a
+  // plain, untagged Error tests below covers that different case.
   assert.equal(
-    isLocallyRecoverable(new Error("capture exceeded the hard timeout of 240000 ms and was abandoned")),
+    isLocallyRecoverable(captureFault(FAULT.HARD_TIMEOUT,
+      "capture exceeded the hard timeout of 240000 ms and was abandoned")),
     false);
 });
 

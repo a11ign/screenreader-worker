@@ -32,7 +32,7 @@ import { isLocallyRecoverable } from "./worker-recovery.mjs";
 import { codeVersion } from "./code-version.mjs";
 import { probeWindowOwner, foregroundBlocker } from "./desktop-dialogs.mjs";
 import { dialogCache, foregroundCache, sampleDesktopDialogs, prepareDesktop } from "./desktop-prepare.mjs";
-import { faultCode } from "./capture-faults.mjs";
+import { faultCode, captureFault, FAULT } from "./capture-faults.mjs";
 import { createResultStore, isValidCaptureId, storedResultResponse } from "./capture-results.mjs";
 import { edgePolicy, guestDiagnostics, processCounts, screenReaderState, screenReaderDefaults, treeSize } from "./diagnostics.mjs";
 import { killStrayBrowsers, pruneEdgeProfile, reportBrowserPolicyDrift } from "./browser-profile.mjs";
@@ -602,7 +602,9 @@ function foregroundLockTimeout() {
 // "what we do after a failure" deserves a name.
 async function recoverFromFailure(/** @type {any} */ error) {
   forgetScreenReader();
-  if (!/hard timeout/.test(String((error && error.message) || error))) return;
+  // A CODE, not a regex over the message -- issue #336 gave the hard timeout one specifically so this
+  // check could not be broken by a reworded message the way `capture-faults.mjs`'s own header describes.
+  if (faultCode(error) !== FAULT.HARD_TIMEOUT) return;
   log("abandoned capture may still be driving NVDA — stopping it so the next capture starts clean");
   await shutdownScreenReader().catch((e) => log("could not stop NVDA after abandonment: " + e.message));
 }
@@ -677,7 +679,8 @@ function withHardTimeout(/** @type {Promise<any>} */ promise) {
   let timer;
   const abandon = new Promise((_resolve, reject) => {
     timer = setTimeout(
-      () => reject(new Error(`capture exceeded the hard timeout of ${CAPTURE_HARD_TIMEOUT_MS} ms and was abandoned`)),
+      () => reject(captureFault(FAULT.HARD_TIMEOUT,
+        `capture exceeded the hard timeout of ${CAPTURE_HARD_TIMEOUT_MS} ms and was abandoned`)),
       CAPTURE_HARD_TIMEOUT_MS,
     );
   });
