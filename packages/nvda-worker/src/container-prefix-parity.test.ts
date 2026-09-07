@@ -44,7 +44,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { CONTAINER_ROLES } from "@a11y-witness/evidence";
+import { CONTAINER_ROLES } from "@a11ign/evidence";
 import { CONTAINER_PREFIX } from "./capture-pure.mjs";
 
 /**

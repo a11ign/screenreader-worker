@@ -1,4 +1,4 @@
-# `@a11y-witness/nvda-worker`
+# `@a11ign/nvda-worker`
 
 Drives a **real NVDA screen reader** through real navigation on Windows and returns what it announced.
 
@@ -8,8 +8,8 @@ Windows application, and guidepup needs a logged-on desktop to drive it. A servi
 `nvda.start failed: NVDA is not supported` — which reads like a broken install and is not one.
 
 ```bash
-npm install @a11y-witness/nvda-worker
-npx a11y-nvda-worker            # serves on :8765
+npm install @a11ign/nvda-worker
+npx a11ign-nvda-worker            # serves on :8765
 ```
 
 ## The HTTP contract is the API
@@ -52,7 +52,7 @@ so **its version is evidence**. Upgrading 0.29.2 → 0.31.0 fixed an intermitten
 ## What the programmatic surface is for
 
 ```js
-import { captureWithNvda, CAPTURE_PROTOCOL_VERSION, codeVersion } from "@a11y-witness/nvda-worker";
+import { captureWithNvda, CAPTURE_PROTOCOL_VERSION, codeVersion } from "@a11ign/nvda-worker";
 ```
 
 `captureWithNvda(url, options)` is the one-shot path, for a controller that already runs on the Windows box.

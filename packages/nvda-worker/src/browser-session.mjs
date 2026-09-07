@@ -870,7 +870,7 @@ export async function structuralCensus() {
       // WHERE the target actually was, and what was wanted — so a fallback's REASON can be READ, not
       // guessed. `evaluateOnPageTarget` already carries `targetUrl` for the identical reason; this census
       // went without it, and a fallback read as "a real second CDP target existed" even when `candidates`
-      // said there was only one. See `censusTargetIsSuspect` (`@a11y-witness/evidence`) for what reads
+      // said there was only one. See `censusTargetIsSuspect` (`@a11ign/evidence`) for what reads
       // these two fields.
       census.targetUrl = target.url;
       census.expectedUrl = expectedPageUrl;
@@ -1522,7 +1522,7 @@ export async function launchReusable({ exe, args, onEvent = () => {} }) {
  *
  * The caller (`navigateByStructureThenAudit`) still exports `.elements` to `result.media` unconditionally —
  * this function does not decide whether the read is trustworthy, matching `structuralCensus`/`domCensus`'s
- * own split between recording (here) and judging (`censusTargetIsSuspect`, `@a11y-witness/evidence`, which
+ * own split between recording (here) and judging (`censusTargetIsSuspect`, `@a11ign/evidence`, which
  * this worker cannot import — see `field-match.mjs`'s header for why).
  */
 export async function mediaCensus() {

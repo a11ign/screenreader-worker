@@ -33,9 +33,9 @@ test("there is exactly ONE definition of the worker file list, and one hasher", 
       `${path} has its own literal worker-file list again. Import WORKER_FILES from worker-files.mjs — a `
       + `second copy is how a file came to deploy without the parity check noticing.`);
     // Either the shared list or the shared hasher, by relative path OR by package name — the fleet imports it
-    // as `@a11y-witness/nvda-worker` since M6 put those scripts in their own package. What matters is that it
+    // as `@a11ign/nvda-worker` since M6 put those scripts in their own package. What matters is that it
     // comes from the one definition, not how it is spelled.
-    assert.match(source, /worker-files\.mjs|code-version\.mjs|@a11y-witness\/nvda-worker/,
+    assert.match(source, /worker-files\.mjs|code-version\.mjs|@a11ign\/nvda-worker/,
       `${path} should get the worker file list, or the hash itself, from the shared module`);
 
     // AND it must not compute the hash ITSELF. The assertion above only proved the shared module was

@@ -16,7 +16,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { parseAnnouncement } from "@a11y-witness/evidence";
+import { parseAnnouncement } from "@a11ign/evidence";
 import { matchesFieldName, matchesWithin, fillActionFor } from "./field-match.mjs";
 
 /**

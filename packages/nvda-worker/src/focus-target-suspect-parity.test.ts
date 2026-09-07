@@ -20,7 +20,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { focusTargetIsSuspect } from "./capture-pure.mjs";
-// The SOURCE, by relative path, never `@a11y-witness/evidence` — that specifier resolves to `dist`, and a
+// The SOURCE, by relative path, never `@a11ign/evidence` — that specifier resolves to `dist`, and a
 // test whose whole job is to catch drift between two files must not be reading a compiled snapshot of one.
 import { censusTargetIsSuspect } from "../../evidence/src/verify.js";
 

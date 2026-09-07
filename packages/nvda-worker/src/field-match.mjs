@@ -3,7 +3,7 @@
  *
  * A forms config addresses fields by ACCESSIBLE NAME (ADR 0024), so the worker has to decide whether the
  * control it just landed on is the one the author meant. The authoritative answer is
- * `parseAnnouncement` in `@a11y-witness/evidence` — and this worker CANNOT import it.
+ * `parseAnnouncement` in `@a11ign/evidence` — and this worker CANNOT import it.
  *
  * That is deliberate, not an oversight. The worker depends on `@guidepup/guidepup` and nothing else: it is
  * git-cloned onto Windows boxes and runs under plain node with no build step, so a dependency on compiled

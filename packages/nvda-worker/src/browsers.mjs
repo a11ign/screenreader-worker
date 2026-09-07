@@ -117,7 +117,7 @@ export function browserProfileDir(browser) {
     (browser.id === "edge" ? process.env.A11Y_EDGE_PROFILE : "");
   if (override) return override;
   const root = process.env.LOCALAPPDATA || process.env.TEMP;
-  return `${root}\\a11y-witness\\${browser.profileName}`;
+  return `${root}\\a11ign\\${browser.profileName}`;
 }
 
 /**
@@ -169,7 +169,7 @@ function chromiumArgs(browser, url, profileDir) {
  * @property {string} name           product name, and the capture cache's word for this browser
  * @property {string} image          process image, for activate / quit / taskkill / stray counting
  * @property {string} windowTitle    regex guidepup matches against MainWindowTitle
- * @property {string} profileName    directory under %LOCALAPPDATA%\\a11y-witness
+ * @property {string} profileName    directory under %LOCALAPPDATA%\\a11ign
  * @property {string[]} suppressedFeatures  goes in the single --disable-features list
  * @property {string[]} extraArgs    switches this browser needs and the others do not
  * @property {() => string[]} exes   install locations, in search order

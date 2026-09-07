@@ -33,8 +33,8 @@ winget install --id OpenJS.NodeJS.LTS -e --silent --accept-source-agreements --a
 winget install --id Git.Git -e --silent --accept-source-agreements --accept-package-agreements
 
 # Project + deps
-git clone https://github.com/DanBeckDev/a11y-witness.git
-cd a11y-witness; npm install
+git clone https://github.com/a11ign/a11ign.git
+cd a11ign; npm install
 
 # `setup` zeroes ForegroundLockTimeout so the browser can take focus during
 # capture; `install nvda` downloads the portable NVDA build pinned in
@@ -73,7 +73,7 @@ NVDA, reads the page in browse mode (`nvda.next()`), and writes `transcript.json
 Trigger it as an interactive scheduled task:
 
 ```powershell
-$action = New-ScheduledTaskAction -Execute "C:\Users\<user>\a11y-witness\src\capture\nvda\run-capture.cmd" -Argument "https://example.com"
+$action = New-ScheduledTaskAction -Execute "C:\Users\<user>\a11ign\src\capture\nvda\run-capture.cmd" -Argument "https://example.com"
 $principal = New-ScheduledTaskPrincipal -UserId "<user>" -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName "a11ycap" -Action $action -Principal $principal -Force
 Start-ScheduledTask -TaskName "a11ycap"
