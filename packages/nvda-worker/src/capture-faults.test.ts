@@ -41,17 +41,20 @@ test("the message survives and the code is classifiable", () => {
 
 test("every captureFault call site passes the code first", () => {
   // The guard above catches it at runtime, on a Windows worker, mid-capture. This catches it here.
-  // `capture-setup.mjs`, not `capture-core.mjs`: every captureFault call site lives there since the
-  // 2026-09-05 split (neither `capture-core.mjs` nor `capture-probes.mjs` imports FAULT/captureFault).
-  const source = readFileSync(new URL("./capture-setup.mjs", import.meta.url), "utf8");
+  // `capture-setup.mjs` had every call site until #336 (2026-09-07) added one to `server.mjs`, for the
+  // hard timeout -- so this now scans BOTH rather than one file whose own comment claimed to be all of
+  // them. `capture-core.mjs` and `capture-probes.mjs` still import neither FAULT nor captureFault.
+  const files = ["capture-setup.mjs", "server.mjs"];
+  const sources = files.map((f) => readFileSync(new URL(`./${f}`, import.meta.url), "utf8"));
   // This asserts an ABSENCE, so a moved file, an empty read, or a broken regex all produce the identical
   // "0 swapped" pass -- proving the population it is checking is real, not merely that nothing bad was
-  // found in it. 5 real call sites at the time this guard was added; a floor, not a pin.
-  const realCallSites = [...source.matchAll(/captureFault\(/g)];
-  assert.ok(realCallSites.length >= 3,
-    `only found ${realCallSites.length} captureFault( call site(s) in capture-setup.mjs -- the read or `
-    + "the file moved, this is not a clean file");
-  const swapped = [...source.matchAll(/captureFault\(\s*new Error/g)];
+  // found in it. 6 real call sites (5 in capture-setup.mjs, 1 in server.mjs) at the time this guard was
+  // last updated; a floor, not a pin.
+  const realCallSites = sources.flatMap((s) => [...s.matchAll(/captureFault\(/g)]);
+  assert.ok(realCallSites.length >= 4,
+    `only found ${realCallSites.length} captureFault( call site(s) across ${files.join(", ")} -- a read `
+    + "failed, a file moved, or the population genuinely shrank below the floor");
+  const swapped = sources.flatMap((s) => [...s.matchAll(/captureFault\(\s*new Error/g)]);
   assert.equal(swapped.length, 0,
     "captureFault takes (code, message) — an Error in the first position is the swap that made seven "
     + "failures log a bare `wrong-page` and made their codes unclassifiable");

@@ -45,6 +45,20 @@ export const FAULT = {
    * `RECOVERABLE` for the same reason PAGE_UNREACHABLE does.
    */
   WRONG_PAGE: "wrong-page",
+  /**
+   * The capture ran past `CAPTURE_HARD_TIMEOUT_MS` and was abandoned mid-flight — issue #336.
+   *
+   * The documented failure mode of the documented page shape: #311 measured a real marketing page
+   * "abandoned at the 280 s hard timeout", and `docs/try-it.md` sends a first reader at exactly that
+   * kind of page (heavy, many images and headings, probably a form). Before this code existed the
+   * rejection was a bare `Error` with no `.code`, so `remediationFor` had nothing to key on and a
+   * first reader's likeliest failure got the generic path instead of an explanation.
+   *
+   * NOT put in `RECOVERABLE`: the capture has already spent its whole budget, so retrying locally
+   * on this worker cannot help -- same reasoning `worker-recovery.mjs` already gives for excluding
+   * the hard timeout from local recovery.
+   */
+  HARD_TIMEOUT: "hard-timeout",
 };
 
 /**
