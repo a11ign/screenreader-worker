@@ -28,9 +28,10 @@
  * every msedge" safe here and nowhere else.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { errorText } from "./error-text.mjs";
 
 /**
@@ -247,4 +248,129 @@ export function killStrayBrowsers({ count, image }, log) {
     // taskkill exits non-zero when nothing matched, which is a race we do not care about losing.
     return false;
   }
+}
+
+// #561: THE PROFILE CHANGES WHAT A CAPTURE SAYS, AND NOTHING KEYED IT.
+//
+// `environmentKey` keys on the screen reader, the driver, the browser, the OS, the protocol and the NVDA
+// settings — every one of them because it changes what NVDA says before this project ever sees it. The
+// profile belongs to that class and was not in it. This file's own header says why: a fresh
+// `--user-data-dir` shows Edge's first-run welcome surface, and on a page with no headings NVDA's
+// quick-nav escapes the empty document into that surface and records it as PHANTOM PAGE CONTENT. A cold
+// profile does not merely differ from a warm one; it injects content that is not the page.
+//
+// The U+FFFC incident is the same variable measured: the autofill suggestion icon reached 3%, then 8%,
+// then 31% of affected captures AS THE PROFILE LEARNED, because `probeForms` submits forms and the
+// profile remembers. 26 good/bad pairs disagreed about it.
+//
+// ## `gate:stability` cannot close this, and the reason matters more than the fix
+//
+// That gate compares captures taken minutes apart WITHIN ONE RUN. A uniformly cold profile is perfectly
+// stable — five cold captures agree with each other exactly. It caught U+FFFC only because the profile
+// was WARMING during the run, a moving variable. Nothing compares evidence ACROSS runs, and that is the
+// cache key's job. Reaching for the stability gate here would be a check that cannot express the fault.
+//
+// ## MISSING and CHANGED are different states, and conflating them recaptures the corpus
+//
+// On the day this ships every guest has a profile and no stamp. If that read as a CHANGED profile, every
+// cached capture would miss at once — the `os`-key recapture paid a second time, for a field that has
+// just been introduced and has told us nothing yet.
+//
+// So an unstamped profile that Edge has actually used is ADOPTED: it is stamped with the literal
+// `adopted`, which is exactly what `environmentKey` defaults an absent field to. The key does not move.
+// This is the same device `screenReaderSettings` uses with `"default"` — the absent value is a FACT
+// ("this capture was taken at NVDA's defaults"), not an "unknown".
+//
+// A profile that is ABSENT, or present but never used, is not a survivor: it gets a fresh id and the key
+// moves, which is the whole point.
+
+/** What an adopted profile stamps and reports. Must equal `environmentKey`'s default for the field. */
+export const ADOPTED_PROFILE = "adopted";
+
+/**
+ * Edge writes `Local State` into the profile root the first time it runs there. Its presence is what
+ * separates "a profile that predates the stamp" from "a directory something just created" — without it,
+ * an empty directory recreated by anything other than this code would be ADOPTED while being stone cold,
+ * which is the one hole this design has and this is how it is closed.
+ */
+export const USED_MARKER = "Local State";
+
+/**
+ * PURE. Given what is on disk, what identity does this profile report and what must be written?
+ *
+ * @param {{ stamped: string | null, profileExists: boolean, hasBeenUsed: boolean, freshId: string }} state
+ *   `stamped` — the stamp file's contents, or null if there is none.
+ * @returns {{ identity: string, write: string | null, adopted: boolean, why: string }}
+ *   `write` is null when nothing needs stamping; `why` is the diagnostic mark's text, because
+ *   "adopted an existing profile" and "stamped a new one" must never be the same silence.
+ */
+export function profileIdentity({ stamped, profileExists, hasBeenUsed, freshId }) {
+  if (stamped) {
+    return { identity: stamped, write: null, adopted: stamped === ADOPTED_PROFILE,
+      why: `profile already stamped ${stamped}` };
+  }
+  if (profileExists && hasBeenUsed) {
+    return { identity: ADOPTED_PROFILE, write: ADOPTED_PROFILE, adopted: true,
+      why: `adopted an existing profile (${USED_MARKER} present, so Edge has run in it) -- the corpus `
+        + "was taken against this profile, so the key must NOT move" };
+  }
+  return { identity: freshId, write: freshId, adopted: false,
+    why: profileExists
+      ? `stamped a NEW profile: the directory exists but has no ${USED_MARKER}, so Edge has never run `
+        + "in it -- a cold profile, and cold evidence is not warm evidence"
+      : "stamped a NEW profile: the directory did not exist" };
+}
+
+/** Where the stamp lives, inside the profile root it identifies. */
+export const STAMP_FILE = ".a11y-profile-id";
+
+/**
+ * The profile's identity, stamping it if it has none. IDEMPOTENT: a stamped profile is only read.
+ *
+ * NOT MEMOISED, deliberately. `fileProductVersion` memoised on process lifetime and reported a stale
+ * Edge version for five days while Edge updated underneath a running worker — captures were stamped with
+ * a version they were not taken under, sharing a cache key with evidence from a different build. A
+ * profile can be wiped under a running worker exactly as Edge can update under one, and the whole point
+ * of this value is to notice. It is one small read on a polled endpoint; the memo is not worth the class
+ * of bug it belongs to.
+ *
+ * @param {string} root the profile directory
+ * @param {{ exists?: (p: string) => boolean, read?: (p: string) => string,
+ *           write?: (p: string, body: string) => void, newId?: () => string,
+ *           log?: (line: string) => void }} [deps]
+ * @returns {{ identity: string, adopted: boolean, why: string }}
+ */
+export function readOrStampProfileIdentity(root, deps = {}) {
+  const { exists = existsSync, read = (p) => readFileSync(p, "utf8"),
+    write = (p, body) => writeFileSync(p, body), newId = () => randomUUID(), log = () => {} } = deps;
+  const stampPath = join(root, STAMP_FILE);
+  let stamped = null;
+  if (exists(stampPath)) {
+    try {
+      stamped = read(stampPath).trim() || null;
+    } catch (cause) {
+      // A stamp we cannot read is NOT an absent one: adopting here would report a cold profile as the
+      // corpus's own. Say so and let the caller decide, rather than guessing in the safe-looking
+      // direction, which is how a silent catch once hid an outage in this repository.
+      log(`browser-profile: ${stampPath} exists and could not be read: ${/** @type {Error} */ (cause).message}`);
+      return { identity: "unreadable", adopted: false, why: `stamp present but unreadable at ${stampPath}` };
+    }
+  }
+  const decision = profileIdentity({
+    stamped,
+    profileExists: exists(root),
+    hasBeenUsed: exists(join(root, USED_MARKER)),
+    freshId: newId(),
+  });
+  if (decision.write !== null) {
+    try {
+      write(stampPath, decision.write);
+    } catch (cause) {
+      // The identity still stands for THIS capture; what is lost is that the next boot re-derives it.
+      // Recorded rather than swallowed, and rather than failing a capture over a bookkeeping write.
+      log(`browser-profile: could not stamp ${stampPath}: ${/** @type {Error} */ (cause).message}`);
+    }
+  }
+  log(`browser-profile: ${decision.why}`);
+  return { identity: decision.identity, adopted: decision.adopted, why: decision.why };
 }

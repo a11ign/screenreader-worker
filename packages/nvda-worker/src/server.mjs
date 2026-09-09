@@ -35,7 +35,8 @@ import { dialogCache, foregroundCache, sampleDesktopDialogs, prepareDesktop } fr
 import { faultCode, captureFault, FAULT } from "./capture-faults.mjs";
 import { createResultStore, isValidCaptureId, storedResultResponse } from "./capture-results.mjs";
 import { edgePolicy, guestDiagnostics, processCounts, screenReaderState, screenReaderDefaults, treeSize } from "./diagnostics.mjs";
-import { killStrayBrowsers, pruneEdgeProfile, reportBrowserPolicyDrift } from "./browser-profile.mjs";
+import { killStrayBrowsers, pruneEdgeProfile, reportBrowserPolicyDrift,
+  readOrStampProfileIdentity } from "./browser-profile.mjs";
 import { applyRequestedLogLevel, applyCaptureSettings, captureSettingsDigest } from "./nvda-logging.mjs";
 import { trimAlreadyDone } from "./windows-trim.mjs";
 import { createLogWriter, silenceStreamErrors } from "./server-log.mjs";
@@ -417,6 +418,15 @@ function runtimeEnvironment() {
     // A digest rather than the settings themselves: the key wants one comparable value, and the full
     // settings are already on `/diagnostics.screenReaderSettings` for anyone asking what changed.
     screenReaderSettings: captureSettingsDigest(),
+    // WHICH PROFILE THIS GUEST CAPTURES AGAINST (#561), a cache-key input for the same reason
+    // `screenReaderSettings` is: it changes what NVDA says. A cold `--user-data-dir` shows Edge's
+    // first-run surface, which NVDA's quick-nav escapes into and records as page content, and a LEARNING
+    // profile is what drove the U+FFFC artefact from 3% to 31% of affected captures.
+    //
+    // `adopted` for a profile that predates the stamp -- and that literal is exactly what
+    // `environmentKey` defaults an absent field to, so every capture already on disk keeps its key. Not
+    // memoised: a profile can be wiped under a running worker, and noticing that is the whole point.
+    browserProfile: readOrStampProfileIdentity(browserProfileDir(BROWSER), { log }).identity,
     nodeVersion: process.version,
     // Memoised, and the reason is the cache key rather than the ~200 ms. This value is half of the key's
     // `os` field, and `powershellValue` answers "unknown" when PowerShell exceeds its 5 s bound -- which
