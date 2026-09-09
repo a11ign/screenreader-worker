@@ -354,6 +354,26 @@ export function sweepStepFromSpeech({ log, seen, prev, repeats = 0 }) {
   return { phrase, seen: advanced, repeats: 0 };
 }
 
+/**
+ * One iteration's verdict for `waitForSpeechQuiet`'s poll loop (capture-setup.mjs), pure and injectable
+ * so the rule it exists to enforce is directly testable without guidepup: #635 -- a FAILED read of the
+ * speech log is not silence, and must never by itself close the quiet window. Before this function
+ * existed, the loop folded a failed read into the same variable a successful empty read used
+ * (`.catch(() => [])`), so a dead speech channel accumulated toward `quiet: true` exactly like NVDA
+ * genuinely finishing -- the "a dead channel looks like a healthy silent NVDA" shape docs/adr/0034 names
+ * as this project's single most expensive fault class, recurring here in a spot that bypasses that fix.
+ *
+ * @param {{readOk: boolean, now: number, length: number, lastChange: number, at: number, quietWindowMs: number}} step
+ * @returns {{length: number, lastChange: number, quiet: boolean}}
+ */
+export function speechQuietStep({ readOk, now, length, lastChange, at, quietWindowMs }) {
+  // A failed read changes nothing about what we last knew, and cannot itself start or close the window --
+  // it is "we could not ask", not an observation of anything, silent or otherwise.
+  if (!readOk) return { length, lastChange, quiet: false };
+  if (now !== length) return { length: now, lastChange: at, quiet: false };
+  return { length, lastChange, quiet: at - lastChange >= quietWindowMs };
+}
+
 // A tree ROW as NVDA announces it while focused:
 //   "main, tree view item, focused, selected, expanded, 1 of 1, level 0"
 // An EMPTY tree announces only the container -- "tree view, focused" -- with no item name, which is the
