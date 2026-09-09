@@ -372,8 +372,14 @@ export async function navigateExisting(url) {
   // the page we are about to request. `A11Y_REUSE_BROWSER` is ON by default, so that is the normal path.
   //
   // Reset before anything can read it: the value is then only ever "where THIS navigation landed", or
-  // null. `browser-session.test.ts` pins the ordering, because a statement's POSITION is the property
-  // here and moving it back is a one-line edit that changes nothing a type or a lint check can see.
+  // null. A statement's POSITION is the property here, and moving it back is a one-line edit that changes
+  // nothing a type or a lint check can see.
+  //
+  // THIS COMMENT USED TO SAY `browser-session.test.ts` PINNED THAT, AND IT DID NOT (#71). Measured
+  // 2026-09-09: moving the reset back inside the `try`, exactly where it used to be, failed none of that
+  // file's 16 tests. A comment naming a guard that is not there is worse than no comment, because it
+  // stops the next reader looking -- the shape #842 exists to catch, here in the file whose whole subject
+  // is a guard. `resolved-page-url-reset.test.ts` pins it now, and that mutation is red.
   resolvedPageUrl = null;
   const target = await pageTarget();
   const socket = new WebSocket(target.webSocketDebuggerUrl);
