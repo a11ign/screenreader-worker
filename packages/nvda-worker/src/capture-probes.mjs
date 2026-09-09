@@ -23,6 +23,7 @@ import {
   crossCheckStructure, dedupeKey, elementsListRowName, MIN_CONTROL_NAME_LEN, probeKindFor,
   sweepStepFromSpeech, focusOrderCycled, sweepObservation, notObserved, recordWhatWasAsked,
   focusRevealVerdict, focusEventVerdict, censusGrowth, focusResetOutcome, titleSourceVerdict,
+  activationDeadline, activationBudgetMark,
 } from "./capture-pure.mjs";
 import {
   currentPageUrl, mediaCensus, structuralCensus, domCensus, truncatedAnnouncements,
@@ -478,6 +479,83 @@ async function censusBeforeNavigating() {
 }
 
 /**
+ * THE PER-FIELD ACTIVATION'S OWN BUDGET — #677 part 2.
+ *
+ * `formField` is the third of eight sweeps and the only one carrying an `onItem`, and that `onItem`
+ * activates a control and waits for speech. Measured over three real captures, taking 180 ms/trip (what
+ * every OTHER sweep type costs) as the sweep's own price and attributing the excess:
+ *
+ *     calendly probeForms ON    18 fields   57.2 s    49.0 s to onItem   (86%)
+ *     calendly probeForms OFF   46 fields  138.7 s   119.3 s to onItem   (86%)
+ *     ikea                     100 fields  322.3 s   283.0 s to onItem   (88%)
+ *
+ * On IKEA that consumed the whole capture: `formField` stopped on `deadline` and the five sweeps after it
+ * — `graphic`, `link`, `list`, `frame`, `postSubmit` — each returned `deadline` having examined nothing.
+ * Two structural types out of eight, and `postSubmit` carries 3.3.1 and 4.1.3.
+ *
+ * **THE UNIT IS A FIVE-SECOND WAIT, NOT A MILLISECOND.** Dividing the attributed time by activations that
+ * produced a record gives 4,451 / 4,588 / 8,845 ms each, against `STATE_WAIT_MS` of 5,000: *"how long to
+ * KEEP WAITING for an announcement that has not arrived yet"*. The cost is that wait, paid in full by
+ * every control that announces nothing. So a budget buys a COUNT OF WAITS, and a reader who expects it to
+ * buy proportional coverage will be surprised how few controls it covers.
+ *
+ * `probeForms` DOES NOT TURN THIS OFF and it is worth saying here, because the arithmetic above looks like
+ * it exonerates the activation: with the flag off, `formField` still costs 1,285 ms/trip against 1,244 on.
+ * The flag gates the SUBMIT probe only; `chooseProbe` still returns a disclosure probe, and 26 of them
+ * fired in a `probeForms`-off capture. There is no no-activation arm in anything measured so far.
+ *
+ * IT WRITES ITS OWN MARK (`markInto`) rather than handing counts back for a caller to mark. Two reasons,
+ * and the second is the real one: the counts are only final after the sweep, so a caller holding them has
+ * to know when to ask; and `navigateByStructure` is at 90 physical lines, which `function-size.test.ts`
+ * caps — a budget that costs its caller six lines to report is a budget that gets reported badly.
+ *
+ * MARKED ONLY WHEN A BUDGET WAS CONSULTED. A configured form activates exactly the control the author
+ * named and keeps no budget, and a page with no form controls offered none: writing `fields: 0` for
+ * either would claim a budget covered everything it was asked about. Absent and zero are different facts.
+ *
+ * @param {{ formState: unknown, probeForms: boolean | undefined, deadline: number,
+ *           interaction: Record<string, any>, task: string | undefined }} ctx
+ * @returns {{ onFormField: (phrase: string) => Promise<unknown>, markInto: (diag: Diag) => void }}
+ */
+function activationBudgetFor({ formState, probeForms, deadline, interaction, task }) {
+  let stopsAt = /** @type {number | null} */ (null);
+  let startedAt = 0;
+  let spentMs = 0;
+  let allowed = 0;
+  let skipped = 0;
+  return {
+    onFormField: (/** @type {string} */ phrase) => {
+      // A CONFIGURED form REPLACES the opportunistic probe rather than running beside it, so there is no
+      // budget to keep: `runConfiguredForm` activates exactly the control the author named.
+      if (formState) return Promise.resolve();
+      // COMPUTED ON THE FIRST FIELD, not when this function is built. The share is of what remains when
+      // the sweep BEGINS, and the heading and landmark sweeps run before it — sizing at construction
+      // would hand the activation time those two are about to spend.
+      if (stopsAt === null) {
+        startedAt = Date.now();
+        stopsAt = activationDeadline(deadline);
+      }
+      if (Date.now() > stopsAt) {
+        skipped += 1;
+        return Promise.resolve();
+      }
+      allowed += 1;
+      const at = Date.now();
+      // Timed in a `finally` so a probe that THROWS still charges the budget. A failing activation costs
+      // the same wall clock as a working one, and not charging it would let a page of broken controls
+      // spend the whole capture while the mark reported an untouched budget.
+      return operateControl(phrase, { probeForms, deadline, interaction, task })
+        .finally(() => { spentMs += Date.now() - at; });
+    },
+    markInto: (/** @type {Diag} */ diag) => {
+      if (stopsAt === null) return;
+      diag.mark("activationBudget", activationBudgetMark({
+        budgetMs: stopsAt - startedAt, spentMs, allowed, skipped }));
+    },
+  };
+}
+
+/**
  * `censusBeforeNavigating()` runs FIRST, before any probe below it — see that function's own header for
  * the calendly incident that put it here rather than just above `probeRouteChange`. The opportunistic
  * form probe (inside `runProbeSequence`, below) can navigate the page exactly like `probeRouteChange`
@@ -522,8 +600,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   // form would be submitted in a state the config does not describe and the evidence would be attributed
   // to a state that never existed. The configured pass fills every field first and then activates the
   // control the author NAMED.
-  const onFormField = (/** @type {string} */ phrase) =>
-    (formState ? Promise.resolve() : operateControl(phrase, { probeForms, deadline, interaction, task }));
+  const activation = activationBudgetFor({ formState, probeForms, deadline, interaction, task });
 
   // THE TWO POSITION-DEPENDENT PROBES, SEQUENCED RATHER THAN HARD-CODED — see `probeSequence`.
   //
@@ -536,10 +613,11 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   // never say `confined`. That is temporal coupling between two probes that are supposed to be independent
   // observations, and making it visible is the point of the option.
   const { runSweep, runFocus, results } = probePasses({
-    structure, interaction, observed, onFormField, probeForms, probeTables, probeFocus,
+    structure, interaction, observed, onFormField: activation.onFormField, probeForms, probeTables, probeFocus,
     probeDialog, probeArrows, probeTyping, probeFocusReveal, probeFocusContext: probeFocusContext_, deadline, diag, trips,
   });
   await runProbeSequence({ probeOrder, diag, runSweep, runFocus });
+  activation.markInto(diag);
   // AFTER the sweep, because the sweep is what establishes where the fields are and reads them in browse
   // mode — and because filling changes the page, so a sweep afterwards would describe a document the
   // author's values had already altered.

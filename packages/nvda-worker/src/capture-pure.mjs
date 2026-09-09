@@ -796,6 +796,98 @@ export function readThroughDeadline(captureDeadline, now = Date.now()) {
   return captureDeadline - reserve;
 }
 
+/**
+ * THE SHARE OF WHAT REMAINS THAT THE PER-FIELD ACTIVATION MAY SPEND — #677 part 2.
+ *
+ * `sweepEveryStructuralType` passes `onItem: onFormField` for the `formField` sweep and for no other, and
+ * `onFormField` ACTIVATES each control, presses Escape and waits for speech to settle. Measured across
+ * three pages: every other sweep type costs 108-210 ms per round trip; `formField` costs 385 ms at 4
+ * fields, 1,233 at 18, and **1,478 at 100**. It is third of eight sweeps, and the deadline is shared
+ * first-come-first-served, so on a form-heavy page it takes everything and the five sweeps after it never
+ * run at all.
+ *
+ * Measured on `runs/witness/2026-09-09T08-20-19-020Z-www-ikea-com.json`, 471 seconds:
+ *
+ *     formField  100 found  322280 ms  218 trips   prevStop=deadline nextStop=deadline
+ *     graphic      0 found       0 ms    2 trips   deadline
+ *     link         0 found       0 ms    2 trips   deadline
+ *     list         0 found       0 ms    2 trips   deadline
+ *     frame        0 found       0 ms    2 trips   deadline
+ *     postSubmit   0 found       0 ms    2 trips   deadline
+ *
+ * **Two structural types out of eight**, and `postSubmit` is where 3.3.1 and 4.1.3 live — the criteria
+ * this tool uniquely covers were the ones that starved, which is the same ordering accident
+ * `POST_READ_RESERVE_MS` above was written for, one layer in.
+ *
+ * ONE NUMBER, NOT TWO. An absolute ceiling beside this share would be a second knob with no second
+ * measurement behind it; a share is answerable from the one thing actually known — that five sweeps and a
+ * post-submit rescan run after this one and must not be starvable by it. Half is the claim: **the
+ * activation may take at most half of what is left when its sweep begins.** On the IKEA capture that
+ * stops the activation at roughly 60 of 100 fields and hands the remaining sweeps ~175 s, where today
+ * they get none. If the fleet measurement says half is wrong, this is the one number that moves.
+ *
+ * A BUDGET IS A CEILING, NOT A COST — the sentence `DEFAULT_BUDGET_MS` had to learn. A page whose fields
+ * are all activated in 12 s still takes 12 s. Measured as a PRE-CHECK against the 2,178 corpus captures
+ * in this checkout (a copy, and its freshness is not this session's to vouch for): the most expensive
+ * `formField` sweep cost **12.1 s** and **none** stopped on `deadline`. So this cannot bind on a
+ * generated corpus page, and no cached capture's evidence moves — which is the claim a protocol bump
+ * would otherwise have to be paid for, and it is `orchestrator`'s to confirm against the authoritative
+ * corpus rather than mine to report.
+ */
+export const ACTIVATION_SHARE_OF_REMAINING = 0.5;
+
+/**
+ * When the per-field activation must stop, leaving the rest for the sweeps that follow it.
+ *
+ * The same shape as `readThroughDeadline` and for the same reason: what runs last is what starves, so the
+ * phase that runs first yields a share rather than being trusted to finish. Scales down rather than going
+ * negative — with nothing left, this returns the capture deadline and the very next check skips.
+ *
+ * Returns a DEADLINE rather than a duration, so the caller compares clocks and never accumulates: a
+ * spent-time counter would have to be threaded through `collectPhrase` and `sweepInDirection`, and every
+ * path that forgot to add to it would silently grant an unlimited budget.
+ *
+ * @param {number} captureDeadline @param {number} [now]
+ */
+export function activationDeadline(captureDeadline, now = Date.now()) {
+  const remaining = captureDeadline - now;
+  if (remaining <= 0) return captureDeadline;
+  return now + Math.floor(remaining * ACTIVATION_SHARE_OF_REMAINING);
+}
+
+/**
+ * What the capture RECORDS about its activation budget. The worker records; the host decides.
+ *
+ * Deliberately NOT an `examined | partial | not-examined` verdict, though that is exactly the vocabulary
+ * this feeds: that vocabulary lives in `packages/evidence/src/conformance.ts` (`examinationState`), the
+ * worker ships plain `.mjs` with no build step (ADR 0031) and must not import it, and a second spelling
+ * here is the fact-stated-twice shape this repo pays most for. So this carries the raw counts and the
+ * evidence side derives the state from them — ADR 0021's "captures record, rules decide", applied to a
+ * budget.
+ *
+ * `skipped > 0` is the whole point: it is the difference between "every control was activated and none
+ * announced anything" and "we ran out of time and stopped asking", which are the same `formChanges: []`
+ * in the evidence and need opposite responses.
+ *
+ * `allowed`, NOT `activated`, and the distinction is load-bearing. The budget decides whether a field is
+ * OFFERED to `operateControl`; `chooseProbe` then decides whether that field gets a probe at all, and
+ * declines most of them. Counting these as activations would report 100 activated controls on a page that
+ * activated eleven. This mark is about the BUDGET's decisions; what the probe chose is `formProbe`'s and
+ * `stateChanges`' business.
+ *
+ * @param {{ budgetMs: number, spentMs: number, allowed: number, skipped: number }} counts
+ */
+export function activationBudgetMark({ budgetMs, spentMs, allowed, skipped }) {
+  return {
+    budgetMs, spentMs, allowed, skipped,
+    // NAMED, not inferred from `skipped > 0` at each reader. A budget that ran out having activated
+    // everything there was is not exhausted -- there was simply nothing left to skip.
+    exhausted: skipped > 0,
+    // The denominator, so a reader never has to add the two and hope they are the whole population.
+    fields: allowed + skipped,
+  };
+}
+
 /** Is the ladder ordered? Exported so a test can assert it rather than a comment claiming it. */
 /**
  * @param {{ budgetMs: number, hardTimeoutMs: number, hostTimeoutMs: number, startupMs: number }} ladder

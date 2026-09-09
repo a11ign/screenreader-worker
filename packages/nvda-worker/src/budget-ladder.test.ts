@@ -26,6 +26,7 @@ import {
   DEFAULT_BUDGET_MS,
   POST_READ_RESERVE_MS,
   readThroughDeadline,
+  activationDeadline,
   WORST_CASE_STARTUP_MS,
 } from "./capture-pure.mjs";
 import { sourceFiles } from "../../worker-fleet/src/source-walk.mjs";
@@ -342,3 +343,32 @@ function resolveMs(src: string, argument: string): number | null {
   const literal = declared[1].replace(/_/g, "").match(/(\d+)\s*\)?\s*$/);
   return literal ? Number(literal[1]) : null;
 }
+
+/**
+ * THE ACTIVATION RUNG — #677 part 2. The ladder above protects what runs LAST from what runs FIRST; this
+ * is the same protection one level in, inside the structural phase.
+ */
+test("the activation leaves at least as much as it takes, for the sweeps that follow it", () => {
+  // `POST_READ_RESERVE_MS`'s own comment says the reserve "cannot guarantee a huge formField sweep AND the
+  // tail, so it is sized for the tail". This is the other end of that trade: bound the formField sweep so
+  // the tail is not starvable by it, rather than reserving more for a tail that cannot be protected.
+  const now = 1_000_000;
+  const captureDeadline = now + DEFAULT_BUDGET_MS;
+  const stops = activationDeadline(captureDeadline, now);
+  assert.ok(stops > now, "the activation gets a budget, not zero");
+  assert.ok(captureDeadline - stops >= stops - now,
+    "graphic, link, list, frame and postSubmit must keep at least what the activation is granted — on the "
+    + "IKEA capture that starved them, they got none");
+});
+
+test("the activation rung sits INSIDE the read-through's reserve, not beside it", () => {
+  // Ordering, asserted rather than assumed, exactly as `budgetLadderIsSound` does for the outer three.
+  // The activation runs after the read-through, so its deadline must fall between the read-through's and
+  // the capture's — a rung outside the ladder is a number that looks bounded and is not.
+  const now = 1_000_000;
+  const captureDeadline = now + DEFAULT_BUDGET_MS;
+  const readStops = readThroughDeadline(captureDeadline, now);
+  const activationStops = activationDeadline(captureDeadline, readStops);
+  assert.ok(readStops < activationStops && activationStops < captureDeadline,
+    `read-through ${readStops - now} < activation ${activationStops - now} < capture ${DEFAULT_BUDGET_MS}`);
+});
