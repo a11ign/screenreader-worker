@@ -1,0 +1,233 @@
+{
+  "note": "Lifted verbatim from runs/witness. focusOrder mark + the pageState fingerprint taken immediately before the walk + interaction.focusOrder.",
+  "captures": [
+    {
+      "source": "runs/witness/2026-09-09T11-28-26-617Z-www-theregister-com.json",
+      "requestedUrl": "https://www.theregister.com/",
+      "focusOrder": {
+        "event": "focusOrder",
+        "atMs": 106861,
+        "stops": 9,
+        "cycled": true,
+        "stalled": false,
+        "truncated": false,
+        "startedFrom": "Close, button, focused",
+        "focusReset": {
+          "applied": true,
+          "logSuppressed": true,
+          "why": "a control held focus from an earlier probe and was blurred; the resulting focusout was kept out of the focus-event log"
+        }
+      },
+      "pageStateBeforeFocus": {
+        "beforeProbe": "focus",
+        "targetUrl": "https://www.theregister.com/"
+      },
+      "focusConfinement": {
+        "ring": 6,
+        "controlsOnPage": 5,
+        "confined": false
+      },
+      "stops": [
+        "The Register asks for your consent to use your personal data to:, dialog, focused",
+        "Close, button, focused",
+        "Learn more, button, focused",
+        "List of partners., button, focused",
+        "Consent, button, focused",
+        "Manage options, button, focused",
+        "The Register asks for your consent to use your personal data to:, dialog, focused",
+        "Close, button, focused",
+        "Learn more, button, focused"
+      ]
+    },
+    {
+      "source": "runs/witness/2026-09-09T12-49-29-716Z-calendly-com.json",
+      "requestedUrl": "https://calendly.com/",
+      "focusOrder": {
+        "event": "focusOrder",
+        "atMs": 237271,
+        "stops": 14,
+        "cycled": true,
+        "stalled": false,
+        "truncated": false,
+        "startedFrom": "Change language English (United States), combo box, English (United States), focused, collapsed, opens list",
+        "focusReset": {
+          "applied": false,
+          "logSuppressed": false,
+          "why": "reset attempted against an unconfirmed document target (targetMatch=fallback, candidates=1)"
+        }
+      },
+      "pageStateBeforeFocus": {
+        "beforeProbe": "focus",
+        "targetUrl": "https://accounts.google.com/v3/signin/identifier?opparams=%253F&dsh=S689455724%3A1788958051360340&access_type=online&client_id=797340822162.apps.googleusercontent.com&code_challenge=kYFsB0cSdRVdF-f7QYubZjIpX-2pGnfaWyQ5z-HtWe4&code_challenge_method=S256&include_granted_scopes=true&o2v=1&prompt=select_account&redirect_uri=https%3A%2F%2Fcalendly.com%2Fusers%2Fauth%2Fgoogle_oauth2%2Fcallback&response_type=code&scope=email+profile+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar&service=lso&state=722afdab8cb7177a7b5c924078986b5bb088394a7adfc08c&flowName=GeneralOAuthFlow&continue=https%3A%2F%2Faccounts.google.com%2Fsignin%2Foauth%2Fv3%2Fconsent%3Fauthuser%3Dunknown%26part%3DAJi8hAP-5gvYvfSrlgOwCJ3w9qerxo8I3y9AzUJFhXXbtMOcS-QCtH1BBXZP-pNbGgeW4Mr0oMSH0LIm59APiEDeZxum-Ln9rYbmuJOGJj6khNTmxDu4luPXnwUwTVZM3C4fU4AhGJtVXnma1gzqQ0VzvnU_oznSiVKOL3kh-qZ7NztHigN81ZOso5tbZwlb70UMXMn50_dCKNsHUsYoOp9PyjPObB-xTFSWiH-457zVt_7yehkJwXvSXj2_hKXecWWrbV8LUxkmplwmOsKOdEPb1a-6sCam6HjUmPxFPGW1hsycwPkXfFIlE3xFRvlAqVgFQtIObHO9UMdf0oa5JsdtN5cveFddkgYCLFNnbf41hdS9VcgPI7xwQ2Us5XjOVhL9zSFu8wQx2p6U_YzYQYawZB_mZyZ7UUzCZv1HLh6JhPCI3sk8Lng%26flowName%3DGeneralOAuthFlow%26as%3DS689455724%253A1788958051360340%26client_id%3D797340822162.apps.googleusercontent.com%26requestPath%3D%252Fsignin%252Foauth%252Fv3%252Fconsent%23&app_domain=https%3A%2F%2Fcalendly.com&rart=ANgoxceU_fltJHzPCbMNYkf53J7Rj4Of-kWGxK_2WmlOYeEq18o8F2cwtAoQHMOvjWQMxi2b9LKNELWh3UzzSdW_Vb1buLb0mzj8JrNRbwpvGbju8PGZTsE"
+      },
+      "focusConfinement": {
+        "ring": 11,
+        "controlsOnPage": 18,
+        "confined": true
+      },
+      "stops": [
+        "Calendly, button, focused",
+        "Email or phone, edit, focused, blank",
+        "Forgot email?, button, focused",
+        "Privacy Policy, link, focused, visited, linked",
+        "Terms of Service, link, focused, linked",
+        "Next, button, focused",
+        "Create account, button, focused",
+        "Change language English (United States), combo box, English (United States), focused, collapsed, opens list",
+        "Open Google Account Help Center (external, opens in a new window), link, focused, linked",
+        "Privacy Policy (external, opens in a new window), link, focused, linked",
+        "Google Terms of Service (external, opens in a new window), link, focused, linked",
+        "Calendly, button, focused",
+        "Email or phone, edit, focused, blank",
+        "Forgot email?, button, focused"
+      ]
+    },
+    {
+      "source": "runs/witness/2026-09-09T12-59-26-678Z-calendly-com.json",
+      "requestedUrl": "https://calendly.com/",
+      "focusOrder": {
+        "event": "focusOrder",
+        "atMs": 423544,
+        "stops": 90,
+        "cycled": false,
+        "stalled": false,
+        "truncated": true,
+        "startedFrom": "Get a demo, button, focused",
+        "focusReset": {
+          "applied": false,
+          "logSuppressed": false,
+          "why": "reset attempted against an unconfirmed document target (targetMatch=fallback, candidates=2)"
+        }
+      },
+      "pageStateBeforeFocus": {
+        "beforeProbe": "focus",
+        "targetUrl": "https://calendly.com/scheduling"
+      },
+      "focusConfinement": {
+        "ring": 90,
+        "controlsOnPage": 46,
+        "confined": false
+      },
+      "stops": [
+        "Introducing the new Calendly, built to handle all of the work around meetings., link, focused, linked",
+        "Dismiss announcement, button, focused",
+        "Calendly, link, focused, linked",
+        "Log In, button, focused",
+        "Get started for free, button, focused",
+        "Open menu, button, focused, collapsed",
+        "Start for free, button, focused",
+        "Get a demo, button, focused",
+        "Book meetings wherever people find you Make it easy for people to schedule from your website, Linked In, email, and beyond without extra steps or manual coordination., button, focused, expanded",
+        "Stay in control of your schedule Only get booked when you want to be. Connect multiple calendars and fine-tune your availability with meeting buffers, custom schedules, and daily limits., button, focused, expanded",
+        "Easily handle every meeting scenario Whether you’re booking one-on-one appointments, multi-host sales demos, or group classes, Calendly offers pre-built event types that make scheduling easy for everyone., button, focused, expanded",
+        "Scale scheduling across your team Standardize scheduling with team templates, admin controls, routing forms, meeting distribution tools, and integrations that fold scheduling into existing workflows., button, focused, expanded",
+        "100 plus integrations Add Calendly scheduling to your preferred tools, from CR Ms and marketing forms to AI workflows and more., button, focused, expanded, off screen",
+        "Mobile app Manage scheduling on the go and never miss an appointment or meeting., button, focused, expanded",
+        "Browser extension Get one-click access to Calendly anywhere on the web without switching tabs., button, focused, expanded",
+        "Website embeds and lead routing forms Qualify, route, and schedule meetings instantly from your website., button, focused, expanded",
+        "Security workflows Trust Calendly to keep your data secure with enterprise-grade security integrations and privacy protections., button, focused, expanded",
+        "50 percent more discovery calls booked When it's easy to say yes, people do. Calendly removes the hesitation. Andrea Bjorkman CEO and Co-Founder at Find Your Fizz, section, focused",
+        "Use case 2, tab, focused, selected, 2 of 5",
+        "What is automated scheduling?, button, focused, expanded",
+        "book appointments, link, focused, linked",
+        "What is online scheduling software used for?, button, focused, expanded",
+        "meetings, link, focused, linked",
+        "Why use a scheduling tool?, button, focused, expanded",
+        "Why choose Calendly?, button, focused, expanded",
+        "How does using scheduling software help my business?, button, focused, expanded",
+        "team meeting, link, focused, linked",
+        "Calendly Scheduling The number 1 scheduling tool trusted by over 20M professionals around the world., link, focused, visited, linked, same page",
+        "Calendly Callie Beta A 24 slash 7 AI assistant that works right from your inbox., link, focused, linked",
+        "Calendly Notetaker A meeting notetaker that turns every meeting into a recap with clear next steps., link, focused, linked",
+        "Calendly Contacts Contact management tools that bring all the details you need into one place., link, focused, linked",
+        "Calendly Payments Built-in payment tools that make it easy to sell services and get paid., link, focused, linked",
+        "Scheduling, link, focused, visited, linked, off screen, same page, current page",
+        "AI assistant, link, focused, linked",
+        "Notetaker, link, focused, linked",
+        "Contacts, link, focused, linked",
+        "Payments, link, focused, linked",
+        "Security, link, focused, linked",
+        "Customizable availability, link, focused, linked",
+        "Event types, link, focused, linked",
+        "Meeting polls, link, focused, linked",
+        "Reminders and follow up, link, focused, linked",
+        "Meeting routing, link, focused, linked",
+        "Analytics, link, focused, linked",
+        "Admin management, link, focused, linked",
+        "Google ecosystem, link, focused, linked",
+        "Microsoft ecosystem, link, focused, linked",
+        "Video conferencing, link, focused, linked",
+        "Payment processors, link, focused, linked",
+        "Sales and CRM, link, focused, linked",
+        "Recruiting and ATS, link, focused, linked",
+        "All integrations, link, focused, linked",
+        "For individuals, link, focused, linked",
+        "For teams, link, focused, linked",
+        "For large companies, link, focused, linked",
+        "Create your account, link, focused, visited, linked",
+        "Pricing and plans, link, focused, linked",
+        "Product tour, link, focused, linked",
+        "What's new, link, focused, linked",
+        "Getting started guide, link, focused, linked",
+        "Calendly community, link, focused, linked",
+        "Developer tools, link, focused, linked",
+        "Help center, link, focused, linked",
+        "Learning hub, link, focused, linked",
+        "Contact support, link, focused, linked",
+        "Contact sales, link, focused, linked",
+        "About us, link, focused, linked",
+        "Careers We’re hiring!, link, focused, linked",
+        "Become a partner, link, focused, linked",
+        "Blog, link, focused, linked",
+        "Apple, link, focused, linked",
+        "Google Play, link, focused, linked",
+        "Microsoft Edge, link, focused, linked",
+        "Safari, link, focused, linked",
+        "Chrome, link, focused, linked",
+        "Firefox, link, focused, linked",
+        "Outlook, link, focused, linked",
+        "Link to Calendly X account, link, focused, linked",
+        "Link to Calendly Instagram account, link, focused, linked",
+        "Link to Calendly Facebook account, link, focused, linked",
+        "Link to Calendly Linked In account, link, focused, linked",
+        "Link to Calendly You Tube account, link, focused, linked",
+        "English, menu button, focused, collapsed, opens list",
+        "Privacy Policy, link, focused, linked",
+        "Legal, link, focused, linked",
+        "Status, link, focused, linked",
+        "Cookie Settings, toggle button, focused, not pressed",
+        "Your Privacy Choices, toggle button, focused, not pressed",
+        "privacy notice, link, focused, linked",
+        "Cookie settings, Opens the preference center dialog, button, focused"
+      ]
+    },
+    {
+      "source": "runs/witness/2026-09-09T14-31-43-041Z-www-ikea-com.json",
+      "requestedUrl": "https://www.ikea.com/de/de/",
+      "focusOrder": {
+        "event": "focusOrder",
+        "atMs": 452761,
+        "stops": 0,
+        "cycled": false,
+        "stalled": false,
+        "truncated": false,
+        "startedFrom": "Option: ENHET, Spiegelschrank mit Türen, weiß, 80x 17x 75 cm, radio button, focused, checked, off screen, 1 of 2",
+        "focusReset": {
+          "applied": true,
+          "logSuppressed": true,
+          "why": "a control held focus from an earlier probe and was blurred; the resulting focusout was kept out of the focus-event log"
+        }
+      },
+      "pageStateBeforeFocus": {
+        "beforeProbe": "focus",
+        "targetUrl": "https://www.ikea.com/de/de/"
+      },
+      "focusConfinement": {
+        "ring": 0,
+        "controlsOnPage": 265,
+        "confined": false
+      },
+      "stops": []
+    }
+  ]
+}

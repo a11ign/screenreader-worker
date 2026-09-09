@@ -1165,6 +1165,37 @@ export function focusOrderCycled(stops) {
 }
 
 /**
+ * WHY THE TAB WALK ENDED — #863. Five exits, and the mark could name two of them.
+ *
+ * `cycled`, `stalled` and `truncated` are three booleans over four loop exits, so two different endings
+ * arrive as the same record:
+ *
+ *   `cycled`    the ring returned to its start -- a COMPLETE observation of the tab ring
+ *   `stalled`   the same control announced `TRAP_REPEATS` times -- Tab stopped moving
+ *   `silent`    a Tab produced NO announcement, so the walk could not continue
+ *   `deadline`  the budget expired
+ *   `cap`       `MAX_TAB_STOPS` presses without any of the above
+ *
+ * **`silent` at zero stops is the one that was unreadable.** All five IKEA captures report
+ * `stops: 0, cycled: false, stalled: false, truncated: false` on a page whose own `focusConfinement`
+ * mark says `controlsOnPage: 265`. The first Tab after `resetFocusToDocumentStart` announced nothing and
+ * the loop broke at `if (!phrase) break`. Nothing on the record separates that from a page with no tab
+ * stops at all — the absence of a measurement arriving as the measurement zero, which is #677's rule one
+ * probe over.
+ *
+ * @param {"cycled"|"stalled"|"silent"|"deadline"|"cap"} stop
+ * @param {number} stopCount
+ */
+export function focusWalkTruncated(stop, stopCount) {
+  // DERIVED, so `truncated` cannot drift from the reason it is derived from. This reproduces the
+  // expression it replaces EXACTLY -- `!cycled && repeats < TRAP_REPEATS && stops.length > 0` -- and a
+  // test drives both formulas over every combination to pin that. `truncated` deliberately keeps its old
+  // meaning: `sweepOutcomes` turns it into the `cantTell` that stops 2.1.2 claiming a pass it did not
+  // earn, and narrowing it here would quietly convert those into assertions.
+  return stopCount > 0 && stop !== "cycled" && stop !== "stalled";
+}
+
+/**
  * The census roles a reveal can show up in, and the growth between two reads.
  *
  * NAMED ONCE. `focusRevealVerdict` had this list twice in its own body -- once for "did anything appear"

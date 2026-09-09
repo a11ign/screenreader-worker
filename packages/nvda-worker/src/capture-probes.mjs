@@ -21,7 +21,7 @@
 import { nvda } from "@guidepup/guidepup";
 import {
   crossCheckStructure, dedupeKey, elementsListRowName, MIN_CONTROL_NAME_LEN, probeKindFor,
-  sweepStepFromSpeech, focusOrderCycled, sweepObservation, notObserved, recordWhatWasAsked,
+  sweepStepFromSpeech, focusOrderCycled, focusWalkTruncated, sweepObservation, notObserved, recordWhatWasAsked,
   focusRevealVerdict, focusEventVerdict, censusGrowth, focusResetOutcome, titleSourceVerdict,
   activationDeadline, activationBudgetMark,
 } from "./capture-pure.mjs";
@@ -1750,22 +1750,37 @@ async function probeFocusOrder({ deadline, diag, controlsOnPage }) {
   // to detect a page ACTUALLY doing.
   const startedFrom = await reportFocusedControl();
   const focusReset = focusResetOutcome(await resetFocusToDocumentStart());
+  // WHICH DOCUMENT IS ABOUT TO BE WALKED -- #863, and it is the whole finding. Four of eight calendly
+  // captures walked `accounts.google.com/v3/signin/identifier`, because the form probe activates
+  // "Continue with Google" and this probe runs afterwards. Their walks read `cycled` at 14 stops; the four
+  // that stayed on calendly read `truncated` at 69-90. Same requested URL, same build, ten minutes apart,
+  // and the split is 4/4 on which document was under the walk rather than anything about the probe.
+  //
+  // The census cannot say so: #699 moved it to t~0, so it correctly reports `targetMatch: matched` for
+  // calendly while this walk is on Google. Every mark is truthful about its own moment. `pageState(focus)`
+  // (#758) already fingerprints this, but it is a SEPARATE mark joined to this one only by ordering --
+  // and 2.1.1, 2.1.2, 2.4.1, 2.4.3 and 2.1.4 all read `focusOrder` as evidence about the requested page.
+  const walkedUrl = await currentPageUrl().catch(() => null);
   const stops = [];
   const budget = Math.min(deadline, Date.now() + FOCUS_PROBE_BUDGET_MS);
   let repeats = 0;
   let cycled = false;
+  // WHY THE WALK ENDED. Assigned at each exit rather than inferred afterwards: `cap` is the only ending
+  // the loop reaches by falling out, so it is the initial value and every `break` overwrites it.
+  let stop = /** @type {"cycled"|"stalled"|"silent"|"deadline"|"cap"} */ ("cap");
   for (let i = 0; i < MAX_TAB_STOPS; i += 1) {
-    if (Date.now() > budget) break;
+    if (Date.now() > budget) { stop = "deadline"; break; }
     await withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, "tab").catch(() => undefined);
     const phrase = await reportFocusedControl();
-    if (!phrase) break;
+    // NOT "the page has no tab stops". The walk could not continue, which is a fact about the read.
+    if (!phrase) { stop = "silent"; break; }
     // The same control twice running means Tab stopped moving: either the end of the document
     // or a focus trap. Which one it is, is the judge's call -- record it, do not decide it.
     if (stops.length && phrase === stops[stops.length - 1]) repeats += 1;
     else repeats = 0;
     stops.push(phrase);
-    if (repeats >= TRAP_REPEATS) break;
-    if (focusOrderCycled(stops)) { cycled = true; break; }
+    if (repeats >= TRAP_REPEATS) { stop = "stalled"; break; }
+    if (focusOrderCycled(stops)) { cycled = true; stop = "cycled"; break; }
   }
   // Never a silent cap: a truncated focus order looks identical to a short one.
   //
@@ -1777,7 +1792,11 @@ async function probeFocusOrder({ deadline, diag, controlsOnPage }) {
     stops: stops.length,
     cycled,
     stalled: repeats >= TRAP_REPEATS,
-    truncated: !cycled && repeats < TRAP_REPEATS && stops.length > 0,
+    // DERIVED from `stop` rather than recomputed, so the two cannot disagree. `focusWalkTruncated`
+    // reproduces the expression this replaces exactly, and a test drives both over every combination.
+    truncated: focusWalkTruncated(stop, stops.length),
+    stop,
+    walkedUrl,
     startedFrom, focusReset,
   });
   markFocusConfinement({ stops, cycled, controlsOnPage, diag });
