@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { prunablePaths, reportBrowserPolicyDrift } from "./browser-profile.mjs";
 
-const ROOT = "C:\\Users\\witness\\AppData\\Local\\a11ign\\edge-profile";
+const ROOT = "C:\\Users\\witness\\AppData\\Local\\a11y-witness\\edge-profile";
 const everythingExists = () => true;
 
 test("a healthy profile keeps its caches but still loses BrowserMetrics", () => {
