@@ -28,6 +28,7 @@ import {
   landedVerdict,
   pageServedRefusal,
   LANDED_BUDGET_MS,
+  speechQuietStep,
 } from "./capture-pure.mjs";
 import {
   browserAlive, currentPageUrl, launchReusable, navigateExisting, navigationOutcome, reusableArgs,
@@ -1488,8 +1489,9 @@ const SPEECH_QUIET_BUDGET_MS = 5_000;
 /**
  * @param {string} label
  * @param {number} [budgetMs]
- * @returns {Promise<{quiet: boolean, waitedMs: number, reads: number}>} `quiet: false` means the budget
- *   ran out with NVDA still talking -- recorded, never silently treated as settled.
+ * @returns {Promise<{quiet: boolean, waitedMs: number, reads: number, readFailures: number}>}
+ *   `quiet: false` means the budget ran out with NVDA still talking, OR the channel could not be read
+ *   for the whole window -- both recorded, never silently treated as settled.
  */
 export async function waitForSpeechQuiet(label, budgetMs = SPEECH_QUIET_BUDGET_MS) {
   const startedAt = Date.now();
@@ -1497,17 +1499,26 @@ export async function waitForSpeechQuiet(label, budgetMs = SPEECH_QUIET_BUDGET_M
   let length = -1;
   let lastChange = startedAt;
   let reads = 0;
+  let readFailures = 0;
   while (Date.now() < deadline) {
-    const now = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label).catch(() => [])) || []).length;
-    reads += 1;
-    if (now !== length) {
-      length = now;
-      lastChange = Date.now();
-    } else if (Date.now() - lastChange >= SPEECH_QUIET_WINDOW_MS) {
-      return { quiet: true, waitedMs: Date.now() - startedAt, reads };
+    // #635: a FAILED read is not silence -- see `speechQuietStep`'s own header for why folding it into
+    // `length` via a bare `.catch(() => [])` (this function's original shape) is the "a dead speech
+    // channel looks like a healthy silent NVDA" defect docs/adr/0034 exists to eliminate.
+    let readOk = true;
+    let now = length;
+    try {
+      now = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label)).length;
+    } catch {
+      readOk = false;
+      readFailures += 1;
     }
+    reads += 1;
+    const step = speechQuietStep({ readOk, now, length, lastChange, at: Date.now(), quietWindowMs: SPEECH_QUIET_WINDOW_MS });
+    length = step.length;
+    lastChange = step.lastChange;
+    if (step.quiet) return { quiet: true, waitedMs: Date.now() - startedAt, reads, readFailures };
   }
-  return { quiet: false, waitedMs: Date.now() - startedAt, reads };
+  return { quiet: false, waitedMs: Date.now() - startedAt, reads, readFailures };
 }
 
 // Return NVDA to a known starting point. Per the NVDA user guide: Escape
