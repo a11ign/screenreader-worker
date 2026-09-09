@@ -941,6 +941,23 @@ const BASELINE_QUIET_BUDGET_MS = 20_000;
  * @param {Omit<SweepContext, "out" | "seenKeys">} ctx
  */
 async function collectByType(commands, ctx) {
+  // WHICH DOCUMENT IS THIS SWEEP ABOUT TO WALK? — #758.
+  //
+  // Two fingerprints per capture (one before each probe) bracket EIGHT sweeps, so a capture that
+  // navigates mid-run can be seen to have moved and not to have moved anywhere in particular. Measured on
+  // calendly: `pageState(sweep)` said `calendly.com/` and `pageState(focus)` said
+  // `accounts.google.com/v3/signin/identifier`, with six sweeps in between and nothing saying which of
+  // them walked which page.
+  //
+  // HERE, not at the call sites, and that is the whole reason it is one line: `sweepEveryStructuralType`,
+  // `sweepExtraTypes` and `rescanFormFieldsAfterSubmit` all reach the page through this function, so one
+  // mark covers eight sweeps and there is no second place to forget. A remedy applied at one call site
+  // when the behaviour reaches several is this repository's most expensive recurring shape.
+  //
+  // `sweep:<label>` rather than a new mark type: `probeStates` already groups `pageState` by
+  // `beforeProbe` and compares them with `FINGERPRINT_KEYS`, so this answers per sweep with no new
+  // comparator and no second spelling of the key list.
+  await markPageState(`sweep:${ctx.label}`, ctx.diag);
   /** @type {string[]} */
   const out = [];
   /** @type {Set<string>} */
@@ -1031,10 +1048,16 @@ const BROWSE_MODE_REMEDIES = [
  * @param {Diag} diag
  */
 async function markPageState(beforeProbe, diag) {
+  const startedAt = Date.now();
   const dom = await domCensus().catch(() => null);
   // Marked even when NULL. "The page was not counted" and "the page has none of these" must never be the
   // same silence — the rule that cost this project a whole corpus.
-  diag.mark("pageState", { beforeProbe, ...(dom ?? { error: "not counted" }) });
+  //
+  // `tookMs` because #758 adds one of these per SWEEP, and this fingerprint's own header claims it is
+  // cheap. A claim in a comment cannot be checked; a number on the mark can, from the next capture,
+  // without a benchmark. `sweep` is already the largest phase of a real page (#397) and a fingerprint
+  // that made it larger would be the next thing worth a row.
+  diag.mark("pageState", { beforeProbe, tookMs: Date.now() - startedAt, ...(dom ?? { error: "not counted" }) });
 }
 
 /**
