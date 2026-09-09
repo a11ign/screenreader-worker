@@ -941,6 +941,26 @@ function respondWithStoredResult(/** @type {any} */ res, /** @type {any} */ id) 
  * Deliberately NOT part of `/diagnostics`, which walks the Edge profile and shells out to `tasklist` — that
  * endpoint is expensive enough to be unusable on a loaded guest, which is exactly when you need this. Reading
  * an array that is already in memory cannot hang, so this answers whenever the event loop turns at all.
+ *
+ * #426: `phases` USED TO STRIP EVERY MARK DOWN TO `{event, atMs}`, discarding whatever `diag.mark(event,
+ * detail)` recorded alongside it -- and that data was never actually missing, only thrown away here.
+ * `capture-core.mjs`'s own `mark` already does `entries.push({ event, atMs, ...info })`, so a real
+ * capture's `structureCensus` mark (fired before the sweep can be trapped by anything) has always carried
+ * the full census -- `{ event: "structureCensus", atMs: 1234, landmark: 3, heading: 0, ... }` -- sitting in
+ * memory and unreadable from outside the process. This is the same shape as `sweepLog` recording 604
+ * crashes nothing read, or `structureCensus` being stripped at export so no rule could fire on it: a
+ * diagnostic that observed something and could not report it.
+ *
+ * ECHOES WHAT WAS OBSERVED, NEVER A VERDICT COMPUTED FROM IT. The route reports a mark exactly as
+ * recorded; deciding what a heading count MEANS (an early "contained" heuristic, #426's own next step)
+ * belongs where it can be read and argued with, not baked into what this endpoint returns. A future
+ * threshold change should never need a wire-format change here.
+ *
+ * "NOT RECORDED" STAYS DISTINCT FROM "RECORDED AS ZERO" for free, by construction: a mark only exists in
+ * `phases` once `diag.mark` has actually fired, so a capture whose `structureCensus` has not run yet
+ * simply has no such entry -- `census.heading === 0` (the AX tree genuinely confirming no headings) and
+ * "the probe has not reached that point" read as different things here, which is exactly the distinction
+ * `addMissingHeadings` needed and did not have for months (CLAUDE.md's own record of that incident).
  */
 function respondWithProgress(/** @type {any} */ res) {
   if (!inFlight) return send(res, 200, { busy, capturing: null });
@@ -955,7 +975,9 @@ function respondWithProgress(/** @type {any} */ res) {
     // a phase that has been current for four minutes is the one that is hanging.
     lastPhase: last && last.event,
     lastPhaseAtMs: last && last.atMs,
-    phases: marks.map((/** @type {any} */ m) => ({ event: m.event, atMs: m.atMs })),
+    // Spread into a fresh object per mark, never the SAME reference `inFlight.marks` holds -- a caller
+    // must not be able to mutate this worker's own in-memory diagnostic state through the HTTP response.
+    phases: marks.map((/** @type {any} */ m) => ({ ...m })),
   });
 }
 
