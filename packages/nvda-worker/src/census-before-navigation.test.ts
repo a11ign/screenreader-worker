@@ -1,8 +1,9 @@
 /**
- * The completeness census must be taken BEFORE `probeRouteChange`, the one probe in `navigateByStructure`
- * that can leave the page under measurement.
+ * The completeness census must be taken before ANY probe in `navigateByStructure` that can leave the page
+ * under measurement -- not merely before `probeRouteChange`, which is the ONE probe this guard used to
+ * name and the reasoning that named it turned out to be wrong.
  *
- * Found 2026-09-06: the three `pageTarget()`-dependent censuses (`structuralCensus`/`domCensus`/
+ * First found 2026-09-06: the three `pageTarget()`-dependent censuses (`structuralCensus`/`domCensus`/
  * `mediaCensus`, taken together by `censusBeforeNavigating`) used to be called from the CALLER
  * (`navigateByStructureThenAudit`), after `navigateByStructure` had already returned -- which put them
  * after `probeRouteChange` too. On any real page whose route-change probe followed a real link rather than
@@ -12,13 +13,25 @@
  * cookies, visited, link" -- the exact control `probeRouteChange` activates to test 2.4.2. `known-gaps.md`
  * §40 has the full measurement (20 of 20 real pages sampled, 25 of 2,796 synthetic).
  *
+ * **`probeRouteChange` was never the only probe that can navigate, and #685/#691 is a real capture that
+ * proved it.** The census was moved to run right before it and stayed AFTER `runProbeSequence` (the sweep
+ * and the focus probe) -- so the opportunistic FORM probe, which runs INSIDE the sweep via `onFormField` →
+ * `operateControl`, still ran before the census with nothing guarding it. A real calendly capture's form
+ * probe activated calendly's own "Continue with Google" button, which navigated to
+ * `accounts.google.com`'s sign-in screen; the census (still called after the whole sweep) read THAT page
+ * (`heading:1, link:5`) while NVDA's sweep, moments earlier, had genuinely read calendly's real 44
+ * headings. `structureCrossCheck` computed the mismatch (`sweepEntries:44` against `oracleDistinctNames:1`)
+ * every time and nothing read it until `censusTargetMismatchReason` (`@a11ign/evidence/conformance`,
+ * host-side) did. So the census now runs before `runProbeSequence` too -- before every probe this function
+ * calls, not a named subset of them.
+ *
  * This cannot be tested by driving a real capture -- that needs live NVDA on Windows, which this repo has
  * no local substitute for. What CAN be tested, offline, is the one fact that actually fixes the bug: the
- * source text calls `censusBeforeNavigating()` before it calls `probeRouteChange(`, inside
- * `navigateByStructure`'s own body. A position in a file is normally a convention nobody wrote down
- * (CLAUDE.md's own words, about a different ordering question) -- here it is exactly what decides the
- * defect, because `navigateByStructure` is a single straight-line `async` function with no branching that
- * could reorder these two calls at runtime.
+ * source text calls `censusBeforeNavigating()` before it calls `runProbeSequence(` (and, still, before
+ * `probeRouteChange(`), inside `navigateByStructure`'s own body. A position in a file is normally a
+ * convention nobody wrote down (CLAUDE.md's own words, about a different ordering question) -- here it is
+ * exactly what decides the defect, because `navigateByStructure` is a single straight-line `async`
+ * function with no branching that could reorder these calls at runtime.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -54,6 +67,26 @@ test("censusBeforeNavigating() is called before probeRouteChange( inside navigat
     "censusBeforeNavigating() must be called BEFORE probeRouteChange( -- moving it back reopens the "
     + "defect known-gaps.md §40 describes: the census would again describe whatever page the route-change "
     + "probe navigated to, not the page under test");
+});
+
+test("MUTATION TARGET: censusBeforeNavigating() is called before runProbeSequence( -- #685/#691", () => {
+  // The narrower guarantee above (before `probeRouteChange`) is satisfied by the OLD, insufficient
+  // placement too -- moving the census back to just above `probeRouteChange` (after the sweep) would
+  // still pass that test while reopening exactly the calendly defect: the opportunistic form probe runs
+  // INSIDE `runProbeSequence`, so a census placed after it is still exposed to whatever that probe
+  // navigated to.
+  const body = navigateByStructureBody();
+  const censusCall = body.indexOf("censusBeforeNavigating()");
+  const sweepCall = body.indexOf("runProbeSequence(");
+  assert.ok(censusCall >= 0, "navigateByStructure no longer calls censusBeforeNavigating()");
+  assert.ok(sweepCall >= 0,
+    "navigateByStructure no longer calls runProbeSequence( -- the guard this test protects no longer has "
+    + "anything to protect against");
+  assert.ok(censusCall < sweepCall,
+    "censusBeforeNavigating() must be called BEFORE runProbeSequence( -- the opportunistic form probe "
+    + "that activates controls during the sweep can navigate the page exactly like probeRouteChange, and "
+    + "it runs first. A real calendly capture proved it: the census read accounts.google.com's sign-in "
+    + "screen (heading:1) while the sweep, moments earlier, had genuinely read calendly's own 44 headings");
 });
 
 test("censusBeforeNavigating itself takes all three censuses, so none of the three can be left behind", () => {

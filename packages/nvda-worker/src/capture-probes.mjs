@@ -425,32 +425,50 @@ function probePasses(ctx) {
 }
 
 /**
- * The three `pageTarget()`-dependent censuses, taken TOGETHER, right before the one probe in
- * `navigateByStructure` that can navigate the page away — `probeRouteChange`.
+ * The three `pageTarget()`-dependent censuses, taken TOGETHER, before ANY probe in `navigateByStructure`
+ * that can navigate the page away.
  *
- * Moved here from the CALLER (`navigateByStructureThenAudit`), 2026-09-06, which used to take them AFTER
- * `navigateByStructure` had already returned — which put them after `probeRouteChange` too. On any real
- * page whose route-change probe followed a real link rather than a same-page fragment, the census
- * silently described wherever that link led rather than the page under test: two GOV.UK Design System
- * pages' post-navigation censuses were byte-identical to each other despite differing by 11 headings and
- * 136 links on the real page, both reading the site's own `/cookies` settings page reached by "View
- * cookies, visited, link" — the exact control `probeRouteChange` activates to test 2.4.2. `known-gaps.md`
- * §40. Extracted into its own function so the ordering guarantee is one call this file's own tests can
- * name, rather than a position inside a 90-line function nobody can pin.
+ * **This used to run right before `probeRouteChange` alone — "the one probe below that can leave the page
+ * under measurement" — and that reasoning was wrong, not just incomplete.** A real calendly capture
+ * proved it: the opportunistic FORM probe (`onFormField` → `operateControl`, running INSIDE the sweep,
+ * long before `probeRouteChange` gets a turn) activated calendly's own "Continue with Google" button,
+ * which navigated the browser to `accounts.google.com`'s sign-in screen. The census — still called after
+ * the whole sweep at the time — read THAT page: `heading:1, link:5`, Google's own text in `names`. NVDA's
+ * sweep had already read the real page moments earlier (`structure.headings.length` was 44, identical to
+ * a capture of the same URL where `probeForms` was off and nothing navigated), so the tool held CORRECT
+ * evidence and a WRONG oracle to judge it by — `structureCrossCheck` computed the mismatch
+ * (`sweepEntries: 44` against `oracleDistinctNames: 1`) and it went unread, this repository's own most
+ * recorded shape: a diagnostic that observed something and could not report it. #685, #691.
+ *
+ * So the census now runs before `runProbeSequence` — before the sweep, before the focus probe, before
+ * `probeRouteChange` — because "the one probe that can navigate" was never a fixed set; it is whichever
+ * probes exist, and a future one is exactly as capable as the form probe already proved to be. This is
+ * NOT an evidence change: `structuralCensus`/`domCensus`/`mediaCensus` read the accessibility tree and the
+ * DOM over an already-open DevTools socket, never NVDA, and the page has already been waited for and
+ * settled (`waitForPageToSettle`, `waitForDocument`, both well before `navigateByStructure` is ever
+ * called) — so moving the read earlier changes WHEN a diagnostic snapshot is taken, not what a capture
+ * hears. `CAPTURE_PROTOCOL_VERSION` is untouched.
+ *
+ * Originally moved here from the CALLER (`navigateByStructureThenAudit`), 2026-09-06, which used to take
+ * these AFTER `navigateByStructure` had already returned — after `probeRouteChange` too. On any real page
+ * whose route-change probe followed a real link rather than a same-page fragment, the census silently
+ * described wherever that link led rather than the page under test: two GOV.UK Design System pages'
+ * post-navigation censuses were byte-identical to each other despite differing by 11 headings and 136
+ * links on the real page, both reading the site's own `/cookies` settings page reached by "View cookies,
+ * visited, link" — the exact control `probeRouteChange` activates to test 2.4.2. `known-gaps.md` §40.
+ * Extracted into its own function so the ordering guarantee is one call this file's own tests can name,
+ * rather than a position inside a 90-line function nobody can pin.
  *
  * `probeRouteChange`'s own comment used to also claim "so navigating away costs nothing" — true of the
- * position-dependent probes it was reasoning about and false of these three, which is why they now run
- * strictly before it. Do not add a future navigating probe to `navigateByStructure` without moving this
- * call below it too.
+ * position-dependent probes it was reasoning about and false of these three. Do not add a future
+ * navigating probe to `navigateByStructure` above this call without checking whether it can navigate.
  *
- * **`crossCheckAgainstElementsList` is the SAME rule, applied to a fourth reader this fix did not reach
- * when it first ran** — found by `docs/probe-side-effects.md`'s audit, 2026-09-06. It compares `structure`
- * counts (captured during the sweep, long before this function runs) against NVDA's live Elements List,
- * and its call site in `navigateByStructure` used to sit AFTER `probeRouteChange` — so if that probe
- * navigated, the cross-check silently read the ELEMENTS LIST OF THE NEW PAGE against the ORIGINAL page's
- * sweep counts, the identical "two moments compared as one" shape this comment already describes for the
- * census. Moved to run alongside these three, for the same reason and by the same rule this paragraph
- * already states: do not add a future navigating probe without moving BOTH this call and that one below it.
+ * **`crossCheckAgainstElementsList` is a DIFFERENT case, and stays where it is.** It compares `structure`
+ * counts (captured DURING the sweep) against NVDA's live Elements List, so it must run AFTER the sweep has
+ * populated `structure` — it cannot move to the top the way the census did. It still must run before
+ * `probeRouteChange`, which its own call site already guarantees; a sweep-time navigation reaching it too
+ * is the narrower, `probeElementsList`-only risk `docs/probe-side-effects.md`'s audit already named and is
+ * not what this fix closes.
  *
  * @returns {Promise<{ census: Record<string, any>, dom: Record<string, any> | null,
  *                      mediaCensus: Record<string, any> | null }>}
@@ -471,6 +489,11 @@ async function censusBeforeNavigating() {
 async function navigateByStructure({ deadline, diag, probeForms, probeFocus, probeTables, probeNavigation,
   formState, probeDialog, probeArrows, probeTyping, probeFocusReveal, probeFocusContext: probeFocusContext_,
   probeElementsList, probeOrder, task }) {
+  // FIRST, before ANY probe runs — see `censusBeforeNavigating`'s own header for the calendly incident
+  // that moved this here from just above `probeRouteChange`. The opportunistic form probe (inside
+  // `runProbeSequence`, below) can navigate the page exactly like `probeRouteChange` could, and it runs
+  // first, so "before the one probe that can navigate" has to mean before ALL of them.
+  const { census, dom, mediaCensus: mediaCensus_ } = await censusBeforeNavigating();
   // BOTH ACCUMULATORS ARE DECLARED, because both are filled in by probes that run later and elsewhere.
   // An inferred type here describes only the fields present at construction -- `never[]` for each array,
   // and no `navigatedOnSubmit`, `postSubmitNames` or `media` at all -- so every probe that adds evidence
@@ -528,11 +551,11 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   const { postSubmitFields, focusOrder, dialogEscape, arrowNavigation, typedFeedback,
     focusContext, focusReveal, focusEvents } = results;
 
-  // TAKEN HERE — before `probeRouteChange`, the only probe below that can leave the page under
-  // measurement. See `censusBeforeNavigating`'s own header for why this moved, and do not add a future
-  // navigating probe below this line without moving the census below IT too.
-  const { census, dom, mediaCensus: mediaCensus_ } = await censusBeforeNavigating();
-  // AND SO IS THIS, for the identical reason — `censusBeforeNavigating`'s header carries both call sites.
+  // Unlike the census, this genuinely cannot move to the top: it compares `structure` counts populated BY
+  // the sweep against NVDA's live Elements List, so it must run after the sweep has filled `structure` in.
+  // Still before `probeRouteChange`, which this call site already guarantees — a sweep-time navigation
+  // reaching it too is the narrower, `probeElementsList`-only risk `docs/probe-side-effects.md`'s audit
+  // named, and not what moved the census.
   if (probeElementsList) await crossCheckAgainstElementsList({ structure, deadline, diag });
 
   // LAST of the four [probes]: `probeRouteChange` is the only one that can leave the page under
