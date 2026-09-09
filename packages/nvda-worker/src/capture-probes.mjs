@@ -191,17 +191,25 @@ export async function navigateByStructureThenAudit(options) {
   /** @type {{ structure: CapturedStructure, interaction: CapturedInteraction,
    *           observed: Record<string, Observation>, media?: Record<string, unknown>[] | null,
    *           census: Record<string, any>, dom: Record<string, any> | null,
-   *           mediaCensus: Record<string, any> | null }} */
+   *           mediaCensus: Record<string, any> | null,
+   *           readAt: Record<"census"|"dom"|"media",
+   *                          { readAt: { startedAtMs: number, tookMs: number } }> }} */
   const result = await navigateByStructure(options);
-  const { census, dom, mediaCensus: mediaRead } = result;
+  const { census, dom, mediaCensus: mediaRead, readAt } = result;
   // BESIDE the tree census, never instead of it. The two answer different questions — what Chromium
   // EXPOSES versus what the markup CONTAINS — and it is their disagreement that is informative:
   // `dom.heading 40, census.heading 0` is a finding about the page, `0 and 0` is a finding about us.
   // Recorded as a diagnostic so it reaches the rules without ever reaching the model.
-  options.diag.mark("structureCensus", census);
+  // `readAt` BESIDE `atMs`, never instead of it -- #854. These three are read at the top of
+  // `navigateByStructure` and marked here, after every sweep and probe has run, so `atMs` (stamped inside
+  // `push`) reports the read ~310 s late: on 25 of 25 captures it landed within 60 ms of the file's LAST
+  // mark, which is how "#699 isn't in any of them" was read off five captures it is in three of.
+  // `atMs` keeps meaning what it has always meant -- a corrected `atMs` would make old and new records
+  // look alike while meaning different things, and the consumer's gate is the PRESENCE of `readAt`.
+  options.diag.mark("structureCensus", { ...census, ...readAt.census });
   // Marked even when NULL, because "the DOM was not counted" and "the DOM has none of these" must never
   // be the same silence — the rule `refreshBrowseBuffer` cost this project a whole corpus by breaking.
-  options.diag.mark("domCensus", dom ?? { error: "not counted" });
+  options.diag.mark("domCensus", { ...(dom ?? { error: "not counted" }), ...readAt.dom });
   // 1.4.2 Audio Control, from the DOM. `autoplay` and `muted` have no accessibility-tree equivalent, so
   // this is the one field here that no screen reader could have produced. Null means the probe did not
   // run, and the rule reading it makes no claim on null — a probe failure must never become a silent pass.
@@ -211,8 +219,9 @@ export async function navigateByStructureThenAudit(options) {
   result.media = mediaRead?.elements ?? null;
   options.diag.mark("mediaCensus", mediaRead
     ? { count: mediaRead.elements?.length ?? null, targetMatch: mediaRead.targetMatch,
-        candidates: mediaRead.candidates, targetUrl: mediaRead.targetUrl, expectedUrl: mediaRead.expectedUrl }
-    : { error: "not counted" });
+        candidates: mediaRead.candidates, targetUrl: mediaRead.targetUrl, expectedUrl: mediaRead.expectedUrl,
+        ...readAt.media }
+    : { error: "not counted", ...readAt.media });
   // `"error" in census` rather than `!census.error`. Both are true at runtime, but only the first NARROWS
   // -- the success branch carries an index signature, so reading `.error` off it is legal and tells the
   // compiler nothing. This check is the one place that already handled the error branch correctly;
@@ -479,11 +488,37 @@ function probePasses(ctx) {
  * is the narrower, `probeElementsList`-only risk `docs/probe-side-effects.md`'s audit already named and is
  * not what this fix closes.
  *
+ * @param {Diag} diag the diagnostics recorder, for its clock only -- this function marks nothing
  * @returns {Promise<{ census: Record<string, any>, dom: Record<string, any> | null,
- *                      mediaCensus: Record<string, any> | null }>}
+ *                      mediaCensus: Record<string, any> | null,
+ *                      readAt: Record<"census"|"dom"|"media",
+ *                                     { readAt: { startedAtMs: number, tookMs: number } }> }>}
  */
-async function censusBeforeNavigating() {
-  return { census: await structuralCensus(), dom: await domCensus(), mediaCensus: await mediaCensus() };
+async function censusBeforeNavigating(diag) {
+  // EACH READ CARRIES ITS OWN MOMENT, not one shared stamp: the three run in sequence over the same
+  // socket, so `mediaCensus` describes a slightly later page than `census`, and one shared moment for all
+  // three would be the same kind of approximation this row exists to remove.
+  const censusAt = diag.sinceStart();
+  const census = await structuralCensus();
+  const domAt = diag.sinceStart();
+  const dom = await domCensus();
+  const mediaAt = diag.sinceStart();
+  const media = await mediaCensus();
+  // START and DURATION, because a read is an interval and only the pair says how wide it is. The
+  // alternative -- recording the end and calling the read instantaneous -- is a claim in a comment, and
+  // `markPageState`'s `tookMs` exists because this file already learned that a claim about cost has to be
+  // a number on the mark.
+  //
+  // NESTED, NOT FLAT, and this is load-bearing rather than tidy. `censusElementCounts` and
+  // `censusFromDiagnostics` build the element counts by taking EVERY numeric field on this mark except
+  // `event` and `atMs` -- a denylist. A flat `readAtMs: 3200` would arrive as an element type named
+  // `readAtMs` with 3,200 of them. `distinct` is nested for the same reason and has been since 2026-08-29.
+  const readAt = {
+    census: { readAt: { startedAtMs: censusAt, tookMs: domAt - censusAt } },
+    dom: { readAt: { startedAtMs: domAt, tookMs: mediaAt - domAt } },
+    media: { readAt: { startedAtMs: mediaAt, tookMs: diag.sinceStart() - mediaAt } },
+  };
+  return { census, dom, mediaCensus: media, readAt };
 }
 
 /**
@@ -580,7 +615,7 @@ function activationBudgetFor({ formState, probeForms, deadline, interaction, tas
 async function navigateByStructure({ deadline, diag, probeForms, probeFocus, probeTables, probeNavigation,
   formState, probeDialog, probeArrows, probeTyping, probeFocusReveal, probeFocusContext: probeFocusContext_,
   probeElementsList, probeOrder, task }) {
-  const { census, dom, mediaCensus: mediaCensus_ } = await censusBeforeNavigating();
+  const { census, dom, mediaCensus: mediaCensus_, readAt } = await censusBeforeNavigating(diag);
   // BOTH ACCUMULATORS ARE DECLARED, because both are filled in by probes that run later and elsewhere.
   // An inferred type here describes only the fields present at construction -- `never[]` for each array,
   // and no `navigatedOnSubmit`, `postSubmitNames` or `media` at all -- so every probe that adds evidence
@@ -665,7 +700,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   return { structure, interaction: assembleAndMark({
     structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape, arrowNavigation,
     typedFeedback, focusContext, focusReveal, focusEvents, diag,
-  }), observed, census, dom, mediaCensus: mediaCensus_ };
+  }), observed, census, dom, mediaCensus: mediaCensus_, readAt };
 }
 
 /**

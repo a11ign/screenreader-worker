@@ -16,6 +16,10 @@ import { failIfScreenReaderIsMute } from "./capture-pure.mjs";
 const diagnostics = (lastSpoken: string | undefined) => ({
   entries: lastSpoken === undefined ? [] : [{ event: "afterStart", lastSpoken }],
   mark() { /* the gate records a mark before throwing; nothing here needs to observe it */ },
+  // Required rather than optional (#854): a reader that can ask for the moment it read is the whole point
+  // of the field, and an optional clock would let the one caller that needs it silently record nothing.
+  // The real recorder always has it, so a stub without one describes a recorder that does not exist.
+  sinceStart: () => 0,
 });
 
 test("the real gate throws a fault the worker recognises as recoverable", () => {

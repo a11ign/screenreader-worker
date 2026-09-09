@@ -33,6 +33,7 @@ export { CAPTURE_PROTOCOL_VERSION } from "./protocol-version.mjs";
 // there is still exactly one definition of each.
 import {
   addressesSamePage,
+  createDiagnostics,
   phraseAction,
   failIfScreenReaderIsMute,
   dedupeKey,
@@ -118,20 +119,6 @@ const DEFAULT_BROWSER_WAIT_MS = 12_000; // UPPER BOUND on waiting for Edge, not 
 // Deadlines for POLLS, not durations to sleep. Named as budgets so the distinction survives: every
 // remaining wait in this file either checks a condition or is the interval between two such checks.
 const NVDA_READY_BUDGET_MS = 3_000;   // how long a cold NVDA gets to answer at all
-
-// A diagnostics recorder: every phase appends a timestamped entry rather than
-// swallowing errors, so an empty capture can be explained after the fact.
-/** @param {{ event: string, [key: string]: any }[]} [sink] @returns {Diag} */
-function createDiagnostics(sink) {
-  // `sink` lets the CALLER own the array. A capture abandoned by the hard timeout never returns, so every
-  // phase mark it recorded died with it — which is why "the capture hung" could not be narrowed to a phase
-  // on the first real website this was pointed at. The server passes an array in, keeps a reference, and can
-  // report how far the capture got even when the capture itself never comes back.
-  const entries = sink ?? [];
-  const startedAt = Date.now();
-  const mark = (/** @type {string} */ event, /** @type {Record<string, unknown>} */ info = {}) => entries.push({ event, atMs: Date.now() - startedAt, ...info });
-  return { entries, mark };
-}
 
 /**
  * @typedef {{ headings: string[], landmarks: string[], formFields: string[], graphics: string[], links: string[], lists: string[], tableCells: string[], frames: string[] }} CapturedStructure

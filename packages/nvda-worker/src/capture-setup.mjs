@@ -21,6 +21,7 @@ import { browserArgs, browserFor } from "./browsers.mjs";
 import { installSpeechChannelShim } from "./speech-channel.mjs";
 import {
   censusShape,
+  createDiagnostics,
   lastMark,
   phraseAction,
   readThroughDeadline,
@@ -58,20 +59,6 @@ import { setTimeout as sleep } from "node:timers/promises";
  * Remote is tracked. Idempotent, so importing this module twice is harmless.
  */
 const speechChannel = installSpeechChannelShim();
-
-// A diagnostics recorder: every phase appends a timestamped entry rather than swallowing errors, so an
-// empty capture can be explained after the fact.
-//
-// Duplicated from `capture-core.mjs` rather than imported: it is a pure, dependency-free 5-line function,
-// and importing it back would put an edge from this file to that one where none otherwise exists --
-// `warmUpScreenReader` and `shutdownScreenReader` need their own diagnostics sink and nothing else there.
-/** @param {{ event: string, [key: string]: any }[]} [sink] @returns {Diag} */
-function createDiagnostics(sink) {
-  const entries = sink ?? [];
-  const startedAt = Date.now();
-  const mark = (/** @type {string} */ event, /** @type {Record<string, unknown>} */ info = {}) => entries.push({ event, atMs: Date.now() - startedAt, ...info });
-  return { entries, mark };
-}
 
 const NVDA_SPEECH_BUDGET_MS = 10_000; // how long a fresh NVDA gets to SPEAK before silence is a fault
 

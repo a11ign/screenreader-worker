@@ -145,13 +145,51 @@ export function phraseAction(phrase, heard, tracker) {
 // the fault code it throws is what the worker's retry keys on — a coupling worth a test rather than a
 // comment, because when it breaks nothing fails loudly: the worker just quietly stops recovering.
 /**
+ * THE DIAGNOSTICS RECORDER — one copy, because it was two and they were about to disagree.
+ *
+ * Every phase appends a timestamped entry rather than swallowing an error, so an empty capture can be
+ * explained after the fact. `sink` lets the CALLER own the array: a capture abandoned by the hard timeout
+ * never returns, so every phase mark it recorded died with it — which is why "the capture hung" could not
+ * be narrowed to a phase on the first real website this was pointed at. The server passes an array in,
+ * keeps a reference, and can report how far the capture got even when the capture never comes back.
+ *
+ * **`atMs` is when the mark was PUSHED.** That is right for a phase mark, whose push IS the event, and
+ * wrong for anything read earlier and marked later. `sinceStart` reads the same clock WITHOUT pushing, so
+ * such a reader can record the moment it actually read (#854). The three census marks are read at the top
+ * of a capture and marked at the bottom: measured on 25 of 25 captures, `structureCensus.atMs` landed
+ * within 60 ms of the file's LAST mark, reporting a read that happened 93–469 s earlier.
+ *
+ * **It lived in `capture-core.mjs` AND `capture-setup.mjs`**, copied deliberately to avoid an import edge
+ * between them. It is here instead because both files already import this module, so the edge does not
+ * exist — and because two copies of a five-line function is the shape that produced five incidents in one
+ * day. Adding `sinceStart` to one and not the other would have been the sixth.
+ *
+ * @param {{ event: string, [key: string]: any }[]} [sink]
+ * @returns {CaptureDiagnostics}
+ */
+export function createDiagnostics(sink) {
+  const entries = sink ?? [];
+  const startedAt = Date.now();
+  const mark = (/** @type {string} */ event, /** @type {Record<string, unknown>} */ info = {}) =>
+    entries.push({ event, atMs: Date.now() - startedAt, ...info });
+  const sinceStart = () => Date.now() - startedAt;
+  return { entries, mark, sinceStart };
+}
+
+/**
  * @typedef {{ entries: { event: string, [key: string]: any }[] }} MarkLog
  *   What a READER of the diagnostics needs. Split from the writer below because most helpers here only
  *   read, and `capture-pure.corpus.test.ts` drives them with a bare `{ entries }` -- correctly, since a
  *   test that had to supply a `mark` it never calls would be describing a dependency that is not there.
  *
- * @typedef {MarkLog & { mark: (event: string, detail?: Record<string, unknown>) => void }} CaptureDiagnostics
+ * @typedef {MarkLog & { mark: (event: string, detail?: Record<string, unknown>) => void,
+ *                        sinceStart: () => number }} CaptureDiagnostics
  *   The log plus its writer, for the one helper that records a finding as well as deciding one.
+ *
+ *   `sinceStart` reads the same clock `mark` stamps with, WITHOUT pushing a mark -- so a value read now
+ *   and marked later can carry the moment it was read (#854). `mark`'s `atMs` is when the mark was
+ *   PUSHED, which is correct for a phase mark and wrong for anything read earlier; `structureCensus`
+ *   reported its read ~310 s late on every capture ever taken because those were the same field.
  *
  *   Named once because five helpers here take it, and this file is where "did not need to act" and
  *   "never ran" are told apart -- a shape restated five times is how those two become one.
