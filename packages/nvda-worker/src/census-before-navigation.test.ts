@@ -27,7 +27,7 @@
  *
  * This cannot be tested by driving a real capture -- that needs live NVDA on Windows, which this repo has
  * no local substitute for. What CAN be tested, offline, is the one fact that actually fixes the bug: the
- * source text calls `censusBeforeNavigating()` before it calls `runProbeSequence(` (and, still, before
+ * source text calls `censusBeforeNavigating(` before it calls `runProbeSequence(` (and, still, before
  * `probeRouteChange(`), inside `navigateByStructure`'s own body. A position in a file is normally a
  * convention nobody wrote down (CLAUDE.md's own words, about a different ordering question) -- here it is
  * exactly what decides the defect, because `navigateByStructure` is a single straight-line `async`
@@ -55,10 +55,10 @@ function navigateByStructureBody(): string {
 
 test("censusBeforeNavigating() is called before probeRouteChange( inside navigateByStructure", () => {
   const body = navigateByStructureBody();
-  const censusCall = body.indexOf("censusBeforeNavigating()");
+  const censusCall = body.indexOf("censusBeforeNavigating(");
   const routeChangeCall = body.indexOf("probeRouteChange(");
   assert.ok(censusCall >= 0,
-    "navigateByStructure no longer calls censusBeforeNavigating() -- the census may have been removed "
+    "navigateByStructure no longer calls censusBeforeNavigating( -- the census may have been removed "
     + "or renamed, which this guard needs to know about rather than silently passing");
   assert.ok(routeChangeCall >= 0,
     "navigateByStructure no longer calls probeRouteChange( -- the guard this test protects no longer "
@@ -76,9 +76,9 @@ test("MUTATION TARGET: censusBeforeNavigating() is called before runProbeSequenc
   // INSIDE `runProbeSequence`, so a census placed after it is still exposed to whatever that probe
   // navigated to.
   const body = navigateByStructureBody();
-  const censusCall = body.indexOf("censusBeforeNavigating()");
+  const censusCall = body.indexOf("censusBeforeNavigating(");
   const sweepCall = body.indexOf("runProbeSequence(");
-  assert.ok(censusCall >= 0, "navigateByStructure no longer calls censusBeforeNavigating()");
+  assert.ok(censusCall >= 0, "navigateByStructure no longer calls censusBeforeNavigating(");
   assert.ok(sweepCall >= 0,
     "navigateByStructure no longer calls runProbeSequence( -- the guard this test protects no longer has "
     + "anything to protect against");

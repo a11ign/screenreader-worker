@@ -42,7 +42,7 @@ test("THE FAULT IS REAL: a value read early and marked late gets the late time",
   while (Date.now() < busyUntil) { /* the sweeps, in miniature */ }
   diag.mark("structureCensus", { heading: 83, readAt: { startedAtMs: readAtMs, tookMs: 0 } });
 
-  const [censusMark] = diag.entries as { atMs: number, readAt: { startedAtMs: number } }[];
+  const [censusMark] = diag.entries as unknown as { atMs: number, readAt: { startedAtMs: number } }[];
   assert.ok(censusMark.atMs >= 25,
     "`atMs` is the PUSH time — if this ever equals the read time the defect has been fixed elsewhere and "
     + "this file is testing nothing");

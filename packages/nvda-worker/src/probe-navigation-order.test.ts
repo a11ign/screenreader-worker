@@ -61,7 +61,7 @@ test("the censuses still read the page before probeRouteChange too — §40's or
   // The sibling assertion, so a future edit that moves the cross-check correctly and the census wrongly
   // cannot pass this file. §40 is the reason the rule exists; this is the rule still holding.
   const body = navigateByStructureBody();
-  const censusAt = body.indexOf("censusBeforeNavigating()");
+  const censusAt = body.indexOf("censusBeforeNavigating(");
   assert.ok(censusAt >= 0,
     "no CALL to censusBeforeNavigating in navigateByStructure -- find it and update the marker");
   assert.ok(censusAt < callAt(body, "probeRouteChange"),
