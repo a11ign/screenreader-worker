@@ -33,8 +33,8 @@ winget install --id OpenJS.NodeJS.LTS -e --silent --accept-source-agreements --a
 winget install --id Git.Git -e --silent --accept-source-agreements --accept-package-agreements
 
 # Project + deps
-git clone https://github.com/a11ign/a11ign.git
-cd a11ign; npm install
+git clone https://github.com/DanBeckDev/a11y-witness.git
+cd a11y-witness; npm install
 
 # `setup` zeroes ForegroundLockTimeout so the browser can take focus during
 # capture; `install nvda` downloads the portable NVDA build pinned in
