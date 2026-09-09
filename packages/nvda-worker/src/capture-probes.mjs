@@ -478,6 +478,11 @@ async function censusBeforeNavigating() {
 }
 
 /**
+ * `censusBeforeNavigating()` runs FIRST, before any probe below it — see that function's own header for
+ * the calendly incident that put it here rather than just above `probeRouteChange`. The opportunistic
+ * form probe (inside `runProbeSequence`, below) can navigate the page exactly like `probeRouteChange`
+ * could, and it runs first, so "before the one probe that can navigate" has to mean before ALL of them.
+ *
  * @param {{ deadline: number, diag: Diag, probeForms?: boolean, probeFocus?: boolean, probeTables?: boolean,
  *           probeNavigation?: boolean, probeElementsList?: boolean, probeOrder?: string,
  *           probeDialog?: boolean, probeArrows?: boolean, probeTyping?: boolean, probeFocusReveal?: boolean,
@@ -489,10 +494,6 @@ async function censusBeforeNavigating() {
 async function navigateByStructure({ deadline, diag, probeForms, probeFocus, probeTables, probeNavigation,
   formState, probeDialog, probeArrows, probeTyping, probeFocusReveal, probeFocusContext: probeFocusContext_,
   probeElementsList, probeOrder, task }) {
-  // FIRST, before ANY probe runs — see `censusBeforeNavigating`'s own header for the calendly incident
-  // that moved this here from just above `probeRouteChange`. The opportunistic form probe (inside
-  // `runProbeSequence`, below) can navigate the page exactly like `probeRouteChange` could, and it runs
-  // first, so "before the one probe that can navigate" has to mean before ALL of them.
   const { census, dom, mediaCensus: mediaCensus_ } = await censusBeforeNavigating();
   // BOTH ACCUMULATORS ARE DECLARED, because both are filled in by probes that run later and elsewhere.
   // An inferred type here describes only the fields present at construction -- `never[]` for each array,
