@@ -143,3 +143,55 @@ test("distinct covering every compared type is reported as distinct-names", () =
   assert.equal(result.sameCounts, true, "it must compare against distinct names, not the element counts");
 });
 
+// --- #737: `distinct` counts an UNNAMED element individually (#699, correct -- an unnamed graphic has no
+// name to collapse toward another one under), which makes it an ELEMENT count for any type carrying
+// unnamed members, not the "distinct NAMES" `oracleDistinctNames` claims to be. `capture-probes.mjs` now
+// passes `${type}Unnamed` alongside `distinct` for exactly the one type that has it (`graphic`), and
+// `authoritativeCount` subtracts it -- the identical correction `conformance.ts`'s `reachableCountOf`
+// already applies to the coverage denominator, done here for the cross-check's own reported number. ---
+
+test("#737 REGRESSION: calendly's real graphic capture (2026-09-09T12-59-26-678Z) -- 63 graphics, 38 "
+  + "unnamed, distinct.graphic 61 -- reports 23, matching conformance.ts's already-fixed coverage "
+  + "denominator, not 61 counting 38 nameless images as 38 distinct NAMES", () => {
+  const result = crossCheckStructure({
+    sweep: { graphic: 10 },
+    elementsList: { graphic: 63, graphicUnnamed: 38, distinct: { graphic: 61 } } as never,
+  });
+  assert.deepEqual(result.differsOn, [{ type: "graphic", sweepEntries: 10, oracleDistinctNames: 23 }],
+    "before this fix, oracleDistinctNames read 61 -- every one of the 38 unnamed graphics counted as its "
+    + "own distinct NAME, which is what inflated this gap 61/10 instead of the real 23/10");
+});
+
+test("#737: a type with no `${type}Unnamed` field is UNAFFECTED -- the subtraction only fires when the "
+  + "caller actually supplies the count to subtract, never inferred or defaulted", () => {
+  const result = crossCheckStructure({
+    sweep: { heading: 3 },
+    elementsList: { heading: 9, distinct: { heading: 5 } } as never,
+  });
+  assert.deepEqual(result.differsOn, [{ type: "heading", sweepEntries: 3, oracleDistinctNames: 5 }],
+    "no headingUnnamed was supplied, so distinct is reported as-is -- the fix must not touch types it "
+    + "was never asked about");
+});
+
+test("#737: the subtraction never goes negative -- a nonsense count is clamped, never printed", () => {
+  // The two numbers come from one mark and cannot disagree in practice, but a malformed elementsList
+  // (an old capture format, a hand-built test fixture) must not turn into a negative "distinct names".
+  const result = crossCheckStructure({
+    sweep: { graphic: 1 },
+    elementsList: { graphic: 5, graphicUnnamed: 99, distinct: { graphic: 5 } } as never,
+  });
+  assert.deepEqual(result.differsOn, [{ type: "graphic", sweepEntries: 1, oracleDistinctNames: 0 }]);
+});
+
+test("#737: THE CALL SITE'S OWN CONTRIBUTION -- without `graphicUnnamed` in `elementsList` (the exact "
+  + "shape `capture-probes.mjs` produced before this fix), the cross-check has no way to tell an unnamed "
+  + "element from a named one, and reports the inflated element count as though it were 61 distinct "
+  + "names. The function-level fix alone cannot help a caller that never supplies the count to subtract "
+  + "-- both halves of #737 are load-bearing", () => {
+  const result = crossCheckStructure({
+    sweep: { graphic: 10 },
+    elementsList: { graphic: 63, distinct: { graphic: 61 } } as never,
+  });
+  assert.deepEqual(result.differsOn, [{ type: "graphic", sweepEntries: 10, oracleDistinctNames: 61 }]);
+});
+

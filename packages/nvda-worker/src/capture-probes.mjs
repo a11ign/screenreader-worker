@@ -241,8 +241,16 @@ export async function navigateByStructureThenAudit(options) {
       // wholesale -- `census` also carries `graphicUnnamedDetail` (an array), `names` (strings) and now
       // `targetMatch` (a string), none of which fit `Record<string, number | undefined>`, and none of
       // which this comparison is about.
+      //
+      // #737: `graphicUnnamed` IS ONE OF THE NUMBERS THIS COMPARISON IS ABOUT, and its omission here was
+      // the bug -- `census.distinct.graphic` counts each unnamed graphic individually (correct, #699), but
+      // `crossCheckStructure` had no way to tell an unnamed element from a named one once it only received
+      // the bare count, so it reported all 61 as "distinct NAMES" on calendly when only 23 of them have
+      // one. `conformance.ts`'s `reachableCountOf` already subtracts this same field for the coverage
+      // denominator; `authoritativeCount` below now does the identical subtraction for the cross-check's
+      // own reported number, from the one place that has both counts.
       elementsList: { heading: census.heading, landmark: census.landmark, link: census.link,
-        graphic: census.graphic, distinct: census.distinct },
+        graphic: census.graphic, graphicUnnamed: census.graphicUnnamed, distinct: census.distinct },
     }));
   }
   return result;

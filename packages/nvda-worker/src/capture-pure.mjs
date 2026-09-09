@@ -414,14 +414,28 @@ export function elementsListRowName(phrase) {
  * reported, and falling back silently would mix the two inside one verdict. Returning the provenance
  * beside the number is the same rule the rest of this file follows: a number carries what it came from.
  *
+ * #737: `distinct` COUNTS EACH UNNAMED ELEMENT INDIVIDUALLY (correct, #699's `censusFromAXTree`) — a
+ * nameless element has no name to collapse toward another one under. But that makes `distinct` itself an
+ * ELEMENT count once a type has unnamed members, not the "distinct NAMES" this function's own callers
+ * label it as. Measured on calendly's real graphics: `distinct.graphic` is 61 (38 unnamed, each counted
+ * once, plus 23 distinct names among the 25 named ones) — reported whole as "oracleDistinctNames" would
+ * call 38 nameless images 38 distinct NAMES, inflating every gap this comparison has ever announced by
+ * however many unnamed elements the page has. `elementsList[`${type}Unnamed`]`, when present, is
+ * subtracted -- the identical correction `conformance.ts`'s `reachableCountOf` already applies for the
+ * coverage denominator, done here for the cross-check's own reported number, from the one place that has
+ * both counts. `Math.max(0, ...)`: the two numbers come from one mark and cannot disagree today, but a
+ * negative "distinct names" is a nonsense number, never a real answer.
+ *
  * @param {Record<string, number | undefined> | undefined} elementsList
  * @param {string} type
  * @returns {{ value: number | undefined, fromDistinct: boolean }}
  */
 function authoritativeCount(elementsList, type) {
   const distinct = /** @type {any} */ (elementsList)?.distinct?.[type];
-  if (typeof distinct === "number") return { value: distinct, fromDistinct: true };
-  return { value: elementsList?.[type], fromDistinct: false };
+  if (typeof distinct !== "number") return { value: elementsList?.[type], fromDistinct: false };
+  const unnamed = /** @type {any} */ (elementsList)?.[`${type}Unnamed`];
+  const value = typeof unnamed === "number" ? Math.max(0, distinct - unnamed) : distinct;
+  return { value, fromDistinct: true };
 }
 
 /**
