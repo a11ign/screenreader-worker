@@ -1128,7 +1128,13 @@ const DOM_CENSUS_EXPRESSION = `(() => {
         const modal = all("[role='dialog'][aria-modal='true'], [role='alertdialog'][aria-modal='true']")
           .find((el) => typeof el.checkVisibility !== "function" || el.checkVisibility())
           || [...document.querySelectorAll("dialog")]
-            .find((el) => typeof el.matches === "function" && el.matches(":modal"));
+            .find((el) => typeof el.matches === "function" && el.matches(":modal")
+              // RENDERED on this branch too, and the symmetry is the point rather than the case.
+              // \`:modal\` means the dialog is in the top layer, which normally implies it renders — but a
+              // \`showModal()\` dialog given \`display: none\` afterwards stays \`:modal\` and shows nothing,
+              // and a check that is explicit on one branch and implied on the other is a difference the
+              // next reader has to reason about. It costs nothing to not make them.
+              && (typeof el.checkVisibility !== "function" || el.checkVisibility()));
         if (!modal) return null;
         // The dialog's own accessible name where it has one, else a shape a human can find it by.
         return ((modal.getAttribute("aria-label") || "").trim()

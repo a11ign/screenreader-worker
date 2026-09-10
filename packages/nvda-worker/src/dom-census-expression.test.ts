@@ -323,6 +323,17 @@ test("a modal that is not rendered is not open", () => {
     "`aria-modal` left on a hidden node is markup the page HAS, not a dialog that is open");
 });
 
+test("a native `:modal` dialog that renders nothing is not open either", () => {
+  // worker-judge's review note on #922: `checkVisibility` was explicit on the ARIA branch and implied on
+  // the native one. `:modal` normally implies rendered — a top-layer dialog — but `showModal()` followed
+  // by `display: none` stays `:modal` and shows nothing, and an asymmetry between the two branches is a
+  // difference the next reader has to reason about.
+  const out = runAgainst([], [], {}, {
+    native: [element("dialog", { modal: "true", id: "hidden-modal" }, undefined, { rendered: false })],
+  });
+  assert.equal(out.openDialog, null);
+});
+
 test("alertdialog counts too, and an unnamed modal falls back to something findable", () => {
   const out = runAgainst([], [], {}, {
     aria: [element("div", { role: "alertdialog", "aria-modal": "true", id: "session-expiry" })],
