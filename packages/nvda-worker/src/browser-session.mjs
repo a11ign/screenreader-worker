@@ -1105,6 +1105,37 @@ const DOM_CENSUS_EXPRESSION = `(() => {
           && !el.hasAttribute("hidden") && !el.hasAttribute("disabled")
           && (typeof el.checkVisibility !== "function" || el.checkVisibility())
           && (typeof el.closest !== "function" || !el.closest("[inert]"))).length,
+      // WHAT THE QUICK-NAVIGATION CURSOR IS SEALED INSIDE, if anything -- #897.
+      //
+      // A screen reader's quick navigation is confined to an open modal, and NVDA's "no next link" is
+      // then TRUE about the dialog rather than about the page. Measured on
+      // \`runs/781-r1-hubspot.json/capture-1\`: the \`landmark\` sweep's last stop was literally
+      // "Hub Bot, dialog", and the three sweeps that ran while it was open found 12 chat-widget
+      // controls, 2 Hub Bot avatars and 1 link against a census of 79 -- each reporting \`exhausted\`,
+      // each correct about the dialog. Nothing on the record said which they had examined.
+      //
+      // A STRING, NEVER A COUNT, and that is load-bearing rather than stylistic. \`censusElementCounts\`
+      // and \`censusFromDiagnostics\` build the element counts from every NUMERIC field on a census mark
+      // except two, so a numeric \`openDialogCount\` would arrive downstream as an element type. A label
+      // cannot, and it is also the more useful thing: "Hub Bot" names the dialog a reader has to go and
+      // look at, where a 1 only says one exists.
+      //
+      // MODAL ONLY. A non-modal dialog does not seal quick navigation, so reporting one would mark
+      // sweeps that were never confined -- the false-accusation direction this project pays most for.
+      // \`<dialog open>\` without \`modal\` is deliberately excluded for the same reason: only
+      // \`showModal()\` sets \`:modal\`, and only that form is inert-backed.
+      openDialog: (() => {
+        const modal = all("[role='dialog'][aria-modal='true'], [role='alertdialog'][aria-modal='true']")
+          .find((el) => typeof el.checkVisibility !== "function" || el.checkVisibility())
+          || [...document.querySelectorAll("dialog")]
+            .find((el) => typeof el.matches === "function" && el.matches(":modal"));
+        if (!modal) return null;
+        // The dialog's own accessible name where it has one, else a shape a human can find it by.
+        return ((modal.getAttribute("aria-label") || "").trim()
+          || (modal.getAttribute("aria-labelledby") || "").trim()
+          || (modal.getAttribute("id") || "").trim()
+          || modal.tagName.toLowerCase()).slice(0, 80);
+      })(),
     };
 })()`;
 

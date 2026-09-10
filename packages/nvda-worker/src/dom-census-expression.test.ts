@@ -51,6 +51,10 @@ function element(
     hasAttribute: (k: string) => k in attrs,
     checkVisibility: () => opts.rendered !== false,
     querySelector: () => (titleText ? { textContent: titleText } : null),
+    // `<dialog>` opened with `showModal()` matches `:modal`; one opened with the `open` attribute does
+    // not, and does not seal quick navigation either. The harness has to be able to express both or the
+    // expression's deliberate exclusion of the second is untested.
+    matches: (selector: string) => selector === ":modal" && attrs.modal === "true",
   };
 }
 
@@ -72,6 +76,11 @@ function elementWithoutVisibilityApi(tag: string, attrs: Record<string, string>)
 function runAgainst(
   graphics: El[], tabbable: El[] = [],
   lang: { documentLang?: string; parts?: El[] } = {},
+  // THE DIALOG SELECTORS, served explicitly for the reason the comment above gives: an unserved selector
+  // returns `[]`, `openDialog` comes back `null`, and every assertion about it would pass having run
+  // nothing. `aria` is what the `[role='dialog'][aria-modal='true']` query returns; `native` is what a
+  // bare `dialog` query returns, which the expression then filters by `:modal` itself.
+  dialogs: { aria?: El[]; native?: El[] } = {},
 ): Record<string, unknown> {
   // `documentElement` is a real object here, not a stub returning nothing, because the census compares
   // AGAINST it: a `[lang]` on <html> is the document's language, not a part's, and a harness where the
@@ -86,6 +95,8 @@ function runAgainst(
       if (selector.startsWith("img")) return graphics;
       if (selector.startsWith("a[href]")) return tabbable;
       if (selector === "[lang]") return lang.parts ?? [];
+      if (selector.startsWith("[role='dialog']")) return dialogs.aria ?? [];
+      if (selector === "dialog") return dialogs.native ?? [];
       return [];
     },
   };
@@ -256,4 +267,65 @@ test("a page with no lang anywhere says so, rather than throwing", () => {
   const out = runAgainst([], [], {});
   assert.equal(out.documentLang, "");
   assert.deepEqual(out.partLangs, []);
+});
+
+/**
+ * WHAT THE QUICK-NAVIGATION CURSOR IS SEALED INSIDE — #897.
+ *
+ * A screen reader's quick navigation is confined to an open modal, so `exhausted` inside one is true
+ * about the dialog and not about the page. On `runs/781-r1-hubspot.json/capture-1` the `landmark` sweep's
+ * last stop was `"Hub Bot, dialog"` and the three sweeps after it found 12 chat-widget controls, 2
+ * avatars and 1 link against a census of 79 — each `exhausted`, each correct about where it was, and
+ * nothing on the record saying which.
+ *
+ * The capture that produced the finding predates this field, so these are the only tests that can
+ * exercise it until a capture is taken after the deploy. That is the honest division: the fixture below
+ * proves the defect happened, this proves the field detects it.
+ */
+test("an open ARIA modal is named, so a sealed sweep is distinguishable from a one-link page", () => {
+  const out = runAgainst([], [], {}, {
+    aria: [element("div", { role: "dialog", "aria-modal": "true", "aria-label": "Hub Bot" })],
+  });
+  assert.equal(out.openDialog, "Hub Bot",
+    "the dialog's NAME, not a count — a reader has to go and look at it, and `1` does not say where");
+});
+
+test("no modal is `null`, which is a different answer from nobody asking", () => {
+  assert.equal(runAgainst([], []).openDialog, null,
+    "a page read with no modal open must say so; `undefined` is reserved for a census that failed");
+});
+
+test("a NON-modal dialog does not seal quick navigation and must not be reported", () => {
+  // The false-accusation direction. A `role=dialog` without `aria-modal` leaves the rest of the page
+  // reachable, so marking its sweeps as confined would condemn captures that examined the page fine.
+  const out = runAgainst([], [], {}, {
+    aria: [],
+    native: [element("dialog", { open: "", id: "cookie-banner" })],
+  });
+  assert.equal(out.openDialog, null,
+    "`<dialog open>` is not `showModal()`: only the second matches `:modal` and only the second is "
+    + "inert-backed");
+});
+
+test("a native dialog opened with showModal() IS reported", () => {
+  const out = runAgainst([], [], {}, {
+    native: [element("dialog", { modal: "true", id: "consent" })],
+  });
+  assert.equal(out.openDialog, "consent");
+});
+
+test("a modal that is not rendered is not open", () => {
+  const out = runAgainst([], [], {}, {
+    aria: [element("div", { role: "dialog", "aria-modal": "true", "aria-label": "Hidden" },
+      undefined, { rendered: false })],
+  });
+  assert.equal(out.openDialog, null,
+    "`aria-modal` left on a hidden node is markup the page HAS, not a dialog that is open");
+});
+
+test("alertdialog counts too, and an unnamed modal falls back to something findable", () => {
+  const out = runAgainst([], [], {}, {
+    aria: [element("div", { role: "alertdialog", "aria-modal": "true", id: "session-expiry" })],
+  });
+  assert.equal(out.openDialog, "session-expiry");
 });

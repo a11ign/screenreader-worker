@@ -992,7 +992,7 @@ async function collectByType(commands, ctx) {
   // `sweep:<label>` rather than a new mark type: `probeStates` already groups `pageState` by
   // `beforeProbe` and compares them with `FINGERPRINT_KEYS`, so this answers per sweep with no new
   // comparator and no second spelling of the key list.
-  await markPageState(`sweep:${ctx.label}`, ctx.diag);
+  const scopeAt = await markPageState(`sweep:${ctx.label}`, ctx.diag);
   /** @type {string[]} */
   const out = [];
   /** @type {Set<string>} */
@@ -1032,6 +1032,16 @@ async function collectByType(commands, ctx) {
     prevStop: prevOutcome?.stop, nextStop: nextOutcome?.stop,
     prevStopPhrase: prevOutcome?.stopPhrase, nextStopPhrase: nextOutcome?.stopPhrase,
     prevCount,
+    // WHAT THIS SWEEP WAS SEALED INSIDE, if anything -- #897. `exhausted` is NVDA's own "no next link",
+    // and inside an open modal it is true about the dialog rather than the page: on
+    // `runs/781-r1-hubspot.json/capture-1` the `landmark` sweep ended on "Hub Bot, dialog" and the three
+    // sweeps after it found 12 chat-widget controls, 2 avatars and 1 link against a census of 79, each
+    // reporting `exhausted` and each correct about where it was.
+    //
+    // `undefined` when the census could not be read at all, and `null` when it was read and there was no
+    // modal -- a distinction this project pays for whenever it is collapsed. A reader must be able to tell
+    // "no dialog" from "nobody asked".
+    scope: scopeAt ? { openDialog: scopeAt.openDialog ?? null } : undefined,
     phrases: out.slice(),
   });
   // BESIDE the mark, not instead of it. The mark goes to `diagnostics`, which is a FORBIDDEN_INPUT_KEY --
@@ -1093,6 +1103,12 @@ async function markPageState(beforeProbe, diag) {
   // without a benchmark. `sweep` is already the largest phase of a real page (#397) and a fingerprint
   // that made it larger would be the next thing worth a row.
   diag.mark("pageState", { beforeProbe, tookMs: Date.now() - startedAt, ...(dom ?? { error: "not counted" }) });
+  // RETURNED as well as marked, so the sweep can carry its own scope rather than being joined to this
+  // mark by position -- #863's finding, where a walk's document lived on a separate mark and the two were
+  // related only by ordering. `beforeProbe` keys this one by NAME, which is better, but a verdict and the
+  // scope it is about belong on one record: a reader of `sweep` should not have to know `pageState` exists.
+  // No second read and no extra round trip; this is the same `dom` already fetched above.
+  return dom;
 }
 
 /**
