@@ -19,21 +19,17 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { focusInFrameOf, sweepObservation } from "./capture-pure.mjs";
+import { DOM_CENSUS_EXPRESSION } from "./browser-session.mjs";
 import { probeStates } from "@a11ign/evidence/verify";
 
 const source = (file: string) => readFileSync(fileURLToPath(new URL(`./${file}`, import.meta.url)), "utf8");
 
 /**
- * The census expression AS THE PAGE RECEIVES IT. Not the source text with a couple of escapes undone:
- * the source is a template literal, and letting JS evaluate that literal is the only reading that applies
- * every escape the way module load does. A harness that undoes escapes by hand would pass on a slash the page
- * never sees.
+ * The census expression AS THE PAGE RECEIVES IT: imported, so module load has evaluated the template literal
+ * with every escape applied. This file used to re-evaluate the source text itself -- correct, and a second
+ * copy of the one reading `dom-census-expression.test.ts` now shares (#969).
  */
-function pageExpression(): string {
-  const match = source("browser-session.mjs").match(/const DOM_CENSUS_EXPRESSION = `([\s\S]*?)`;/);
-  assert.ok(match, "the census expression must be findable BY NAME, or this test examines nothing");
-  return new Function(`return \`${match[1]}\`;`)() as string;
-}
+const pageExpression = (): string => DOM_CENSUS_EXPRESSION;
 
 type Node = {
   tagName: string, getAttribute: (k: string) => string | null, hasAttribute: (k: string) => boolean,
