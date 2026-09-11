@@ -1232,6 +1232,57 @@ const DOM_CENSUS_EXPRESSION = `(() => {
     };
 })()`;
 
+/**
+ * RETURN FOCUS TO THE TOP DOCUMENT -- #972, run once before the sweeps when focus sits in a frame the page put
+ * it in (`focusRestoreDecision`).
+ *
+ * From the top document a focused frame is `activeElement` itself (the census's `focusFrame` rests on the same
+ * fact), and blurring it runs the unfocusing steps for the nested document, cross-origin included. Then the
+ * window takes focus, so NVDA's next focus event is the top document's. Nothing is added to the page: no
+ * tabindex, no element -- a restore that edited the DOM would change the evidence it exists to rescue.
+ *
+ * Whether it WORKED is not answered here: the first sweep's own census reads `focusInFrame` a moment later,
+ * and `focusRestoredRecord` takes `left` from that, so this costs no second read. `blurred` only says the
+ * page accepted the calls.
+ *
+ * EXPORTED so a test runs the evaluated string the page receives (#969).
+ */
+export const FOCUS_RESTORE_EXPRESSION = `(() => {
+  const el = document.activeElement;
+  let blurred = false;
+  if (el && typeof el.blur === "function") { el.blur(); blurred = true; }
+  if (typeof window.focus === "function") window.focus();
+  return { blurred };
+})()`;
+
+/**
+ * Run `FOCUS_RESTORE_EXPRESSION` on the page under test. `null` on any failure, which the caller records as
+ * "not restored": a diagnostic step must never fail a capture.
+ * @returns {Promise<{ blurred: boolean } | null>}
+ */
+export async function restoreTopDocumentFocus() {
+  try {
+    const target = await pageTarget();
+    const socket = new WebSocket(target.webSocketDebuggerUrl);
+    try {
+      await once(socket, "open", CDP_READY_TIMEOUT_MS);
+      const result = waitForResult(socket, 1, AX_TREE_TIMEOUT_MS);
+      socket.send(JSON.stringify({
+        id: 1,
+        method: "Runtime.evaluate",
+        params: { expression: FOCUS_RESTORE_EXPRESSION, returnByValue: true },
+      }));
+      const value = (await result)?.result?.value;
+      return value && typeof value === "object" ? { blurred: value.blurred === true } : null;
+    } finally {
+      try { socket.close(); } catch (error) { void error; }
+    }
+  } catch (error) {
+    void error; // the restore is a remedy, never a reason to fail the capture; null reads as "not restored"
+    return null;
+  }
+}
+
 export async function domCensus() {
   try {
     const target = await pageTarget();
