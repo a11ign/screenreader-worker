@@ -22,12 +22,13 @@ import { nvda } from "@guidepup/guidepup";
 import {
   crossCheckStructure, dedupeKey, elementsListRowName, MIN_CONTROL_NAME_LEN, probeKindFor,
   sweepStepFromSpeech, focusOrderCycled, focusWalkTruncated, sweepObservation, notObserved, recordWhatWasAsked,
-  focusInFrameOf,
+  focusInFrameOf, focusRestoreDecision, focusRestoredRecord, heldInFrame,
   focusRevealVerdict, focusEventVerdict, censusGrowth, focusResetOutcome, titleSourceVerdict,
   activationDeadline, activationBudgetMark,
 } from "./capture-pure.mjs";
 import {
   currentPageUrl, mediaCensus, formInputCensus, structuralCensus, domCensus, truncatedAnnouncements,
+  restoreTopDocumentFocus,
   installFocusEventLog, collectFocusEventLog, resetFocusToDocumentStart, documentTitle,
 } from "./browser-session.mjs";
 import { matchesFieldName, matchesWithin, fillActionFor } from "./field-match.mjs";
@@ -693,7 +694,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
     structure, interaction, observed, onFormField: activation.onFormField, probeForms, probeTables, probeFocus,
     probeDialog, probeArrows, probeTyping, probeFocusReveal, probeFocusContext: probeFocusContext_, deadline, diag, trips,
   });
-  await runProbeSequence({ probeOrder, diag, runSweep, runFocus });
+  await runProbeSequence({ probeOrder, diag, runSweep, runFocus, observed });
   activation.markInto(diag);
   // AFTER the sweep, because the sweep is what establishes where the fields are and reads them in browse
   // mode — and because filling changes the page, so a sweep afterwards would describe a document the
@@ -1089,6 +1090,9 @@ async function collectByType(commands, ctx) {
   // read above. HERE for the same reason as that read -- every sweep reaches the page through this function.
   if (ctx.observed) {
     ctx.observed[ctx.observedAs ?? ctx.label] = { ...sweepObservation(prevOutcome, nextOutcome), ...focusInFrameOf(scopeAt) };
+    // #972: a sweep that STARTED inside a frame walked the frame, so it is not the page's evidence however
+    // cleanly NVDA ran out -- marked incomplete, naming what held it. After a restore this is the backstop.
+    ctx.observed[ctx.observedAs ?? ctx.label] = heldInFrame(ctx.observed[ctx.observedAs ?? ctx.label], focusInFrameOf(scopeAt));
   }
   return out;
 }
@@ -1170,19 +1174,54 @@ async function markPageState(beforeProbe, diag) {
  * navigate. Three of three pages differed; the property this plan is built on was simply not true.
  *
  * @param {{ probeOrder: string | undefined, diag: Diag,
- *           runSweep: () => Promise<void>, runFocus: () => Promise<void> }} ctx
+ *           runSweep: () => Promise<void>, runFocus: () => Promise<void>,
+ *           observed?: Record<string, any> }} ctx
  */
-async function runProbeSequence({ probeOrder, diag, runSweep, runFocus }) {
+async function runProbeSequence({ probeOrder, diag, runSweep, runFocus, observed }) {
   const sequence = probeSequence(probeOrder);
   diag.mark("probeOrder", { order: sequence.join(","), requested: probeOrder ?? "default" });
+  /** @type {string | null} */
+  let restoredFrom = null;
   for (const [i, step] of sequence.entries()) {
     if (i > 0) await establishBrowseMode(diag);
     // BEFORE each probe, so two probes' evidence can be told apart from two probes' PAGES. D3 restores what
     // the screen reader carries between probes; this records what the PAGE carried, which D3 cannot fix
     // because a disclosure the sweep opened cannot be un-opened.
-    await markPageState(step, diag);
+    const state = await markPageState(step, diag);
+    // #972: THIS reading is where #953 found focus already inside the chat widget's frame, before any probe.
+    if (i === 0) restoredFrom = await restoreFocusBeforeSweeps(state, step, diag);
     await (step === "sweep" ? runSweep() : runFocus());
   }
+  // On the FIRST sweep's own record (headings leads `sweepEveryStructuralType`), with `left` read from that
+  // sweep's own census -- so whether the restore held costs no second read.
+  if (restoredFrom !== null && observed?.headings) {
+    observed.headings = { ...observed.headings, focusRestored: focusRestoredRecord(restoredFrom, observed.headings) };
+  }
+}
+
+/**
+ * Before the sweeps, return focus to the top document if it sits inside a frame nothing of ours put it in
+ * (`focusRestoreDecision`, #972). Marks `focusRestore` EVERY time -- `attempted: false` with why, or
+ * `attempted: true` with the frame and whether the page took the blur -- so "no restore was needed" and
+ * "nobody checked" never read the same.
+ *
+ * After a restore, `establishBrowseMode`: the caret may still sit in the frame's own tree interceptor, and
+ * `moveToContainingBrowseModeDocument` is the between-probe remedy for exactly that.
+ *
+ * @param {Record<string, any> | null} state the census read before the first probe
+ * @param {string} firstStep @param {Diag} diag
+ * @returns {Promise<string | null>} the frame focus was taken out of, or null when no restore was attempted
+ */
+async function restoreFocusBeforeSweeps(state, firstStep, diag) {
+  const decision = focusRestoreDecision(state, firstStep);
+  if (!decision.restore) {
+    diag.mark("focusRestore", { attempted: false, why: decision.why });
+    return null;
+  }
+  const outcome = await restoreTopDocumentFocus();
+  await establishBrowseMode(diag);
+  diag.mark("focusRestore", { attempted: true, from: decision.from, blurred: outcome?.blurred ?? null });
+  return decision.from;
 }
 
 /**

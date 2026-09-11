@@ -71,5 +71,10 @@
  *
  * The cost is a full recapture, paid in orchestrator's fleet window alongside #953's half 2, and deployed
  * with `--allow-protocol-change` there and nowhere else.
+ *
+ * #972 RIDES THE SAME 17, by ceo's ruling: the 17 deploy was held until 09:00Z for it, so one recapture covers
+ * both. It changes what a capture DOES -- focus is returned to the top document before the sweeps when #953's
+ * `focusInFrame` shows it inside a frame nothing of ours put it in (6 of 6 on #951's page) -- and marks a sweep
+ * that still starts inside a frame incomplete (`heldBy`). Had it missed the window it would have been 18.
  */
 export const CAPTURE_PROTOCOL_VERSION = 17;
