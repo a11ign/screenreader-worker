@@ -55,4 +55,21 @@
  * The three channels are bundled deliberately, per this repo's own rule that the cheap moment to pay a
  * recapture is alongside any other pending bump rather than twice.
  */
-export const CAPTURE_PROTOCOL_VERSION = 16;
+/**
+ * 16 -> 17 on 2026-09-11, because `formInputs` (#170) is a new field a RULE AND A SIGNAL READ.
+ *
+ * 1.3.5's `addUnidentifiedInputPurpose` (`packages/judge/src/rules.ts`) and the `inputPurposeInvalid`
+ * signal have read `capture.formInputs` since #869, and until #170 no worker populated it: every capture on
+ * disk lacks it, which both readers correctly treat as NOT CHECKED. #170's census fills it from the DOM.
+ *
+ * WITHOUT A BUMP IT WOULD PRESENT AS 14 -> 15 DID, partly working. #869's five 1.3.5 cases were captured
+ * fresh under 16 on 2026-09-11 (#957, product-manager's reading on #170), before the census existed, so the cache would keep serving them
+ * without `formInputs` and they would stay BLIND while any case captured later fired -- "a probe that
+ * reaches only the cases nobody had captured before is indistinguishable from a probe that works". And a
+ * corpus half on one shape and half on another is the mixed-dataset rule in another currency. ceo's ruling,
+ * via product-manager on #170.
+ *
+ * The cost is a full recapture, paid in orchestrator's fleet window alongside #953's half 2, and deployed
+ * with `--allow-protocol-change` there and nowhere else.
+ */
+export const CAPTURE_PROTOCOL_VERSION = 17;

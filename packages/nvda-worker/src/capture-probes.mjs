@@ -27,7 +27,7 @@ import {
   activationDeadline, activationBudgetMark,
 } from "./capture-pure.mjs";
 import {
-  currentPageUrl, mediaCensus, structuralCensus, domCensus, truncatedAnnouncements,
+  currentPageUrl, mediaCensus, formInputCensus, structuralCensus, domCensus, truncatedAnnouncements,
   installFocusEventLog, collectFocusEventLog, resetFocusToDocumentStart, documentTitle,
 } from "./browser-session.mjs";
 import { matchesFieldName, matchesWithin, fillActionFor } from "./field-match.mjs";
@@ -91,7 +91,7 @@ import {
 //
 // Bumping it forces a full recapture. That is the point.
 //
-// Full history of every bump (2 -> 14) and why: docs/capture-protocol-version-history.md. The
+// Full history of every bump and why: docs/capture-protocol-version-history.md. The
 // pattern that repeats: additive alone does not excuse skipping a bump if the SAME page can now
 // produce DIFFERENT evidence than before, and bundling an evidence change with a recapture already
 // in flight is how this file's own rule pays for the fleet time once rather than twice.
@@ -162,6 +162,43 @@ const SWEEP_SILENT_RETRIES = 3;
 // the announcements only interaction reveals. Returns the structure model and
 // the interaction model.
 /**
+ * THE DOM-ONLY EVIDENCE onto the result, and each census's diagnostics onto its own mark -- attributes no
+ * screen reader can report, so the only fields in a capture NVDA could not have produced.
+ *
+ *   `media`       1.4.2 Audio Control: `autoplay` and `muted` have no accessibility-tree equivalent.
+ *   `formInputs`  1.3.5 Identify Input Purpose (#170, `media`'s twin): each control's `autocomplete`
+ *                 attribute. `[]` means the page has no form control. `total` sits BESIDE `count` on its mark
+ *                 because `elements` is capped (`FORM_INPUT_CAP`), and a truncated list that reads as complete
+ *                 is the defect one layer on. Both are numbers on a `formInputCensus` mark, which no census
+ *                 reader takes element counts from (`censusElementCounts` and `censusFromDiagnostics` read
+ *                 `structureCensus` only).
+ *
+ * Null means the census did not run, and the rules reading these make no claim on null -- a probe failure
+ * must never become a silent pass. Assigned onto `result` rather than a new top-level field so each travels
+ * with the rest of the evidence. `.elements` only -- `targetMatch`/`candidates`/`targetUrl`/`expectedUrl` are
+ * diagnostic, not evidence, and go on the mark instead, exactly like `census`/`dom`.
+ *
+ * @param {Record<string, any>} result the structural pass's accumulator
+ * @param {{ mediaRead: Record<string, any> | null, formsRead: Record<string, any> | null,
+ *           readAt: Record<string, { readAt: { startedAtMs: number, tookMs: number } }> }} reads
+ * @param {Diag} diag
+ */
+function recordDomOnlyEvidence(result, { mediaRead, formsRead, readAt }, diag) {
+  result.media = mediaRead?.elements ?? null;
+  diag.mark("mediaCensus", mediaRead
+    ? { count: mediaRead.elements?.length ?? null, targetMatch: mediaRead.targetMatch,
+        candidates: mediaRead.candidates, targetUrl: mediaRead.targetUrl, expectedUrl: mediaRead.expectedUrl,
+        ...readAt.media }
+    : { error: "not counted", ...readAt.media });
+  result.formInputs = formsRead?.elements ?? null;
+  diag.mark("formInputCensus", formsRead
+    ? { count: formsRead.elements?.length ?? null, total: formsRead.total, targetMatch: formsRead.targetMatch,
+        candidates: formsRead.candidates, targetUrl: formsRead.targetUrl, expectedUrl: formsRead.expectedUrl,
+        ...readAt.formInputs }
+    : { error: "not counted", ...readAt.formInputs });
+}
+
+/**
  * Ask Chromium how much there WAS to find — the census, taken during `navigateByStructure` itself — then
  * mark it and cross-check it against the sweep.
  *
@@ -191,12 +228,13 @@ export async function navigateByStructureThenAudit(options) {
   // `navigateByStructure`: an inferred type makes adding evidence the error and dropping it the default.
   /** @type {{ structure: CapturedStructure, interaction: CapturedInteraction,
    *           observed: Record<string, Observation>, media?: Record<string, unknown>[] | null,
+   *           formInputs?: Record<string, unknown>[] | null,
    *           census: Record<string, any>, dom: Record<string, any> | null,
-   *           mediaCensus: Record<string, any> | null,
-   *           readAt: Record<"census"|"dom"|"media",
+   *           mediaCensus: Record<string, any> | null, formInputCensus: Record<string, any> | null,
+   *           readAt: Record<"census"|"dom"|"media"|"formInputs",
    *                          { readAt: { startedAtMs: number, tookMs: number } }> }} */
   const result = await navigateByStructure(options);
-  const { census, dom, mediaCensus: mediaRead, readAt } = result;
+  const { census, dom, mediaCensus: mediaRead, formInputCensus: formsRead, readAt } = result;
   // BESIDE the tree census, never instead of it. The two answer different questions — what Chromium
   // EXPOSES versus what the markup CONTAINS — and it is their disagreement that is informative:
   // `dom.heading 40, census.heading 0` is a finding about the page, `0 and 0` is a finding about us.
@@ -211,18 +249,7 @@ export async function navigateByStructureThenAudit(options) {
   // Marked even when NULL, because "the DOM was not counted" and "the DOM has none of these" must never
   // be the same silence — the rule `refreshBrowseBuffer` cost this project a whole corpus by breaking.
   options.diag.mark("domCensus", { ...(dom ?? { error: "not counted" }), ...readAt.dom });
-  // 1.4.2 Audio Control, from the DOM. `autoplay` and `muted` have no accessibility-tree equivalent, so
-  // this is the one field here that no screen reader could have produced. Null means the probe did not
-  // run, and the rule reading it makes no claim on null — a probe failure must never become a silent pass.
-  // Assigned onto `result` rather than a new top-level field so it travels with the rest of the evidence.
-  // `.elements` only — `targetMatch`/`candidates`/`targetUrl`/`expectedUrl` are diagnostic, not evidence,
-  // and go on the mark below instead, exactly like `census`/`dom` above.
-  result.media = mediaRead?.elements ?? null;
-  options.diag.mark("mediaCensus", mediaRead
-    ? { count: mediaRead.elements?.length ?? null, targetMatch: mediaRead.targetMatch,
-        candidates: mediaRead.candidates, targetUrl: mediaRead.targetUrl, expectedUrl: mediaRead.expectedUrl,
-        ...readAt.media }
-    : { error: "not counted", ...readAt.media });
+  recordDomOnlyEvidence(result, { mediaRead, formsRead, readAt }, options.diag);
   // `"error" in census` rather than `!census.error`. Both are true at runtime, but only the first NARROWS
   // -- the success branch carries an index signature, so reading `.error` off it is legal and tells the
   // compiler nothing. This check is the one place that already handled the error branch correctly;
@@ -491,8 +518,8 @@ function probePasses(ctx) {
  *
  * @param {Diag} diag the diagnostics recorder, for its clock only -- this function marks nothing
  * @returns {Promise<{ census: Record<string, any>, dom: Record<string, any> | null,
- *                      mediaCensus: Record<string, any> | null,
- *                      readAt: Record<"census"|"dom"|"media",
+ *                      mediaCensus: Record<string, any> | null, formInputCensus: Record<string, any> | null,
+ *                      readAt: Record<"census"|"dom"|"media"|"formInputs",
  *                                     { readAt: { startedAtMs: number, tookMs: number } }> }>}
  */
 async function censusBeforeNavigating(diag) {
@@ -505,6 +532,11 @@ async function censusBeforeNavigating(diag) {
   const dom = await domCensus();
   const mediaAt = diag.sinceStart();
   const media = await mediaCensus();
+  // #170: 1.3.5's DOM census, at the same moment as 1.4.2's and for the same reason -- `autocomplete`, like
+  // `autoplay`, is an attribute no screen reader can report, and a navigating probe must not have moved the
+  // tab first.
+  const formsAt = diag.sinceStart();
+  const forms = await formInputCensus();
   // START and DURATION, because a read is an interval and only the pair says how wide it is. The
   // alternative -- recording the end and calling the read instantaneous -- is a claim in a comment, and
   // `markPageState`'s `tookMs` exists because this file already learned that a claim about cost has to be
@@ -517,9 +549,10 @@ async function censusBeforeNavigating(diag) {
   const readAt = {
     census: { readAt: { startedAtMs: censusAt, tookMs: domAt - censusAt } },
     dom: { readAt: { startedAtMs: domAt, tookMs: mediaAt - domAt } },
-    media: { readAt: { startedAtMs: mediaAt, tookMs: diag.sinceStart() - mediaAt } },
+    media: { readAt: { startedAtMs: mediaAt, tookMs: formsAt - mediaAt } },
+    formInputs: { readAt: { startedAtMs: formsAt, tookMs: diag.sinceStart() - formsAt } },
   };
-  return { census, dom, mediaCensus: media, readAt };
+  return { census, dom, mediaCensus: media, formInputCensus: forms, readAt };
 }
 
 /**
@@ -616,7 +649,7 @@ function activationBudgetFor({ formState, probeForms, deadline, interaction, tas
 async function navigateByStructure({ deadline, diag, probeForms, probeFocus, probeTables, probeNavigation,
   formState, probeDialog, probeArrows, probeTyping, probeFocusReveal, probeFocusContext: probeFocusContext_,
   probeElementsList, probeOrder, task }) {
-  const { census, dom, mediaCensus: mediaCensus_, readAt } = await censusBeforeNavigating(diag);
+  const reads = await censusBeforeNavigating(diag);
   // BOTH ACCUMULATORS ARE DECLARED, because both are filled in by probes that run later and elsewhere.
   // An inferred type here describes only the fields present at construction -- `never[]` for each array,
   // and no `navigatedOnSubmit`, `postSubmitNames` or `media` at all -- so every probe that adds evidence
@@ -701,7 +734,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   return { structure, interaction: assembleAndMark({
     structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape, arrowNavigation,
     typedFeedback, focusContext, focusReveal, focusEvents, diag,
-  }), observed, census, dom, mediaCensus: mediaCensus_, readAt };
+  }), observed, ...reads };
 }
 
 /**
