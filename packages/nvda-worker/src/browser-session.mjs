@@ -1037,7 +1037,10 @@ const NAVIGATION_OUTCOME_EXPRESSION = `(() => {
  * only check it can have. And splitting it kept `domCensus` under the line budget: the page-side program
  * and the CDP round-trip that carries it are two things, which is what the budget was telling me.
  */
-const DOM_CENSUS_EXPRESSION = `(() => {
+// EXPORTED (#969) so a test runs the very string the page receives: the template literal AS EVALUATED, with every
+// escape applied. The harness that read this from source and undid two escapes by hand would pass a slash-escaped
+// regex that throws on the page -- a second copy of template-literal semantics, one escape short.
+export const DOM_CENSUS_EXPRESSION = `(() => {
     const visible = (el) => !el.closest("[aria-hidden='true']");
     const all = (selector) => [...document.querySelectorAll(selector)].filter(visible);
     // An image with an EMPTY alt is decorative by the author's instruction; Chromium marks it ignored and
