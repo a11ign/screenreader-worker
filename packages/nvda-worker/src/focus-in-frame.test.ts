@@ -35,11 +35,22 @@ function pageExpression(): string {
   return new Function(`return \`${match[1]}\`;`)() as string;
 }
 
-type Node = { tagName: string, getAttribute: (k: string) => string | null, shadowRoot?: { activeElement: Node | null } };
+type Node = {
+  tagName: string, getAttribute: (k: string) => string | null, hasAttribute: (k: string) => boolean,
+  tabIndex: number, shadowRoot: { activeElement: Node | null } | null,
+};
+/** Elements that hold focus themselves, with no tabindex -- the browser's own `tabIndex` of 0. */
+const NATIVELY_FOCUSABLE = new Set(["a", "button", "input", "select", "textarea", "iframe", "frame", "object", "embed", "fencedframe"]);
+/**
+ * An element as page script sees it. `shadowFocus` undefined means NO READABLE shadow root -- none at all, or a
+ * CLOSED one, which is the same `null` from outside and the whole reason "cannot say" exists.
+ */
 const el = (tag: string, attrs: Record<string, string> = {}, shadowFocus?: Node | null): Node => ({
   tagName: tag.toUpperCase(),
   getAttribute: (k: string) => attrs[k] ?? null,
-  ...(shadowFocus !== undefined ? { shadowRoot: { activeElement: shadowFocus } } : {}),
+  hasAttribute: (k: string) => k in attrs,
+  tabIndex: "tabindex" in attrs ? Number(attrs.tabindex) : NATIVELY_FOCUSABLE.has(tag) ? 0 : -1,
+  shadowRoot: shadowFocus !== undefined ? { activeElement: shadowFocus } : null,
 });
 
 /** Run the census against a document whose focus is `active`. Every selector returns nothing: only focus is asked. */
@@ -58,7 +69,12 @@ test("#953 PAGE: focus inside a frame NAMES the frame; focus in the top document
   assert.equal(focusFrameWhen(el("iframe", { title: "Chat Widget" })), "Chat Widget");
   assert.equal(focusFrameWhen(el("iframe", { name: "hubspot-conversations" })), "hubspot-conversations");
   assert.equal(focusFrameWhen(el("frame", { id: "nav" })), "nav", "a <frame> holds focus the same way");
+  // Every element that hosts a nested browsing context -- worker-judge's review: each read `null` before.
+  assert.equal(focusFrameWhen(el("object", { data: "https://widget.example/chat.html" })), "widget.example");
+  assert.equal(focusFrameWhen(el("embed", { src: "https://widget.example/chat.html" })), "widget.example");
+  assert.equal(focusFrameWhen(el("fencedframe")), "fencedframe");
   assert.equal(focusFrameWhen(el("body")), null, "the top document");
+  assert.equal(focusFrameWhen(el("div", { tabindex: "-1" })), null, "a container focused by script, in the top document");
   assert.equal(focusFrameWhen(el("button", { title: "Send" })), null, "a control in the top document, however it is named");
   assert.equal(focusFrameWhen(null), null, "no focused element at all");
 });
@@ -77,26 +93,51 @@ test("#953 PAGE: a frame mounted in a SHADOW ROOT is still a frame -- the hypoth
   assert.equal(focusFrameWhen(el("div", {}, el("iframe", { title: "Messages" }))), "Messages");
   assert.equal(focusFrameWhen(el("div", {}, el("div", {}, el("iframe", { id: "deep" })))), "deep", "nested shadow roots");
   assert.equal(focusFrameWhen(el("div", {}, el("button"))), null, "a shadow host whose focus is a button, not a frame");
-  assert.equal(focusFrameWhen(el("div", {}, null)), null, "a shadow host with nothing focused inside");
+  assert.equal(focusFrameWhen(el("div", { tabindex: "0" }, null)), null, "an OPEN shadow host, focused itself");
 });
 
-test("#953 RECORD: three answers -- the frame, null for the top document, and absent when nobody could say", () => {
+test("#953 PAGE: a CLOSED shadow root is 'cannot say', never 'top document' -- the false refutation, closed", () => {
+  // From outside, a closed root is `shadowRoot === null`, so focus inside one lands on its HOST, and page script
+  // cannot tell that from a host with no shadow root. worker-judge's review of #963: it read `null` before.
+  assert.deepEqual(focusFrameWhen(el("chat-widget")), { cannotSay: "focus is on <chat-widget>, whose shadow root, if it has one, page script cannot read" });
+  assert.deepEqual(Object.keys(focusFrameWhen(el("chat-widget", { tabindex: "0" })) as object), ["cannotSay"],
+    "a custom element that holds focus itself, with no readable root: still cannot say which");
+  assert.deepEqual(Object.keys(focusFrameWhen(el("div")) as object), ["cannotSay"],
+    "a built-in element that cannot hold focus itself is focused only if focus is inside its closed root");
+  assert.equal(focusFrameWhen(el("button")), null, "a control that holds focus itself, in the top document");
+});
+
+test("#953 PAGE: a read that throws is 'cannot say' for this key alone -- the rest of the census survives", () => {
+  const document = {
+    get activeElement(): never { throw new Error("denied"); },
+    documentElement: { getAttribute: () => null, closest: () => null },
+    querySelectorAll: () => [],
+  };
+  const out = new Function("document", `return ${pageExpression()}`)(document) as Record<string, unknown>;
+  assert.deepEqual(out.focusFrame, { cannotSay: "reading focus threw: denied" });
+  assert.ok("openDialog" in out && "tabbable" in out, "the census object still arrives, every other field with it");
+});
+
+test("#953 RECORD: four answers -- the frame, null for the top document, cannot-say with why, and absent", () => {
   assert.deepEqual(focusInFrameOf({ focusFrame: "Chat Widget" }), { focusInFrame: "Chat Widget" });
   assert.deepEqual(focusInFrameOf({ focusFrame: null }), { focusInFrame: null }, "read, and focus was in the top document");
+  assert.deepEqual(focusInFrameOf({ focusFrame: { cannotSay: "a closed root" } }), { focusInFrameUnknown: "a closed root" },
+    "read, and the page could not say -- never `null`, which would claim the top document");
   assert.deepEqual(focusInFrameOf(null), {}, "the census failed: nobody could say, which is not 'not in a frame'");
   assert.deepEqual(focusInFrameOf({ heading: 3 } as never), {}, "a worker predating the field: absent, never null");
 });
 
-test("#953 RECORD: never a number, whatever the page returned", () => {
-  for (const focusFrame of [3, 0, "", true, {}, ["x"]]) {
-    const { focusInFrame } = focusInFrameOf({ focusFrame });
-    assert.equal(focusInFrame, null, `${JSON.stringify(focusFrame)} is not a frame's name`);
+test("#953 RECORD: only an EXPLICIT null means 'top document' -- an answer of no known shape is nobody could say", () => {
+  for (const focusFrame of [3, 0, "", true, {}, ["x"], undefined, { cannotSay: 3 }]) {
+    assert.deepEqual(focusInFrameOf({ focusFrame }), {}, `${JSON.stringify(focusFrame)} is not evidence of anything`);
   }
 });
 
 test("#953 NESTED under the sweep's own observed record, at the one call site every sweep reaches", () => {
   const record = { ...sweepObservation({ stop: "exhausted" }, { stop: "exhausted" }), ...focusInFrameOf({ focusFrame: "Chat Widget" }) };
   assert.deepEqual(Object.keys(record).sort(), ["asked", "complete", "focusInFrame", "stop"]);
+  const unknown = { ...sweepObservation({ stop: "exhausted" }, { stop: "exhausted" }), ...focusInFrameOf({ focusFrame: { cannotSay: "x" } }) };
+  assert.deepEqual(Object.keys(unknown).sort(), ["asked", "complete", "focusInFrameUnknown", "stop"]);
   assert.equal(record.complete, true, "the sweep's own verdict is untouched");
   // Wired, not only defined: without this, every assertion above passes and no capture records anything.
   const probes = source("capture-probes.mjs");
@@ -108,7 +149,7 @@ test("#953 NESTED under the sweep's own observed record, at the one call site ev
   assert.equal((body.match(/domCensus\(|markPageState\(/g) ?? []).length, 1, "and from the ONE census read the sweep already takes");
   // No second home: the field lives in `observed[channel]` and nowhere at the capture's top level. The
   // worker only ever SETS it through the derivation above, never by name.
-  assert.equal([...probes.matchAll(/\bfocusInFrame\s*[:=]/g)].length, 0,
+  assert.equal([...probes.matchAll(/\bfocusInFrame(?:Unknown)?\s*[:=]/g)].length, 0,
     "capture-probes.mjs never assigns the field by name -- only the derivation that nests it");
 });
 

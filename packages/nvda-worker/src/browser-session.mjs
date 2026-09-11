@@ -1181,29 +1181,53 @@ const DOM_CENSUS_EXPRESSION = `(() => {
       // inside a chat widget's frame moves DOM focus into it, and NVDA's quick navigation is then held by
       // that frame. No capture records where focus was, so nothing on disk can test it.
       //
-      // From the top document, focus anywhere inside a frame -- cross-origin included -- reads as
-      // \`activeElement\` being the <iframe> itself, so this needs no access to the frame's content. A shadow
-      // host is followed to the element focused inside it: a widget that mounts its frame in a shadow root
-      // would otherwise read as "focus in the top document", and that would refute the hypothesis falsely.
+      // From the top document, focus anywhere inside a nested browsing context -- cross-origin included --
+      // reads as \`activeElement\` being the element that hosts it: an <iframe> or <frame>, and equally an
+      // <object>, <embed> or <fencedframe>. So this needs no access to the frame's content. An open shadow
+      // root is followed to the element focused inside it: a widget that mounts its frame in one would
+      // otherwise read as "focus in the top document", and that would refute the hypothesis falsely.
       //
-      // A STRING, NEVER A COUNT, for \`openDialog\`'s reason. \`null\` when focus is in the top document.
-      // The frame's title, name or id where it has one, else its source's host -- enough to find it, and
-      // never a path or query, which can carry a session token.
+      // THREE ANSWERS, and the third is why the second can be trusted:
+      //   a string                the frame holding focus: its title, name or id, else its source's HOST --
+      //                           never a path or query, which can carry a session token
+      //   null                    focus is in the top document, or in an OPEN shadow root, on an element
+      //                           that holds focus itself
+      //   { cannotSay: "..." }    this page cannot say. A CLOSED shadow root reads as \`shadowRoot === null\`
+      //                           from outside, so focus inside one lands on its host, and page script cannot
+      //                           tell that from a host with no shadow root. So a host that cannot hold focus
+      //                           itself, or any custom element with no readable root, is "cannot say", never
+      //                           \`null\` -- worker-judge's review of #963. The read throwing is the same answer.
+      // Never a count, for \`openDialog\`'s reason: readers of this mark take its numeric fields.
       focusFrame: (() => {
-        let el = document.activeElement;
-        while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
-        if (!el || (el.tagName !== "IFRAME" && el.tagName !== "FRAME")) return null;
-        // String operations, not a regex: this text is a template literal, which turns an escaped slash
-        // into a bare one before the page parses it -- a harness reading the source would never see that.
-        const src = (el.getAttribute("src") || "").trim();
-        const scheme = src.indexOf("://");
-        const host = scheme > 0
-          ? src.slice(scheme + 3).split("/")[0].split("?")[0].split("#")[0].split(":")[0] : "";
-        return ((el.getAttribute("title") || "").trim()
-          || (el.getAttribute("name") || "").trim()
-          || (el.getAttribute("id") || "").trim()
-          || host
-          || el.tagName.toLowerCase()).slice(0, 80);
+        try {
+          let el = document.activeElement;
+          while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+          if (!el) return null;
+          const tag = String(el.tagName || "").toUpperCase();
+          if (["IFRAME", "FRAME", "OBJECT", "EMBED", "FENCEDFRAME"].includes(tag)) {
+            // String operations, not a regex: this text is a template literal, which turns an escaped slash
+            // into a bare one before the page parses it -- a harness reading the source would never see it.
+            const src = (el.getAttribute("src") || el.getAttribute("data") || "").trim();
+            const scheme = src.indexOf("://");
+            const host = scheme > 0
+              ? src.slice(scheme + 3).split("/")[0].split("?")[0].split("#")[0].split(":")[0] : "";
+            return ((el.getAttribute("title") || "").trim()
+              || (el.getAttribute("name") || "").trim()
+              || (el.getAttribute("id") || "").trim()
+              || host
+              || tag.toLowerCase()).slice(0, 80);
+          }
+          if (tag === "BODY" || tag === "HTML" || el.shadowRoot) return null;
+          const holdsFocusItself = el.hasAttribute("tabindex") || el.isContentEditable === true
+            || (typeof el.tabIndex === "number" && el.tabIndex >= 0);
+          if (tag.includes("-") || !holdsFocusItself) {
+            return { cannotSay: "focus is on <" + tag.toLowerCase().slice(0, 40) + ">, whose shadow root, if it "
+              + "has one, page script cannot read" };
+          }
+          return null;
+        } catch (error) {
+          return { cannotSay: "reading focus threw: " + String((error && error.message) || error).slice(0, 80) };
+        }
       })(),
     };
 })()`;
