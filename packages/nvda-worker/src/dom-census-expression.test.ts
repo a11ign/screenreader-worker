@@ -17,20 +17,21 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { DOM_CENSUS_EXPRESSION } from "./browser-session.mjs";
 
-const SOURCE = readFileSync(fileURLToPath(new URL("./browser-session.mjs", import.meta.url)), "utf8");
-
-/** The expression as the page will receive it, with the template escapes undone. */
+/**
+ * The expression as the page receives it: IMPORTED, so the template literal is evaluated by module load with
+ * every escape applied -- never read from source with some escapes undone by hand (#969).
+ *
+ * This used to reconstruct the string itself, undoing escaped backticks and escaped dollar signs and nothing
+ * else. The page applies every escape, so a slash-escaped regex passed here and threw on the page: a second
+ * copy of template-literal semantics, one escape short. By NAME still, for the reason the old reader gave --
+ * this module also holds `mediaCensus`'s expression, and a pattern for "the const named EXPRESSION" once
+ * pointed this test at the wrong program.
+ */
 function pageExpression(): string {
-  // Named, because this file shares its module with `mediaCensus`, which has an expression of its own.
-  // A regex for "the const named EXPRESSION" matched whichever came first, so extracting the census to
-  // module level silently pointed this test at the wrong program — it kept passing having examined
-  // something else. Reading a NAME is the difference between a fixture and a coincidence.
-  const match = SOURCE.match(/const DOM_CENSUS_EXPRESSION = `([\s\S]*?)`;/);
-  assert.ok(match, "the census expression must be findable BY NAME, or this test examines nothing");
-  return match[1].replace(/\\`/g, "`").replace(/\\\$/g, "$");
+  assert.equal(typeof DOM_CENSUS_EXPRESSION, "string", "the census expression must be importable BY NAME");
+  return DOM_CENSUS_EXPRESSION;
 }
 
 type El = Record<string, unknown>;
