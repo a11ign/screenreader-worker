@@ -1632,6 +1632,98 @@ export async function launchReusable({ exe, args, onEvent = () => {} }) {
 
 
 /**
+ * Where `FORM_INPUT_CENSUS_EXPRESSION` stops listing -- #170. A real page's form rarely passes a hundred controls
+ * (IKEA's 100 is the largest measured); ten times that bounds the payload without ever truncating one we
+ * have seen, and `total` on the mark says when it did.
+ */
+export const FORM_INPUT_CAP = 1000;
+
+/**
+ * EVERY FORM CONTROL'S `autocomplete` ATTRIBUTE -- #170, the census 1.3.5's rule has been waiting for.
+ *
+ * `addUnidentifiedInputPurpose` (`packages/judge/src/rules.ts`) reads `formInputs` and has never had
+ * anything to read: `autocomplete` is an HTML attribute with no accessibility-tree equivalent, so NVDA
+ * cannot report it, exactly as `media`'s `autoplay` cannot be. Same channel, same reasoning, different
+ * attribute.
+ *
+ * THE ATTRIBUTE, NEVER THE PROPERTY. `el.autocomplete` is the IDL value, which the browser normalises and
+ * returns as "" for a token it does not recognise -- the malformed `fname` F107's syntactic half exists to
+ * catch would read as no value at all. `getAttribute` returns what the author wrote, and `null` when
+ * there is no attribute: the rule treats null, "", "on" and "off" as making no claim about purpose.
+ *
+ * ONE ENTRY PER CONTROL, WITH OR WITHOUT THE ATTRIBUTE. A control with no `autocomplete` is reported with
+ * `autocomplete: null`, never skipped: "no control carries the attribute" and "no control was examined"
+ * must come back as different values, and skipping would make them the same empty list. `total` counts
+ * every control and `elements` is capped, so a truncated list says so (`FORM_INPUT_CAP`).
+ *
+ * `input` (not `type=hidden`, which collects nothing from the user), `select` and `textarea` -- the
+ * controls `autocomplete` applies to. `type` is the attribute lower-cased, "text" when absent (the
+ * browser's own default), and `null` for `select`/`textarea`, which have no type attribute.
+ *
+ * THE TOP DOCUMENT ONLY, like `domCensus`: a control inside a frame or a shadow root is not in
+ * `querySelectorAll`'s reach. Named rather than discovered later.
+ *
+ * EXPORTED so `form-input-census.test.ts` runs the very string the page receives -- the evaluated literal,
+ * not its source text with escapes undone by hand (#969's shape).
+ */
+export const FORM_INPUT_CENSUS_EXPRESSION = `(() => {
+  const controls = [...document.querySelectorAll("input, select, textarea")]
+    .filter((el) => (el.getAttribute("type") || "").trim().toLowerCase() !== "hidden");
+  return {
+    total: controls.length,
+    elements: controls.slice(0, ${FORM_INPUT_CAP}).map((el) => {
+      const tag = el.tagName.toLowerCase();
+      return {
+        tag,
+        type: tag === "input" ? ((el.getAttribute("type") || "").trim().toLowerCase() || "text") : null,
+        autocomplete: el.getAttribute("autocomplete"),
+      };
+    }),
+  };
+})()`;
+
+/**
+ * Form controls' `autocomplete` attributes, for 1.3.5 -- the `mediaCensus` of that criterion, and read at
+ * the same moment (`censusBeforeNavigating`). See `FORM_INPUT_CENSUS_EXPRESSION` for what it reads and
+ * why the attribute rather than the property.
+ *
+ * Returns `null` rather than throwing on total failure, and `null` means NOT CHECKED -- the rule makes no
+ * claim on it. Carries `targetMatch`/`candidates`/`targetUrl`/`expectedUrl` like every
+ * `pageTarget()`-dependent read, so a capture can say which document the list describes.
+ *
+ * @returns {Promise<{ elements: { tag: string, type: string | null, autocomplete: string | null }[] | null,
+ *   total: number | null, targetMatch: unknown, candidates: unknown, targetUrl: unknown, expectedUrl: unknown }
+ *   | null>}
+ */
+export async function formInputCensus() {
+  try {
+    const target = await pageTarget();
+    const socket = new WebSocket(target.webSocketDebuggerUrl);
+    try {
+      await once(socket, "open", CDP_READY_TIMEOUT_MS);
+      const result = waitForResult(socket, 1, AX_TREE_TIMEOUT_MS);
+      socket.send(JSON.stringify({
+        id: 1,
+        method: "Runtime.evaluate",
+        params: { expression: FORM_INPUT_CENSUS_EXPRESSION, returnByValue: true },
+      }));
+      const value = (await result)?.result?.value;
+      return {
+        elements: Array.isArray(value?.elements) ? value.elements : null,
+        total: typeof value?.total === "number" ? value.total : null,
+        targetMatch: target.targetMatch, candidates: target.candidates,
+        targetUrl: target.url, expectedUrl: expectedPageUrl,
+      };
+    } finally {
+      try { socket.close(); } catch (error) { void error; }
+    }
+  } catch (error) {
+    void error; // a diagnostic probe must never fail a capture; null reads as "not checked"
+    return null;
+  }
+}
+
+/**
  * Media elements the page declares, for 1.4.2 Audio Control.
  *
  * The DOM, not the accessibility tree, and that is not a shortcut: `autoplay` and `muted` are HTML
