@@ -1174,6 +1174,37 @@ const DOM_CENSUS_EXPRESSION = `(() => {
           || (modal.getAttribute("id") || "").trim()
           || modal.tagName.toLowerCase()).slice(0, 80);
       })(),
+      // WHICH FRAME HOLDS FOCUS, if any -- #953, the diagnostic #951's remedy waits on.
+      //
+      // #951 marks a sweep that found far less than the census and does not say why. The hypothesis
+      // (worker-capture's, 2026-09-11; not yet a finding) is that a sweep landing on a focusable control
+      // inside a chat widget's frame moves DOM focus into it, and NVDA's quick navigation is then held by
+      // that frame. No capture records where focus was, so nothing on disk can test it.
+      //
+      // From the top document, focus anywhere inside a frame -- cross-origin included -- reads as
+      // \`activeElement\` being the <iframe> itself, so this needs no access to the frame's content. A shadow
+      // host is followed to the element focused inside it: a widget that mounts its frame in a shadow root
+      // would otherwise read as "focus in the top document", and that would refute the hypothesis falsely.
+      //
+      // A STRING, NEVER A COUNT, for \`openDialog\`'s reason. \`null\` when focus is in the top document.
+      // The frame's title, name or id where it has one, else its source's host -- enough to find it, and
+      // never a path or query, which can carry a session token.
+      focusFrame: (() => {
+        let el = document.activeElement;
+        while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+        if (!el || (el.tagName !== "IFRAME" && el.tagName !== "FRAME")) return null;
+        // String operations, not a regex: this text is a template literal, which turns an escaped slash
+        // into a bare one before the page parses it -- a harness reading the source would never see that.
+        const src = (el.getAttribute("src") || "").trim();
+        const scheme = src.indexOf("://");
+        const host = scheme > 0
+          ? src.slice(scheme + 3).split("/")[0].split("?")[0].split("#")[0].split(":")[0] : "";
+        return ((el.getAttribute("title") || "").trim()
+          || (el.getAttribute("name") || "").trim()
+          || (el.getAttribute("id") || "").trim()
+          || host
+          || el.tagName.toLowerCase()).slice(0, 80);
+      })(),
     };
 })()`;
 

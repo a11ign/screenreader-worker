@@ -597,6 +597,31 @@ export function sweepObservation(prev, next) {
 }
 
 /**
+ * WHERE FOCUS SAT WHEN A SWEEP STARTED, as that sweep's own `observed` record carries it -- #953.
+ *
+ * The instrument #951's remedy waits on, and nothing else: it changes no behaviour. `scopeAt` is the DOM
+ * census `collectByType` already reads at the sweep's start (one read per sweep, no second round trip), and
+ * its `focusFrame` names the frame holding focus, or is `null` in the top document.
+ *
+ * THREE ANSWERS, and collapsing any two is the defect this project pays for most:
+ *   `{ focusInFrame: "<frame>" }`  focus sat inside that frame
+ *   `{ focusInFrame: null }`       the page was read and focus sat in the top document
+ *   `{}`                           nobody could say -- the census failed, or a worker predating the field
+ *
+ * NESTED under the sweep's record, never a top-level field: readers that take "every numeric field except
+ * these" turn a new top-level number into an element type. And a string or `null`, never a number, whatever
+ * the page returned -- so no reader of any shape can count it.
+ *
+ * @param {{ focusFrame?: unknown } | null | undefined} scopeAt the census read at the sweep's start
+ * @returns {{ focusInFrame?: string | null }}
+ */
+export function focusInFrameOf(scopeAt) {
+  if (!scopeAt || typeof scopeAt !== "object" || !("focusFrame" in scopeAt)) return {};
+  const frame = scopeAt.focusFrame;
+  return { focusInFrame: typeof frame === "string" && frame.length > 0 ? frame : null };
+}
+
+/**
  * A channel nobody asked about. Distinct from `{asked: true}` with nothing found, and that is the point.
  *
  * `why` is required rather than defaulted: "the probe is opt-in and this case did not request it" and "the

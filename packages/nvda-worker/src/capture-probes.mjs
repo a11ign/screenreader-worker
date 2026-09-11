@@ -22,6 +22,7 @@ import { nvda } from "@guidepup/guidepup";
 import {
   crossCheckStructure, dedupeKey, elementsListRowName, MIN_CONTROL_NAME_LEN, probeKindFor,
   sweepStepFromSpeech, focusOrderCycled, focusWalkTruncated, sweepObservation, notObserved, recordWhatWasAsked,
+  focusInFrameOf,
   focusRevealVerdict, focusEventVerdict, censusGrowth, focusResetOutcome, titleSourceVerdict,
   activationDeadline, activationBudgetMark,
 } from "./capture-pure.mjs";
@@ -1050,7 +1051,12 @@ async function collectByType(commands, ctx) {
   // Keyed by the CHANNEL it fills (`headings`), not by the sweep's diagnostic label (`heading`). The mark's
   // `type` is existing evidence and must not move: renaming it to line the two up would change every
   // capture's diagnostics to save one lookup.
-  if (ctx.observed) ctx.observed[ctx.observedAs ?? ctx.label] = sweepObservation(prevOutcome, nextOutcome);
+  //
+  // `focusInFrame` (#953) rides on the same record: where focus sat when this sweep started, from the census
+  // read above. HERE for the same reason as that read -- every sweep reaches the page through this function.
+  if (ctx.observed) {
+    ctx.observed[ctx.observedAs ?? ctx.label] = { ...sweepObservation(prevOutcome, nextOutcome), ...focusInFrameOf(scopeAt) };
+  }
   return out;
 }
 
