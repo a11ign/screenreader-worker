@@ -64,18 +64,22 @@ test("the moment comes from the READ, not from a second clock at the mark site",
     "the mark site must not mint its own moment — that is the defect, spelled differently");
 });
 
-test("ALL THREE census marks carry it, not just the one that produced a wrong answer", () => {
+test("EVERY census mark carries it, not just the one that produced a wrong answer", () => {
   // A remedy at one call site when the behaviour reaches several is this repo's most expensive shape.
-  // `structureCensus` is the mark that misled a reader; `domCensus` and `mediaCensus` are read in the
-  // same call and pushed in the same place, so they carry the identical defect and no reader had yet
-  // asked them the question.
+  // `structureCensus` is the mark that misled a reader; `domCensus`, `mediaCensus` and `formInputCensus`
+  // (#170) are read in the same call, so they carry the identical defect and no reader had yet asked them
+  // the question. The two DOM-only censuses are marked by `recordDomOnlyEvidence`, which the audit calls.
   const audit = bodyOf(PROBES, "export async function navigateByStructureThenAudit");
   assert.match(audit, /mark\("structureCensus", \{ \.\.\.census, \.\.\.readAt\.census \}\)/);
   assert.match(audit, /mark\("domCensus", \{ [^\n]*\.\.\.readAt\.dom \}\)/);
-  assert.match(audit, /\.\.\.readAt\.media/, "mediaCensus must carry its read moment too");
-  // Marked even when the read FAILED. "Not counted" still happened at a moment, and an error branch that
-  // drops the moment is how a gate downstream comes to treat a failure as an absence.
-  assert.match(audit, /error: "not counted", \.\.\.readAt\.media/);
+  assert.match(audit, /recordDomOnlyEvidence\(result, \{ mediaRead, formsRead, readAt \}, options\.diag\);/);
+  const domOnly = bodyOf(PROBES, "function recordDomOnlyEvidence");
+  for (const read of ["media", "formInputs"]) {
+    assert.match(domOnly, new RegExp(`\\.\\.\\.readAt\\.${read} \\}`), `the ${read} census must carry its read moment too`);
+    // Marked even when the read FAILED. "Not counted" still happened at a moment, and an error branch that
+    // drops the moment is how a gate downstream comes to treat a failure as an absence.
+    assert.match(domOnly, new RegExp(`error: "not counted", \\.\\.\\.readAt\\.${read} \\}`));
+  }
 });
 
 test("the moment is NESTED, because the census counts are read off a denylist", () => {

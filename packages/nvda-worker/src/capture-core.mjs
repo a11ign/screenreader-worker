@@ -124,7 +124,7 @@ const NVDA_READY_BUDGET_MS = 3_000;   // how long a cold NVDA gets to answer at 
  * @typedef {{ headings: string[], landmarks: string[], formFields: string[], graphics: string[], links: string[], lists: string[], tableCells: string[], frames: string[] }} CapturedStructure
  * @typedef {{ control: string, after: string }} AnnouncedChange
  * @typedef {{ controls: string[], stateChanges: AnnouncedChange[], formChanges: AnnouncedChange[], postSubmitFields: string[], focusOrder: string[], routeChange?: unknown, navigatedOnSubmit?: unknown, postSubmitNames?: string[] }} CapturedInteraction
- * @typedef {{ url: string, screenReader: string, capturedAt: string, transcript: string[], structure: CapturedStructure, interaction: CapturedInteraction, media?: Record<string, unknown>[] | null, observed?: Record<string, Observation>, diagnostics: object[] }} Capture
+ * @typedef {{ url: string, screenReader: string, capturedAt: string, transcript: string[], structure: CapturedStructure, interaction: CapturedInteraction, media?: Record<string, unknown>[] | null, formInputs?: Record<string, unknown>[] | null, observed?: Record<string, Observation>, diagnostics: object[] }} Capture
  *
  * THE EVIDENCE SHAPE, named once. It was written out inline in this `@returns` and then built by three
  * separate object literals whose inferred types disagreed with it and with each other -- so the one
@@ -323,7 +323,7 @@ async function runCapturePhases(url, opts, diag) {
     silentAtStart: screenReaderWasSilentAtStart(diag),
   });
   failIfScreenReaderIsMute(transcript, diag);
-  const { structure, interaction, media, observed } = await navigateByStructureThenAudit({
+  const { structure, interaction, media, formInputs, observed } = await navigateByStructureThenAudit({
     deadline, diag,
     probeForms: !!opts.probeForms, probeFocus: !!opts.probeFocus, probeTables: !!opts.probeTables,
     probeNavigation: !!opts.probeNavigation,
@@ -352,6 +352,10 @@ async function runCapturePhases(url, opts, diag) {
     // 1.4.2 evidence, from the DOM. `null` means the probe did not run and is NOT the same as an empty
     // array, which means the page declares no media — the rule reading this makes no claim on null.
     media,
+    // 1.3.5 evidence, from the DOM -- #170: each form control's `autocomplete` ATTRIBUTE, `{ tag, type,
+    // autocomplete }`. The same contract as `media`: `null` means the census did not run, `[]` means the page
+    // has no form control, and `autocomplete: null` on an entry means that control has no attribute.
+    formInputs,
     // What this capture ASKED, beside what it heard. See the `Observation` typedef.
     observed,
     diagnostics: diag.entries,
