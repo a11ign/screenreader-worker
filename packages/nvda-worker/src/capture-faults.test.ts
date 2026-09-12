@@ -55,6 +55,9 @@ test("every captureFault call site passes the code first", () => {
     `only found ${realCallSites.length} captureFault( call site(s) across ${files.join(", ")} -- a read `
     + "failed, a file moved, or the population genuinely shrank below the floor");
   const swapped = sources.flatMap((s) => [...s.matchAll(/captureFault\(\s*new Error/g)]);
+  assert.ok(sources.length > 0,
+    "#1160: if `sources` is empty this assertion passes having compared nothing -- "
+    + "the control belongs on the population, not on `swapped`");
   assert.equal(swapped.length, 0,
     "captureFault takes (code, message) — an Error in the first position is the swap that made seven "
     + "failures log a bare `wrong-page` and made their codes unclassifiable");
