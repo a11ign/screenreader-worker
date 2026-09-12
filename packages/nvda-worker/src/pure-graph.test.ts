@@ -80,6 +80,9 @@ test("every file MUST_BE_PURE names actually exists", () => {
   // different sentences: "this file is not pure" sends you to fix an import, "this file is not there" sends
   // you to fix the list. Collapsing them would report a rename as a purity violation.
   const missing = MUST_BE_PURE.filter((name) => !existsSync(join(here, name)));
+  assert.ok(MUST_BE_PURE.length > 0,
+    "#1160: if `MUST_BE_PURE` is empty this assertion passes having compared nothing -- "
+    + "the control belongs on the population, not on `missing`");
   assert.deepEqual(missing, [],
     `MUST_BE_PURE names file(s) that do not exist, so they are silently guarded by nothing: `
     + `${missing.join(", ")}. Rename the entry or remove it -- do not leave it, because graph() skips a `

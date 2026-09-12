@@ -79,6 +79,9 @@ test("the hops between them name the field too", () => {
   assert.ok(head.includes("interactionEvidence({"),
     "assembleAndMark no longer calls interactionEvidence -- the hop this guards has moved");
   const missing = assigned.filter((key) => !new RegExp(`\\b${key}\\b`).test(head));
+  assert.ok(assigned.length > 0,
+    "#1160: if `assigned` is empty this assertion passes having compared nothing -- "
+    + "the control belongs on the population, not on `missing`");
   assert.deepEqual(missing, [],
     `assembleAndMark does not name ${JSON.stringify(missing)}, so it arrives at interactionEvidence as `
     + "undefined however carefully that function forwards it");

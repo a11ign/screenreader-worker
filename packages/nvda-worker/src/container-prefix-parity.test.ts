@@ -88,6 +88,9 @@ test("no container role joins the grammar without someone deciding what the work
     `${role}, Full name, edit`.replace(CONTAINER_PREFIX, "") !== "Full name, edit");
 
   const surprises = missed.filter((role) => !GRAMMAR_ONLY_CONTAINERS.has(role));
+  assert.ok(missed.length > 0,
+    "#1160: if `missed` is empty this assertion passes having compared nothing -- "
+    + "the control belongs on the population, not on `surprises`");
   assert.deepEqual(surprises, [],
     `these container roles are in the grammar and are NOT stripped by the worker, so the prefix survives `
     + `into a swept announcement and becomes part of the control's NAME: ${surprises.join(", ")}. `
