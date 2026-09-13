@@ -825,6 +825,92 @@ export function recordWhatWasAsked({ observed, probeForms, probeFocus, formState
 const TOGGLE_RE = /\b(check box|radio button)\b/i;
 
 /**
+ * A control announced INSIDE embedded content (#1363): NVDA's `frame` for an iframe and `embedded object` for
+ * `<embed>`/`<object>`, each as a ROLE between commas -- so "Video, frame, clickable" is refused and a button
+ * named "Frame size" is not.
+ */
+const EMBEDDED_CONTENT_ROLE_RE = /(?:^|,\s*)(?:frame|embedded object)\s*(?:,|$)/i;
+
+/**
+ * Chromium's own words for an activation that opened a window or tab (#1363). The worker's copy of
+ * `@a11ign/evidence`'s `announcesANewWindow`: nothing under this package's `src/*.mjs` imports the built
+ * evidence package at capture time, so `off-origin-activation.test.ts` pins the two copies to the same answers.
+ */
+const NEW_WINDOW_RE = /\bopening new (window|tab)\b/i;
+
+/**
+ * Did the browser leave the page's site? `true` only when BOTH URLs parse and their ORIGINS differ. A URL the
+ * browser could not report, or one that does not parse, is "we could not ask" -- never "it left".
+ *
+ * @param {string | null | undefined} from @param {string | null | undefined} now
+ */
+export function leftTheOrigin(from, now) {
+  if (!from || !now || !URL.canParse(String(from)) || !URL.canParse(String(now))) return false;
+  return new URL(String(from)).origin !== new URL(String(now)).origin;
+}
+
+/**
+ * WHETHER AN ACTIVATION TOOK THE BROWSER OFF THE PAGE'S SITE (#1363), and the record the capture carries when
+ * it did. Either signal is enough. The browser's URL now has another origin; or the activation's own
+ * announcement says a window or tab opened -- rehearsal 2's "Opening new window" replaced the tab, and a new
+ * tab opened BESIDE the page leaves the page target's URL exactly where it was.
+ *
+ * @param {{ control: string, kind: string | null, after: string | null | undefined, from: string | null,
+ *           now: string | null, phase: "sweep" | "focus" | "configuredForm" | "routeChange" }} activation
+ * @returns {{ control: string, kind: string | null, phase: string, from: string, to: string | null,
+ *             evidence: string } | null}
+ */
+export function activationLeftTheSite({ control, kind, after, from, now, phase }) {
+  const moved = leftTheOrigin(from, now);
+  const opened = NEW_WINDOW_RE.test(String(after ?? ""));
+  if (!moved && !opened) return null;
+  return {
+    control, kind, phase, from: String(from ?? ""), to: moved ? String(now) : null,
+    evidence: moved ? `the browser's URL became ${now}` : String(after),
+  };
+}
+
+/**
+ * Mark every channel the capture did not run BECAUSE it stopped at the excursion (#1363), so `observed` says
+ * why rather than reading as "asked, and found nothing". Overrides whatever `recordWhatWasAsked` wrote from the
+ * flags: a flag says what was requested, and this says what never ran. The wording is `@a11ign/evidence`'s
+ * `leftSiteReason`, pinned by the same parity test.
+ *
+ * @param {Record<string, unknown>} observed @param {{ control: string }} leftSite @param {readonly string[]} notRun
+ */
+export function markLeftSite(observed, leftSite, notRun) {
+  for (const channel of notRun) observed[channel] = notObserved(`left the site at "${leftSite.control}"`);
+}
+
+/** Every sweep a capture runs, keyed as `observed` records them. */
+const SWEPT_CHANNELS = Object.freeze(["headings", "landmarks", "formFields", "graphics", "links", "lists", "frames",
+  "tableCells"]);
+
+/**
+ * The channels a SKIPPED step would have filled (#1363). The focus pass's are `observed.focusOrder` plus
+ * `FOCUS_DEPENDENT_PROBES`, exactly the set `recordWhatWasAsked` writes, so the two cannot drift.
+ * @type {Record<string, readonly string[]>}
+ */
+const CHANNELS_OF_A_SKIPPED_STEP = Object.freeze({
+  focus: ["focusOrder", ...Object.keys(FOCUS_DEPENDENT_PROBES)],
+  postSubmit: ["postSubmitFields"],
+  routeChange: ["routeChange"],
+});
+
+/**
+ * WHICH CHANNELS NEVER RAN because the capture stopped where an activation left the site (#1363): every sweep that
+ * left no record of its own, and every channel of a step the sequence skipped.
+ *
+ * @param {{ observed: Record<string, unknown>, skipped: Iterable<string> }} capture
+ * @returns {string[]}
+ */
+export function notRunAfterLeaving({ observed, skipped }) {
+  const unswept = SWEPT_CHANNELS.filter((channel) => !(channel in observed));
+  const ofSkippedSteps = [...skipped].flatMap((step) => CHANNELS_OF_A_SKIPPED_STEP[step] ?? []);
+  return [...new Set([...unswept, ...ofSkippedSteps])];
+}
+
+/**
  * WHICH probe an announced control earns — the safety gate on what this tool presses.
  *
  * Here rather than in `capture-core` because this is the decision that has to be TESTABLE.
@@ -866,6 +952,12 @@ export function probeKindFor(phrase, { probeForms, task }) {
   // `.toLowerCase()`, so a non-string reaching that far would throw inside a probe — which this pipeline
   // records as the page announcing nothing, and that is a real finding's signature.
   const announced = String(phrase ?? "");
+  // #1363: NEVER A CONTROL INSIDE EMBEDDED CONTENT, checked FIRST -- before even a disclosure. Rehearsal 2's
+  // task word matched "Web Accessibility Perspectives: Video Captions, region, Video, frame, clickable, ...,
+  // button", the W3C's embedded YouTube player, and activating it replaced the tab with youtube.com. A frame's
+  // content is another document, usually another site's; this tool examines the page it was given. Matched as
+  // a ROLE, between commas, so a button NAMED "Frame size" is still a button.
+  if (EMBEDDED_CONTENT_ROLE_RE.test(announced)) return null;
   if (/\bcollapsed\b/i.test(announced)) return "disclosure";
   if (!probeForms) return null;
   // BEFORE the button test, because NVDA announces a radio as "radio button" -- so `\bbutton\b` matches it

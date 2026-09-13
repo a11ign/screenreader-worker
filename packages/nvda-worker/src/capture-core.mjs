@@ -123,7 +123,7 @@ const NVDA_READY_BUDGET_MS = 3_000;   // how long a cold NVDA gets to answer at 
 /**
  * @typedef {{ headings: string[], landmarks: string[], formFields: string[], graphics: string[], links: string[], lists: string[], tableCells: string[], frames: string[] }} CapturedStructure
  * @typedef {{ control: string, after: string }} AnnouncedChange
- * @typedef {{ controls: string[], stateChanges: AnnouncedChange[], formChanges: AnnouncedChange[], postSubmitFields: string[], focusOrder: string[], routeChange?: unknown, navigatedOnSubmit?: unknown, postSubmitNames?: string[] }} CapturedInteraction
+ * @typedef {{ controls: string[], stateChanges: AnnouncedChange[], formChanges: AnnouncedChange[], postSubmitFields: string[], focusOrder: string[], routeChange?: unknown, navigatedOnSubmit?: unknown, postSubmitNames?: string[], leftSite?: unknown }} CapturedInteraction
  * @typedef {{ url: string, screenReader: string, capturedAt: string, transcript: string[], structure: CapturedStructure, interaction: CapturedInteraction, media?: Record<string, unknown>[] | null, formInputs?: Record<string, unknown>[] | null, observed?: Record<string, Observation>, diagnostics: object[] }} Capture
  *
  * THE EVIDENCE SHAPE, named once. It was written out inline in this `@returns` and then built by three
