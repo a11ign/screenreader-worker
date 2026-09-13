@@ -100,7 +100,34 @@ export async function browserAlive() {
  *
  * @type {string | null}
  */
-let expectedPageUrl = null;
+/**
+ * #1200: BOTH URLS HAVE THE LIFETIME OF ONE CAPTURE, AND ONLY ONE OF THEM WAS CLEARED AT THAT BOUNDARY.
+ *
+ * They lived as two separate module-level bindings. `expectedPageUrl` had a capture-boundary reset --
+ * `captureWithNvda`'s `finally` -- with a comment naming exactly why: *"an expectation set by THIS
+ * capture and never cleared is not an edge case, it is the normal state between requests"*.
+ * `resolvedPageUrl` had no such reset. It was cleared only as the first statement of
+ * `navigateExisting`, which is per-NAVIGATION, not per-capture, and does not run at all on a capture
+ * that never navigates (a fresh `--app=` launch, or a capture that throws before it gets there). Every
+ * `pageTarget()` call between captures -- `/diagnostics`, a `bringPageToFront` between cases -- then read
+ * the PREVIOUS capture's resolved URL. That is the same sentence the `expectedPageUrl` reset was written
+ * to prevent, for the value sitting next to it.
+ *
+ * ONE RECORD RATHER THAN A ONE-FIELD WRAPPER AROUND EACH. Wrapping `resolvedPageUrl` alone in an object
+ * would satisfy "not module-level" as a grep and change nothing: it is still module-level state with the
+ * same lifetime problem, wearing a box. What actually fixes it is that the two values with one lifetime
+ * now have one reset, so neither can be cleared while the other is forgotten.
+ *
+ * STILL NOT THREADED AS A PARAMETER, and that is deliberate rather than unconsidered -- the original
+ * comment's reasoning holds and is kept: threading it through the ~8 functions that call `pageTarget`
+ * and the 14 places in `capture-core.mjs` that call THOSE would repeat the same value at every call site
+ * for no reader's benefit. Every one of them means "what is CDP showing me right now, for the capture
+ * `openPage` most recently started". `setExpectedPageUrl` is the one seam that needs to set it, and it
+ * already receives the URL.
+ *
+ * @type {{ expected: string | null, resolved: string | null }}
+ */
+const captureUrls = { expected: null, resolved: null };
 
 /**
  * Record which URL the capture believes it is showing.
@@ -112,7 +139,7 @@ let expectedPageUrl = null;
  * @param {string | null | undefined} url
  */
 export function setExpectedPageUrl(url) {
-  expectedPageUrl = url || null;
+  captureUrls.expected = url || null;
 }
 
 /**
@@ -123,7 +150,7 @@ export function setExpectedPageUrl(url) {
  * same reason.
  */
 export function expectedPageUrlForTest() {
-  return expectedPageUrl;
+  return captureUrls.expected;
 }
 
 /**
@@ -275,7 +302,7 @@ export function choosePageTarget(targets, expectedUrl, resolvedUrl = /** @type {
   // there. `!==` could be true here and still find nothing. Mutation-checked: restoring `!==` fails no
   // test, because there is no case where it changes the answer.
   //
-  // So the `postSubmitNames` movement is NOT explained by this line. See `resolvedPageUrl`'s reset below,
+  // So the `postSubmitNames` movement is NOT explained by this line. See `captureUrls.resolved`'s reset below,
   // which reaches this branch for real.
   if (resolvedUrl && !sameDocument(resolvedUrl, expectedUrl)) {
     const afterRedirect = pages.find((t) => sameDocument(t.url, resolvedUrl));
@@ -312,7 +339,7 @@ async function pageTarget() {
         signal: AbortSignal.timeout(CDP_LIST_TIMEOUT_MS),
       });
       if (!response.ok) throw new Error(`CDP /json/list returned HTTP ${response.status}`);
-      const target = choosePageTarget(await response.json(), expectedPageUrl, resolvedPageUrl);
+      const target = choosePageTarget(await response.json(), captureUrls.expected, captureUrls.resolved);
       if (!target) throw new Error("CDP listed no page target to navigate");
       return target;
     } catch (error) {
@@ -347,12 +374,21 @@ async function pageTarget() {
  * one is the document our own navigation ended on. Overwriting `expectedPageUrl` with it would remove the
  * wrong-page check entirely, which is the objection `sameDocument`'s own comment raises.
  */
-/** @type {string | null} */
-let resolvedPageUrl = null;
-
 /** Where the last navigation resolved to, or null when nothing has navigated in this capture. */
 export function lastResolvedPageUrl() {
-  return resolvedPageUrl;
+  return captureUrls.resolved;
+}
+
+/**
+ * End the capture's URL state -- BOTH values, in one call, because they share one lifetime.
+ *
+ * `captureWithNvda`'s `finally` calls this. It replaced `setExpectedPageUrl(null)` there, which cleared
+ * half of the pair and left `resolvedPageUrl` holding the previous capture's landing URL for every
+ * `pageTarget()` call until the next `navigateExisting` happened to run.
+ */
+export function endCaptureUrls() {
+  captureUrls.expected = null;
+  captureUrls.resolved = null;
 }
 
 /** @param {string} url */
@@ -366,7 +402,7 @@ export async function navigateExisting(url) {
   // and it ran first. So the comment described the defect and the code was ordered the other way round:
   // a correct diagnosis one line above a statement placed where it could not act on it.
   //
-  // THE FAILURE LOOKS LIKE SUCCESS, which is why nothing caught it. A stale `resolvedPageUrl` is a real
+  // THE FAILURE LOOKS LIKE SUCCESS, which is why nothing caught it. A stale `captureUrls.resolved` is a real
   // URL from the previous capture, so it does not throw and does not read as absent -- it makes
   // `choosePageTarget` accept the document the reused window is still showing as a legitimate match for
   // the page we are about to request. `A11Y_REUSE_BROWSER` is ON by default, so that is the normal path.
@@ -380,7 +416,7 @@ export async function navigateExisting(url) {
   // file's 16 tests. A comment naming a guard that is not there is worse than no comment, because it
   // stops the next reader looking -- the shape #842 exists to catch, here in the file whose whole subject
   // is a guard. `resolved-page-url-reset.test.ts` pins it now, and that mutation is red.
-  resolvedPageUrl = null;
+  captureUrls.resolved = null;
   const target = await pageTarget();
   const socket = new WebSocket(target.webSocketDebuggerUrl);
   // THE BRACKETS ARE THE MECHANISM. Collection starts before `Page.navigate` is sent and the resolved URL
@@ -405,7 +441,7 @@ export async function navigateExisting(url) {
     socket.send(JSON.stringify({ id: 1, method: "Page.enable" }));
     socket.send(JSON.stringify({ id: 2, method: "Page.navigate", params: { url } }));
     await loaded;
-    resolvedPageUrl = resolvedNavigationUrl({ events, requested: url }).url;
+    captureUrls.resolved = resolvedNavigationUrl({ events, requested: url }).url;
   } finally {
     try {
       socket.close();
@@ -911,7 +947,7 @@ export async function structuralCensus() {
       // said there was only one. See `censusTargetIsSuspect` (`@a11ign/evidence`) for what reads
       // these two fields.
       census.targetUrl = target.url;
-      census.expectedUrl = expectedPageUrl;
+      census.expectedUrl = captureUrls.expected;
       return census;
     } finally {
       try { socket.close(); } catch (error) { void error; }
@@ -1304,7 +1340,7 @@ export async function domCensus() {
       return value && typeof value === "object"
         ? { ...value, targetMatch: target.targetMatch, candidates: target.candidates,
             ...(target.candidates > 1 ? { candidateUrls: target.candidateUrls } : {}),
-            targetUrl: target.url, expectedUrl: expectedPageUrl }
+            targetUrl: target.url, expectedUrl: captureUrls.expected }
         : null;
     } finally {
       try { socket.close(); } catch (error) { void error; }
@@ -1379,7 +1415,7 @@ async function evaluateOnPageTarget(expression) {
     socket.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression, returnByValue: true } }));
     return {
       value: (await result)?.result?.value, targetMatch: target.targetMatch, targetUrl: target.url,
-      expectedUrl: expectedPageUrl, candidates: target.candidates,
+      expectedUrl: captureUrls.expected, candidates: target.candidates,
     };
   } finally {
     try { socket.close(); } catch (error) { void error; }
@@ -1763,7 +1799,7 @@ export async function formInputCensus() {
         elements: Array.isArray(value?.elements) ? value.elements : null,
         total: typeof value?.total === "number" ? value.total : null,
         targetMatch: target.targetMatch, candidates: target.candidates,
-        targetUrl: target.url, expectedUrl: expectedPageUrl,
+        targetUrl: target.url, expectedUrl: captureUrls.expected,
       };
     } finally {
       try { socket.close(); } catch (error) { void error; }
@@ -1826,7 +1862,7 @@ export async function mediaCensus() {
       return {
         elements: Array.isArray(value) ? value : null,
         targetMatch: target.targetMatch, candidates: target.candidates,
-        targetUrl: target.url, expectedUrl: expectedPageUrl,
+        targetUrl: target.url, expectedUrl: captureUrls.expected,
       };
     } finally {
       try { socket.close(); } catch (error) { void error; }
