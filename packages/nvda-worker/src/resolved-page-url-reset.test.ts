@@ -38,12 +38,12 @@ const navigateExistingBody = () => {
 
 test("the reset is the FIRST statement of navigateExisting, before anything can read it", () => {
   const body = navigateExistingBody();
-  const reset = body.indexOf("resolvedPageUrl = null;");
+  const reset = body.indexOf("captureUrls.resolved = null;");
   const readsIt = body.indexOf("await pageTarget()");
-  assert.ok(reset >= 0, "navigateExisting no longer resets `resolvedPageUrl` — the stale value is back");
+  assert.ok(reset >= 0, "navigateExisting no longer resets `captureUrls.resolved` — the stale value is back");
   assert.ok(readsIt >= 0, "navigateExisting no longer calls pageTarget() — this guard has lost its subject");
   assert.ok(reset < readsIt,
-    "`resolvedPageUrl = null` must precede `pageTarget()`. Below it, the previous capture's URL is what "
+    "`captureUrls.resolved = null` must precede `pageTarget()`. Below it, the previous capture's URL is what "
     + "`choosePageTarget` sees while the reused window still shows the previous page, and it reads as a "
     + "legitimate match rather than as an error");
 
@@ -51,7 +51,7 @@ test("the reset is the FIRST statement of navigateExisting, before anything can 
   // statement is a reset whose position is an accident of what happens to be above it.
   const firstStatement = body.split("\n").slice(1)
     .find((line) => line.trim() && !line.trim().startsWith("//") && !line.trim().startsWith("*"));
-  assert.equal(firstStatement?.trim(), "resolvedPageUrl = null;",
+  assert.equal(firstStatement?.trim(), "captureUrls.resolved = null;",
     "the reset must be the first statement, not just an early one");
 });
 

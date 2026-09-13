@@ -49,7 +49,7 @@ import {
   screenReaderWasSilentAtStart,
   shouldInstallFocusEventListenerEarly,
 } from "./capture-pure.mjs";
-import { setExpectedPageUrl, installFocusEventLog } from "./browser-session.mjs";
+import { endCaptureUrls, installFocusEventLog } from "./browser-session.mjs";
 import { parkPointer } from "./pointer.mjs";
 import {
   reuseBrowserFor, openPage, assertLandedOnRequestedPage, assertPageWasServed, waitForPageToSettle,
@@ -186,7 +186,12 @@ export async function captureWithNvda(url, opts = {}) {
     // live target against the PREVIOUS capture's URL. That mostly reads as a wrong "fallback" where
     // "no-expected-url" is the truth, and two same-path pages on different hosts would make it a false
     // "matched" -- this repo's most-repeated defect, a stale value read as a current one, in a new place.
-    setExpectedPageUrl(null);
+    // #1200: BOTH urls, not just the expectation. `setExpectedPageUrl(null)` used to stand here and
+    // cleared half the pair -- `resolvedPageUrl` kept the previous capture's landing URL, and its only
+    // reset was the first statement of `navigateExisting`, which is per-NAVIGATION and does not run on a
+    // capture that never navigates. Everything the paragraph above says about a stale expectation was
+    // true of the value beside it, with nothing clearing it at this boundary.
+    endCaptureUrls();
     // Cleanup MUST be unconditional, and it was not.
     //
     // Edge is launched before NVDA is started, and every phase in between can throw. When

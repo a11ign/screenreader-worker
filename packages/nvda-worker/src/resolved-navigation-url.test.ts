@@ -174,12 +174,12 @@ test("the resolved URL is CLEARED before each navigation, so it can never be a p
   // worse than no guard, and the earlier bare-string version passed with the reset deleted. Slicing the
   // function is what makes both mistakes unavailable.
   const fn = src.slice(src.indexOf("export async function navigateExisting("));
-  const reset = fn.indexOf("resolvedPageUrl = null");
+  const reset = fn.indexOf("captureUrls.resolved = null");
   const readsIt = fn.indexOf("await pageTarget()");
   const navigate = fn.indexOf('method: "Page.navigate"');
-  const assign = fn.indexOf("resolvedPageUrl = resolvedNavigationUrl(");
+  const assign = fn.indexOf("captureUrls.resolved = resolvedNavigationUrl(");
   assert.ok(fn.length > 0, "navigateExisting not found -- this guard is reading the wrong thing");
-  assert.ok(reset > -1, "resolvedPageUrl must be explicitly cleared; it never becomes null on its own");
+  assert.ok(reset > -1, "captureUrls.resolved must be explicitly cleared; it never becomes null on its own");
   assert.ok(readsIt > -1, "navigateExisting no longer calls pageTarget() -- re-check what this guards");
 
   // THE ASSERTION THIS TEST'S OWN COMMENT ALWAYS DESCRIBED, and did not make until 2026-09-06.
@@ -190,7 +190,7 @@ test("the resolved URL is CLEARED before each navigation, so it can never be a p
   // above an assertion of a weaker property that the described defect passes: the shape
   // `not-working.md` §26 is about, occurring inside the guard written for it.
   assert.ok(reset < readsIt,
-    "`resolvedPageUrl = null` must come before `await pageTarget()`, which is the call that READS it on "
+    "`captureUrls.resolved = null` must come before `await pageTarget()`, which is the call that READS it on "
     + "its way to choosePageTarget. A reset that is merely before Page.navigate is too late: by then "
     + "capture N+1 has already chosen its target against capture N's resolved URL, on a reused window "
     + "still showing capture N's page. The stale value is a real URL, so it neither throws nor reads as "
