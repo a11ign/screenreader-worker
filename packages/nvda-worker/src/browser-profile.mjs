@@ -296,33 +296,126 @@ export const ADOPTED_PROFILE = "adopted";
 export const USED_MARKER = "Local State";
 
 /**
+ * #1201: WHAT PROVISIONING RECORDED, WHEN IT RECORDED ANYTHING.
+ *
+ * `ORIGIN_FILE` holds one of these two words, written by provisioning at the moment it knows the answer
+ * rather than inferred afterwards from a file Edge happens to leave behind. Absent on every profile that
+ * predates this, which is the case `USED_MARKER` still serves.
+ */
+export const ORIGIN_ADOPTED = "adopted-existing";
+export const ORIGIN_FRESH = "created-fresh";
+
+/** Where provisioning records what it did, beside the stamp it does not write. */
+export const ORIGIN_FILE = ".a11y-profile-origin";
+
+/**
  * PURE. Given what is on disk, what identity does this profile report and what must be written?
  *
- * @param {{ stamped: string | null, profileExists: boolean, hasBeenUsed: boolean, freshId: string }} state
+ * #1201: ADOPTION IS A RECORDED FACT FIRST AND AN INFERENCE SECOND. It used to rest entirely on
+ * `USED_MARKER` — a file Edge happens to write — so if Edge ever stopped writing it, every profile would
+ * read as fresh and nothing would report the change. **The failure mode and the ordinary answer are the
+ * same absence**, which is this repository's most expensive recurring shape.
+ *
+ * `recorded` is what provisioning wrote down at the time. When it is present it DECIDES, and the marker
+ * becomes corroboration. When the two disagree that is a FINDING and is said out loud — a recorded
+ * adoption whose profile has never been used, or a used profile provisioning called fresh, is one of the
+ * two having been wrong, and resolving it silently in favour of either is how you stop being able to
+ * tell. Precedence does not mean the loser goes unmentioned.
+ *
+ * @param {{ stamped: string | null, profileExists: boolean, hasBeenUsed: boolean, freshId: string,
+ *           recorded?: string | null }} state
  *   `stamped` — the stamp file's contents, or null if there is none.
- * @returns {{ identity: string, write: string | null, adopted: boolean, why: string }}
+ *   `recorded` — `ORIGIN_FILE`'s contents, or null/undefined where provisioning recorded nothing.
+ * @returns {{ identity: string, write: string | null, adopted: boolean, why: string,
+ *             disagreement: string | null }}
  *   `write` is null when nothing needs stamping; `why` is the diagnostic mark's text, because
  *   "adopted an existing profile" and "stamped a new one" must never be the same silence.
+ *   `disagreement` is non-null only when the record and the marker contradict each other.
  */
-export function profileIdentity({ stamped, profileExists, hasBeenUsed, freshId }) {
+export function profileIdentity({ stamped, profileExists, hasBeenUsed, freshId, recorded = null }) {
   if (stamped) {
     return { identity: stamped, write: null, adopted: stamped === ADOPTED_PROFILE,
-      why: `profile already stamped ${stamped}` };
+      why: `profile already stamped ${stamped}`, disagreement: null };
   }
+  const disagreement = originDisagreement({ recorded, hasBeenUsed });
+  if (recorded === ORIGIN_ADOPTED) {
+    return { identity: ADOPTED_PROFILE, write: ADOPTED_PROFILE, adopted: true,
+      why: `adopted an existing profile (provisioning recorded ${ORIGIN_ADOPTED}) -- the corpus was `
+        + "taken against this profile, so the key must NOT move", disagreement };
+  }
+  if (recorded === ORIGIN_FRESH) {
+    return { identity: freshId, write: freshId, adopted: false,
+      why: `stamped a NEW profile: provisioning recorded ${ORIGIN_FRESH}`, disagreement };
+  }
+  // NO RECORD. Every profile provisioned before #1201 lands here, and so does any guest whose
+  // provisioning did not run. The marker is the only witness left, which is the state this row narrows
+  // rather than removes -- and the `why` says WHICH basis was used, so a reader of the diagnostic can
+  // tell a recorded fact from an inference without reading this file.
   if (profileExists && hasBeenUsed) {
     return { identity: ADOPTED_PROFILE, write: ADOPTED_PROFILE, adopted: true,
-      why: `adopted an existing profile (${USED_MARKER} present, so Edge has run in it) -- the corpus `
-        + "was taken against this profile, so the key must NOT move" };
+      why: `adopted an existing profile (no provisioning record; ${USED_MARKER} present, so Edge has `
+        + "run in it) -- the corpus was taken against this profile, so the key must NOT move",
+      disagreement };
   }
   return { identity: freshId, write: freshId, adopted: false,
     why: profileExists
-      ? `stamped a NEW profile: the directory exists but has no ${USED_MARKER}, so Edge has never run `
-        + "in it -- a cold profile, and cold evidence is not warm evidence"
-      : "stamped a NEW profile: the directory did not exist" };
+      ? `stamped a NEW profile: no provisioning record, and the directory has no ${USED_MARKER}, so `
+        + "Edge has never run in it -- a cold profile, and cold evidence is not warm evidence"
+      : "stamped a NEW profile: no provisioning record, and the directory did not exist",
+    disagreement };
+}
+
+/**
+ * The two sources contradicting each other, as a sentence, or null when they do not.
+ *
+ * Silent only when there is nothing to say: no record means nothing to contradict, and this deliberately
+ * does NOT treat "recorded fresh, marker absent" as agreement worth reporting. Only a real contradiction
+ * speaks, or the line becomes noise on every ordinary capture and stops being read.
+ *
+ * @param {{ recorded: string | null, hasBeenUsed: boolean }} state @returns {string | null}
+ */
+export function originDisagreement({ recorded, hasBeenUsed }) {
+  if (recorded === ORIGIN_ADOPTED && !hasBeenUsed) {
+    return `provisioning recorded ${ORIGIN_ADOPTED} but ${USED_MARKER} is absent -- either the profile `
+      + "was wiped after provisioning, or Edge no longer writes that file. The record is being used; "
+      + "the marker can no longer corroborate it";
+  }
+  if (recorded === ORIGIN_FRESH && hasBeenUsed) {
+    return `provisioning recorded ${ORIGIN_FRESH} but ${USED_MARKER} is present -- Edge has run in a `
+      + "profile provisioning created empty. The record is being used, and this profile's evidence is "
+      + "warmer than the record claims";
+  }
+  return null;
 }
 
 /** Where the stamp lives, inside the profile root it identifies. */
 export const STAMP_FILE = ".a11y-profile-id";
+
+/**
+ * #1201: what provisioning recorded, or null where it recorded nothing readable.
+ *
+ * Extracted because folding it into `readOrStampProfileIdentity` took that function to a complexity of
+ * 16 against a limit of 15 -- and the rule reports at the DECLARATION, so a disable comment in the body
+ * would have sat unused beside a live error. Splitting is the remedy this repo's conventions name.
+ *
+ * AN ORIGIN FILE THAT EXISTS AND CANNOT BE READ IS NOT AN ABSENT ONE. Returning null there is correct --
+ * there is no record to use -- but doing it silently would put the decision back on `USED_MARKER` alone,
+ * which is the single-witness state this row narrows. So the fallback is announced.
+ *
+ * @param {string} root @param {{ exists: (p: string) => boolean, read: (p: string) => string,
+ *   log: (line: string) => void }} io @returns {string | null}
+ */
+function readRecordedOrigin(root, { exists, read, log }) {
+  const originPath = join(root, ORIGIN_FILE);
+  if (!exists(originPath)) return null;
+  try {
+    return read(originPath).trim() || null;
+  } catch (cause) {
+    log(`browser-profile: ${originPath} exists and could not be read: `
+      + `${/** @type {Error} */ (cause).message} -- falling back to ${USED_MARKER} alone`);
+    return null;
+  }
+}
 
 /**
  * The profile's identity, stamping it if it has none. IDEMPOTENT: a stamped profile is only read.
@@ -356,12 +449,19 @@ export function readOrStampProfileIdentity(root, deps = {}) {
       return { identity: "unreadable", adopted: false, why: `stamp present but unreadable at ${stampPath}` };
     }
   }
+  const recorded = readRecordedOrigin(root, { exists, read, log });
   const decision = profileIdentity({
     stamped,
     profileExists: exists(root),
     hasBeenUsed: exists(join(root, USED_MARKER)),
     freshId: newId(),
+    recorded,
   });
+  // Said out loud, never folded into `why`: the identity is a decision and this is a finding about the
+  // evidence behind it. A reader scanning for one must not have to parse the other.
+  if (decision.disagreement !== null) {
+    log(`browser-profile: SOURCES DISAGREE -- ${decision.disagreement}`);
+  }
   if (decision.write !== null) {
     try {
       write(stampPath, decision.write);
