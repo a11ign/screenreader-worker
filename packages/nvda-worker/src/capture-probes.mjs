@@ -24,7 +24,7 @@ import {
   sweepStepFromSpeech, focusOrderCycled, focusWalkTruncated, sweepObservation, notObserved, recordWhatWasAsked,
   focusInFrameOf, focusRestoreDecision, focusRestoredRecord, heldInFrame,
   focusRevealVerdict, focusEventVerdict, censusGrowth, focusResetOutcome, titleSourceVerdict,
-  activationDeadline, activationBudgetMark,
+  activationDeadline, activationBudgetMark, activationLeftTheSite, markLeftSite, notRunAfterLeaving,
 } from "./capture-pure.mjs";
 import {
   currentPageUrl, mediaCensus, formInputCensus, structuralCensus, domCensus, truncatedAnnouncements,
@@ -45,7 +45,7 @@ import {
  *
  * @typedef {{ headings: string[], landmarks: string[], formFields: string[], graphics: string[], links: string[], lists: string[], tableCells: string[], frames: string[] }} CapturedStructure
  * @typedef {{ control: string, after: string }} AnnouncedChange
- * @typedef {{ controls: string[], stateChanges: AnnouncedChange[], formChanges: AnnouncedChange[], postSubmitFields: string[], focusOrder: string[], routeChange?: unknown, navigatedOnSubmit?: unknown, postSubmitNames?: string[] }} CapturedInteraction
+ * @typedef {{ controls: string[], stateChanges: AnnouncedChange[], formChanges: AnnouncedChange[], postSubmitFields: string[], focusOrder: string[], routeChange?: unknown, navigatedOnSubmit?: unknown, postSubmitNames?: string[], leftSite?: unknown }} CapturedInteraction
  *
  * @typedef {{ asked: boolean, complete?: boolean, why?: string, activated?: number,
  *             stop?: { prev: string, next: string } }} Observation
@@ -71,7 +71,7 @@ import {
  *             onItem?: ((phrase: string) => Promise<unknown> | unknown) | null,
  *             deadline: number, diag: Diag, label: string, trips: { count: number },
  *             observed?: Record<string, Observation>, observedAs?: string,
- *             trace?: string[] }} SweepContext
+ *             trace?: string[], ended?: () => boolean }} SweepContext
  *   What a sweep carries. `trips` is REQUIRED and that is the point: adding it to `collectByType` and
  *   spelling the context out at one call site instead of spreading it threw on the function's first line,
  *   before any sweep ran, and returned `postSubmitFields: []` on all 2,122 captures with every check
@@ -311,7 +311,7 @@ export async function navigateByStructureThenAudit(options) {
  *
  * @param {{ structure: CapturedStructure, interaction: {stateChanges: AnnouncedChange[],
  *           formChanges: AnnouncedChange[], navigatedOnSubmit?: unknown, postSubmitNames?: string[],
- *           formFill?: unknown},
+ *           formFill?: unknown, leftSite?: unknown},
  *           postSubmitFields: string[], focusOrder: string[], routeChange: unknown, dialogEscape: unknown,
  *           arrowNavigation: unknown, typedFeedback: unknown, focusContext: unknown,
  *           focusReveal: unknown, focusEvents: unknown }} ctx
@@ -369,6 +369,9 @@ function interactionEvidence({
     // Same rule, same reason: absent when no submit happened, so "no submit was probed" cannot be read as
     // "the page showed nothing after submitting". 3.3.1 depends on telling those apart.
     ...(interaction.postSubmitNames ? { postSubmitNames: interaction.postSubmitNames } : {}),
+    // #1363: where the examination ENDED because an activation left the page's site. It must survive this
+    // rebuild, or a capture would carry evidence up to the excursion with nothing saying that is where it stops.
+    ...(interaction.leftSite ? { leftSite: interaction.leftSite } : {}),
   };
 }
 
@@ -384,7 +387,7 @@ function interactionEvidence({
  */
 function probePasses(ctx) {
   const { structure, interaction, observed, onFormField, probeForms, probeTables, probeFocus,
-    probeDialog, probeArrows, probeTyping, probeFocusReveal: probeFocusReveal_, deadline, diag, trips } = ctx;
+    probeDialog, probeArrows, probeTyping, probeFocusReveal: probeFocusReveal_, deadline, diag, trips, site } = ctx;
   // READ from ctx, NOT destructured-and-renamed. Renaming it out of the object removed it from the
   // `...flags` that `recordWhatWasAsked` spreads, so `observed.focusContext` reported `asked: false` while
   // the probe was demonstrably running — its own diagnostic mark sat in the same capture saying
@@ -398,8 +401,9 @@ function probePasses(ctx) {
     focusContext: null, focusEvents: null,
   };
   const runSweep = async () => {
-    await sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips, observed });
+    await sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips, observed, ended: site.ended });
     if (probeForms) diag.mark("formProbe", { activated: interaction.formChanges.length });
+    if (site.ended()) { site.skipped.add("postSubmit"); return; } // #1363: the form to re-read is the other site's
     results.postSubmitFields = await rescanFormFieldsAfterSubmit({ interaction, deadline, diag, trips });
   };
   // THE DIALOG PROBE RIDES WITH THE FOCUS PROBE, and it took a capture to find out why.
@@ -414,6 +418,7 @@ function probePasses(ctx) {
   // caret inside a dialog for Escape to leave. Riding with it also means the pair stays together under
   // `focus-first`, where the sweep has not run at all.
   const runFocus = async () => {
+    if (site.ended()) { site.skipped.add("focus"); return; } // #1363: the focus pass would tab through the other site
     // FIRST, BEFORE `probeFocusOrder`, and this ordering is the whole correctness of the probe.
     //
     // 3.2.1 asks what happens the FIRST time a control is focused. `probeFocusOrder` walks the entire tab
@@ -592,10 +597,10 @@ async function censusBeforeNavigating(diag) {
  * either would claim a budget covered everything it was asked about. Absent and zero are different facts.
  *
  * @param {{ formState: unknown, probeForms: boolean | undefined, deadline: number,
- *           interaction: Record<string, any>, task: string | undefined }} ctx
+ *           interaction: Record<string, any>, task: string | undefined, pageUrl?: string | null }} ctx
  * @returns {{ onFormField: (phrase: string) => Promise<unknown>, markInto: (diag: Diag) => void }}
  */
-function activationBudgetFor({ formState, probeForms, deadline, interaction, task }) {
+function activationBudgetFor({ formState, probeForms, deadline, interaction, task, pageUrl = null }) {
   let stopsAt = /** @type {number | null} */ (null);
   let startedAt = 0;
   let spentMs = 0;
@@ -606,6 +611,9 @@ function activationBudgetFor({ formState, probeForms, deadline, interaction, tas
       // A CONFIGURED form REPLACES the opportunistic probe rather than running beside it, so there is no
       // budget to keep: `runConfiguredForm` activates exactly the control the author named.
       if (formState) return Promise.resolve();
+      // #1363: NOTHING MORE IS PRESSED once an activation left the page's site -- rehearsal 2 went on to press
+      // Search, Subscribe and YouTube Home on youtube.com.
+      if (interaction.leftSite) return Promise.resolve();
       // COMPUTED ON THE FIRST FIELD, not when this function is built. The share is of what remains when
       // the sweep BEGINS, and the heading and landmark sweeps run before it — sizing at construction
       // would hand the activation time those two are about to spend.
@@ -622,8 +630,11 @@ function activationBudgetFor({ formState, probeForms, deadline, interaction, tas
       // Timed in a `finally` so a probe that THROWS still charges the budget. A failing activation costs
       // the same wall clock as a working one, and not charging it would let a page of broken controls
       // spend the whole capture while the mark reported an untouched budget.
+      const heard = interaction.formChanges.length + interaction.stateChanges.length;
       return operateControl(phrase, { probeForms, deadline, interaction, task })
-        .finally(() => { spentMs += Date.now() - at; });
+        .finally(() => { spentMs += Date.now() - at; })
+        // #1363: ASKED AFTER EVERY ACTIVATION, whether the browser is still on the page's site.
+        .then(() => recordIfLeftTheSite({ phrase, interaction, from: pageUrl, phase: "sweep", heard }));
     },
     markInto: (/** @type {Diag} */ diag) => {
       if (stopsAt === null) return;
@@ -631,6 +642,28 @@ function activationBudgetFor({ formState, probeForms, deadline, interaction, tas
         budgetMs: stopsAt - startedAt, spentMs, allowed, skipped }));
     },
   };
+}
+
+/**
+ * AFTER AN ACTIVATION, IS THE BROWSER STILL ON THE PAGE'S SITE? -- #1363.
+ *
+ * Asked only when the activation produced evidence (`heard` is the change count before it): an activation that
+ * pressed nothing cannot have navigated, and the URL read is a CDP round trip. The answer is
+ * `activationLeftTheSite`'s. When it is an excursion the record goes onto `interaction.leftSite`, and from then
+ * on nothing more is pressed, the sweep stops and every later probe is skipped.
+ *
+ * @param {{ phrase: string, interaction: Record<string, any>, from: string | null,
+ *           phase: "sweep" | "configuredForm" | "routeChange", heard?: number, kind?: string | null }} ctx
+ */
+async function recordIfLeftTheSite({ phrase, interaction, from, phase, heard = -1, kind = null }) {
+  if (interaction.leftSite) return;
+  if (interaction.formChanges.length + interaction.stateChanges.length === heard) return;
+  const last = interaction.formChanges.at(-1);
+  const own = last?.control === phrase ? last : null;
+  const left = activationLeftTheSite({
+    control: phrase, kind: own?.kind ?? kind, after: own?.after ?? "", from, now: await currentPageUrl(), phase,
+  });
+  if (left) interaction.leftSite = left;
 }
 
 /**
@@ -657,8 +690,9 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   // reads as an error while the one that drops evidence reads as fine. That is backwards for a file whose
   // recorded defects are `postSubmitFields` empty on all 2,122 captures and a `media` field a rule reads.
   /** @type {{ stateChanges: AnnouncedChange[], formChanges: AnnouncedChange[], sweepLog: string[],
-   *           navigatedOnSubmit?: unknown, postSubmitNames?: string[], postSubmitFields?: string[] }} */
+   *           navigatedOnSubmit?: unknown, postSubmitNames?: string[], postSubmitFields?: string[], leftSite?: { control: string } }} */
   const interaction = { stateChanges: [], formChanges: [], sweepLog: [] };
+  const site = await watchTheSite(interaction);
   const trips = { count: 0 };
   /** @type {CapturedStructure} */
   const structure = {
@@ -678,7 +712,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   // form would be submitted in a state the config does not describe and the evidence would be attributed
   // to a state that never existed. The configured pass fills every field first and then activates the
   // control the author NAMED.
-  const activation = activationBudgetFor({ formState, probeForms, deadline, interaction, task });
+  const activation = activationBudgetFor({ formState, probeForms, deadline, interaction, task, pageUrl: site.pageUrl });
 
   // THE TWO POSITION-DEPENDENT PROBES, SEQUENCED RATHER THAN HARD-CODED — see `probeSequence`.
   //
@@ -692,14 +726,14 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   // observations, and making it visible is the point of the option.
   const { runSweep, runFocus, results } = probePasses({
     structure, interaction, observed, onFormField: activation.onFormField, probeForms, probeTables, probeFocus,
-    probeDialog, probeArrows, probeTyping, probeFocusReveal, probeFocusContext: probeFocusContext_, deadline, diag, trips,
+    probeDialog, probeArrows, probeTyping, probeFocusReveal, probeFocusContext: probeFocusContext_, deadline, diag, trips, site,
   });
   await runProbeSequence({ probeOrder, diag, runSweep, runFocus, observed });
   activation.markInto(diag);
   // AFTER the sweep, because the sweep is what establishes where the fields are and reads them in browse
   // mode — and because filling changes the page, so a sweep afterwards would describe a document the
   // author's values had already altered.
-  if (formState) await runConfiguredForm({ formState, interaction, results, deadline, diag, trips });
+  if (formState && !site.ended()) await runConfiguredForm({ formState, interaction, results, deadline, diag, trips, pageUrl: site.pageUrl });
   // READ AFTER THE PROBES RUN, and the order is the whole of it. Destructured before `runProbeSequence`
   // -- which is where the extraction first put it -- every field binds to its INITIAL value and the
   // capture reports empty interaction evidence on every page. That is `postSubmitFields: []` on all 2,122
@@ -713,13 +747,11 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   // Still before `probeRouteChange`, which this call site already guarantees — a sweep-time navigation
   // reaching it too is the narrower, `probeElementsList`-only risk `docs/probe-side-effects.md`'s audit
   // named, and not what moved the census.
-  if (probeElementsList) await crossCheckAgainstElementsList({ structure, deadline, diag });
-
+  if (probeElementsList && !site.ended()) await crossCheckAgainstElementsList({ structure, deadline, diag });
   // LAST of the four [probes]: `probeRouteChange` is the only one that can leave the page under
-  // measurement, activating a link to test 2.4.2.
-  const routeChange = probeNavigation
-    ? await probeRouteChange({ interaction, deadline, diag })
-    : null;
+  // measurement, activating a link to test 2.4.2. #1363: skipped once the site was left, and watched itself.
+  const routeChange = probeNavigation && !site.ended() ? await probeRouteChange({ interaction, deadline, diag }) : null;
+  await watchTheRouteChange({ routeChange, probeNavigation, interaction, site });
   recordWhatWasAsked({
     // EVERY probe flag, named. This call is the one that made `observed.focusContext` say `asked: false`
     // while the probe's own mark in the same capture said `focused: true` — the flag simply was not passed.
@@ -731,11 +763,50 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
     // NOT a probe flag, and passed for exactly that reason — see `recordWhatWasAsked`.
     formState,
   });
+  if (interaction.leftSite) markTheExcursion({ observed, leftSite: interaction.leftSite, diag, skipped: site.skipped });
 
   return { structure, interaction: assembleAndMark({
     structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape, arrowNavigation,
     typedFeedback, focusContext, focusReveal, focusEvents, diag,
   }), observed, ...reads };
+}
+
+/**
+ * WHAT A CAPTURE NEEDS TO NOTICE IT LEFT THE PAGE'S SITE (#1363): the page's own URL, read before any probe can
+ * move it (`null` when the browser cannot say, which `leftTheOrigin` reads as unknown, never as left); whether
+ * an activation has left it; and which later steps were skipped because one had.
+ *
+ * @param {{ leftSite?: unknown }} interaction
+ * @returns {Promise<{ pageUrl: string | null, ended: () => boolean, skipped: Set<string> }>}
+ */
+async function watchTheSite(interaction) {
+  return { pageUrl: await currentPageUrl(), ended: () => Boolean(interaction.leftSite), skipped: new Set() };
+}
+
+/**
+ * `probeRouteChange` activates a link, so it is watched like every other activation (#1363) -- and when it was
+ * skipped because an earlier activation had already left the site, that is recorded as well.
+ *
+ * @param {{ routeChange: unknown, probeNavigation?: boolean, interaction: Record<string, any>,
+ *           site: { pageUrl: string | null, ended: () => boolean, skipped: Set<string> } }} ctx
+ */
+async function watchTheRouteChange({ routeChange, probeNavigation, interaction, site }) {
+  if (probeNavigation && !routeChange && site.ended()) site.skipped.add("routeChange");
+  if (!routeChange) return;
+  const control = String(/** @type {{ control?: unknown }} */ (routeChange).control ?? "");
+  await recordIfLeftTheSite({ phrase: control, interaction, from: site.pageUrl, phase: "routeChange", kind: "route" });
+}
+
+/**
+ * Put the excursion on the record (#1363): its own diagnostic mark, and every channel that never ran because of it
+ * marked NOT OBSERVED with the reason, over whatever the probe flags alone wrote.
+ *
+ * @param {{ observed: Record<string, Observation>, leftSite: { control: string }, diag: Diag,
+ *           skipped: Set<string> }} ctx
+ */
+function markTheExcursion({ observed, leftSite, diag, skipped }) {
+  diag.mark("leftSite", leftSite);
+  markLeftSite(observed, leftSite, notRunAfterLeaving({ observed, skipped }));
 }
 
 /**
@@ -790,10 +861,14 @@ function assembleAndMark({ structure, interaction, postSubmitFields, focusOrder,
  * Guarded on the field being empty, so a capture that ran BOTH paths is never re-read twice.
  *
  * @param {{ formState: any, interaction: any, results: { postSubmitFields: string[] }, deadline: number,
- *           diag: Diag, trips: { count: number } }} ctx
+ *           diag: Diag, trips: { count: number }, pageUrl?: string | null }} ctx
  */
-async function runConfiguredForm({ formState, interaction, results, deadline, diag, trips }) {
+async function runConfiguredForm({ formState, interaction, results, deadline, diag, trips, pageUrl = null }) {
+  const heard = interaction.formChanges.length + interaction.stateChanges.length;
   await probeConfiguredForm({ formState, interaction, deadline, diag });
+  // #1363: the configured submit can leave the site too, and then there is no form here to re-read.
+  await recordIfLeftTheSite({ phrase: formState.submit, interaction, from: pageUrl, phase: "configuredForm", heard });
+  if (interaction.leftSite) return;
   if (results.postSubmitFields.length === 0 && interaction.formChanges.length > 0) {
     results.postSubmitFields = await rescanFormFieldsAfterSubmit({ interaction, deadline, diag, trips });
   }
@@ -809,9 +884,9 @@ async function runConfiguredForm({ formState, interaction, results, deadline, di
 /**
  * @param {{ structure: CapturedStructure, onFormField: (phrase: string) => Promise<unknown>,
  *           probeTables?: boolean, deadline: number, diag: Diag, trips: { count: number },
- *           observed: Record<string, Observation> }} ctx
+ *           observed: Record<string, Observation>, ended?: () => boolean }} ctx
  */
-async function sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips, observed }) {
+async function sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips, observed, ended = () => false }) {
   const K = nvda.keyboardCommands;
   // No anchor here, deliberately. Measured: anchorToTop costs ~3s -- two nvda.press calls at
   // roughly 1.3s each plus the settle -- making it the single largest item in a 13.4s capture,
@@ -844,8 +919,11 @@ async function sweepEveryStructuralType({ structure, onFormField, probeTables, d
     // reached, but that's a build-specific observation, not documented behaviour.)
     // This sweep also drives the disclosure and (opt-in) form-submit probes in place.
     structure.formFields = await collectByType(
-      { prev: K.moveToPreviousFormField, next: K.moveToNextFormField }, { label: "formField", observedAs: "formFields", onItem: onFormField, deadline, diag, trips, observed });
+      { prev: K.moveToPreviousFormField, next: K.moveToNextFormField }, { label: "formField", observedAs: "formFields", onItem: onFormField, deadline, diag, trips, observed, ended });
     diag.mark("structural", { headings: structure.headings.length, landmarks: structure.landmarks.length, formFields: structure.formFields.length, roundTrips: trips.count });
+    // #1363: once an activation took the browser off the page's site, every sweep after this one would walk the
+    // other site -- rehearsal 2's link sweep read youtube.com's. They are not run; `navigateByStructure` marks them.
+    if (ended()) return;
     // Additive: graphics, links and lists by quick-nav, then a table walked cell by cell.
     // These fields are new, so no existing signal reads them and none can be broken by them.
     // `observed` threaded here too. Left out of this ONE call, `links`, `lists` and `graphics` were the
@@ -1348,7 +1426,7 @@ async function awaitLateSpeech({ step, prev, repeats, label, trips }) {
  * @param {object} cmd
  * @param {SweepContext} ctx
  */
-async function sweepInDirection(cmd, { label, out, seenKeys, onItem, deadline, trips }) {
+async function sweepInDirection(cmd, { label, out, seenKeys, onItem, deadline, trips, ended }) {
   // Movement is decided by "did NVDA say anything NEW?", never by "did lastSpokenPhrase change?".
   //
   // The old test was unsound in the one case that matters. When a quick-nav jump does not move and
@@ -1381,7 +1459,10 @@ async function sweepInDirection(cmd, { label, out, seenKeys, onItem, deadline, t
     // items): links came back 27/34/33/26 and lists came back 0 four times out of four, with zero
     // worker faults. A `lists: 0` that actually means "the budget was already spent by the links
     // sweep" is the conflation this project forbids -- absence must never be reported as a finding.
-    if (Date.now() > deadline) return { stop: "deadline", steps: i, stopPhrase: prev };
+    // #1363 added `leftSite` to this check: the activation this sweep just made took the browser off the page's
+    // site. Stop with what was read ON the page -- a throw would lose it -- recorded incomplete rather than done.
+    const mustStop = sweepMustStop({ deadline, ended });
+    if (mustStop) return { stop: mustStop, steps: i, stopPhrase: prev };
     // Declared: written in a `try` and again in a conditional, so inference gives up across both.
     /** @type {import("./capture-pure.mjs").SweepStep} */
     let step;
@@ -1433,6 +1514,18 @@ async function sweepInDirection(cmd, { label, out, seenKeys, onItem, deadline, t
     await collectPhrase(phrase, { out, seenKeys, onItem });
   }
   return { stop: "cap", steps: MAX_SWEEP_STEPS };
+}
+
+/**
+ * Why a sweep must stop BEFORE its next step, if it must: the capture's deadline has passed, or (#1363) an
+ * activation this sweep made took the browser off the page's site. `null` means take the step.
+ *
+ * @param {{ deadline: number, ended?: () => boolean }} ctx
+ * @returns {"leftSite" | "deadline" | null}
+ */
+function sweepMustStop({ deadline, ended }) {
+  if (ended?.()) return "leftSite";
+  return Date.now() > deadline ? "deadline" : null;
 }
 
 // Element types a screen-reader user quick-navigates by, beyond the three we already sweep.
