@@ -77,4 +77,17 @@
  * `focusInFrame` shows it inside a frame nothing of ours put it in (6 of 6 on #951's page) -- and marks a sweep
  * that still starts inside a frame incomplete (`heldBy`). Had it missed the window it would have been 18.
  */
-export const CAPTURE_PROTOCOL_VERSION = 17;
+/**
+ * 17 -> 18 on 2026-09-13, because #1363 CHANGES WHAT A CAPTURE DOES -- #972's reason for riding 17.
+ *
+ * Rehearsal 2 (#915): on `https://www.w3.org/WAI` the probe activated the W3C's embedded YouTube player, the tab
+ * became youtube.com, and every probe after it read Google's page under w3.org's key. Under 18 the probe refuses a
+ * control announced inside a frame or embedded object, and an activation that leaves the page's site ends the
+ * capture there (`interaction.leftSite`): nothing more is pressed, the sweep stops, and the later probes are skipped.
+ *
+ * A v17 capture whose probe pressed an embed carries ANOTHER SITE'S evidence under this page's key. Served beside
+ * v18 captures it would not be a mixed corpus but wrong data kept valid -- `ceo`'s ruling for the bump on #1376.
+ * The recapture rides orchestrator's #914 fleet batch, deployed with `--allow-protocol-change` there only. The
+ * Action path never reads the capture cache, so rehearsal 3 is unaffected.
+ */
+export const CAPTURE_PROTOCOL_VERSION = 18;
