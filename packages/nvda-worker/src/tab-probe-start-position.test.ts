@@ -19,13 +19,26 @@ import { resolve } from "node:path";
 
 const SOURCE = readFileSync(resolve(import.meta.dirname, "./capture-probes.mjs"), "utf8");
 
+/**
+ * Comments out, so a source-read guard cannot be satisfied by PROSE.
+ *
+ * #1205, found by `worker-capture`: `functionBody` did not strip and five tests read it, so replacing
+ * `probeFocusReveal`'s reset with a COMMENT naming the call left the suite 7/0 green with the reset
+ * gone -- defeating the direct clause and the caller-side clause together, because both read the same
+ * unstripped text. It is #1197's defect (a guard reading its own paragraph) in the half of this file
+ * nobody had touched, and it is this row's own shape one level up: the function that got stripping is
+ * guarded against prose, and the five that did not, were not.
+ */
+const stripComments = (source: string): string =>
+  source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
 /** The body of one `async function <name>(...) {...}`, up to the next top-level function declaration. */
 function functionBody(name: string): string {
   const start = SOURCE.indexOf(`async function ${name}(`);
   assert.ok(start >= 0, `${name} not found in capture-probes.mjs -- this test examines nothing until it is`);
   const rest = SOURCE.slice(start + 1);
   const nextFn = rest.search(/\n(?:async )?function /);
-  return rest.slice(0, nextFn >= 0 ? nextFn : rest.length);
+  return stripComments(rest.slice(0, nextFn >= 0 ? nextFn : rest.length));
 }
 
 test("probeFocusOrder resets DOM focus before its Tab walk, not just its own caret", () => {
@@ -86,11 +99,10 @@ test("both probes record startedFrom and focusReset on their own mark, not just 
 function tabWalkers(): { name: string; body: string }[] {
   const declarations = [...SOURCE.matchAll(/\n(?:async )?function ([A-Za-z0-9_]+)\(/g)]
     .map((m) => ({ name: m[1], at: m.index ?? 0 }));
-  const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   return declarations
     .map((d, i) => ({
       name: d.name,
-      body: strip(SOURCE.slice(d.at, i + 1 < declarations.length ? declarations[i + 1].at : SOURCE.length)),
+      body: stripComments(SOURCE.slice(d.at, i + 1 < declarations.length ? declarations[i + 1].at : SOURCE.length)),
     }))
     .filter((f) => /nvda\.press\("Tab"\)/.test(f.body));
 }
