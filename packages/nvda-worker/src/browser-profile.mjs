@@ -305,7 +305,25 @@ export const USED_MARKER = "Local State";
 export const ORIGIN_ADOPTED = "adopted-existing";
 export const ORIGIN_FRESH = "created-fresh";
 
-/** Where provisioning records what it did, beside the stamp it does not write. */
+/**
+ * Where provisioning records what it did, beside the stamp it does not write.
+ *
+ * **NOTHING IN THIS REPOSITORY WRITES THIS FILE YET, AND THAT IS DELIBERATE. Until #630's fleet half
+ * does, every guest takes the no-record path below and `USED_MARKER` remains the sole witness, exactly
+ * as before.** Said here rather than only on the pull request, because a consumer with no producer that
+ * nobody labelled reads as working — the mirror of the reference-without-a-consumer shape this row was
+ * filed about, and `STAMP_FILE` two functions down is the contrast: it works because the same function
+ * reads AND writes it.
+ *
+ * **A worker-side writer would be circular, which is why one is not supplied here.** No code in this
+ * package creates the profile directory — Edge does, on first run — so the worker never learns "I made
+ * this one fresh". At a profile's first encounter the only evidence available is `USED_MARKER`, so a
+ * worker writing the record would be recording the inference and reading it back later as a fact. That
+ * is worse than the gap: it would make the single witness look like two.
+ *
+ * Only provisioning knows the answer independently, because only provisioning knows whether the
+ * directory was there before it ran.
+ */
 export const ORIGIN_FILE = ".a11y-profile-origin";
 
 /**
