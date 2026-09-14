@@ -98,3 +98,16 @@ test("the focus-dependent probes still behave exactly as they did", () => {
   const withFocus = ask({ probeDialog: true, probeFocus: true });
   assert.equal(withFocus.dialogEscape.asked, true);
 });
+
+test("#1392: navigation not asked says it is ON by default and was turned off, never that it is opt-in", () => {
+  // ceo's decision on #1392 (5655434240): navigation stays ON by default in the CLI and the Action, so a capture that did
+  // not ask turned it off. The old reason, "probeNavigation is opt-in", said the opposite of the default.
+  const observed = ask();
+  assert.equal(observed.routeChange.asked, false);
+  assert.match(String(observed.routeChange.why), /probeNavigation is ON by default and this capture turned it off/);
+  assert.doesNotMatch(String(observed.routeChange.why), /opt-in/, "the default is ON, so 'opt-in' is false");
+});
+
+test("#1392: navigation asked is recorded as asked, which is the positive control for the reason above", () => {
+  assert.equal(ask({ probeNavigation: true }).routeChange.asked, true);
+});
