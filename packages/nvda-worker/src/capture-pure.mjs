@@ -1822,3 +1822,50 @@ export function resolvedNavigationUrl({ events, requested }) {
     hops: chain.length,
   };
 }
+
+/**
+ * How many times the focus read after a Tab is attempted before the capture records that it has no reading.
+ * TWO, not more: a read that fails twice in a row is the screen reader not answering, and every attempt costs
+ * the capture's deadline.
+ */
+export const FOCUS_READ_ATTEMPTS = 2;
+
+/**
+ * #1497: ONE TAB, THEN THE FOCUS READ -- RETRIED, AND A FAILED READ NAMED RATHER THAN RECORDED AS NOTHING.
+ *
+ * Measured on 2026-09-14 (orchestrator's lab reading on #1497): `skip-link-target-replaced`'s bad capture
+ * followed the skip link and recorded `routeChange.nextFocusAfter: null`, because the focus read after the Tab
+ * threw. Its six variants, on the same page pair, measured "News and updates, link, focused, linked", and the
+ * case had read OK in 30 of 31 gate runs. So one failed read made release-gate stage 8 call a working signal
+ * BLIND, and nothing in the capture said the read had failed.
+ *
+ * The retry RE-READS; it never presses Tab again. A second Tab moves focus one stop further, and would record
+ * the wrong control as where the skip link left the user -- a plausible, wrong reading, which is worse than none.
+ *
+ * `""` stays a reading (focus went somewhere silent is an observation). `null` means every read failed, and
+ * `unmeasured` then says why -- including a Tab that itself failed -- so the record carries the reason instead
+ * of a bare null. Pure: the Tab and the read are injected, so this is testable where no screen reader exists.
+ *
+ * @param {{ pressTab: () => Promise<unknown>, readFocused: () => Promise<string | null | undefined> }} io
+ * @returns {Promise<{ nextFocusAfter: string | null, unmeasured: string | null }>}
+ */
+export async function readFocusAfterTab({ pressTab, readFocused }) {
+  /** @type {string[]} */
+  const failures = [];
+  try {
+    await pressTab();
+  } catch (error) {
+    failures.push(`Tab: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  for (let attempt = 1; attempt <= FOCUS_READ_ATTEMPTS; attempt += 1) {
+    try {
+      return { nextFocusAfter: (await readFocused()) || "", unmeasured: null };
+    } catch (error) {
+      failures.push(`read ${attempt}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return {
+    nextFocusAfter: null,
+    unmeasured: `no focus reading after Tab (${FOCUS_READ_ATTEMPTS} reads failed): ${failures.join(" | ")}`,
+  };
+}
