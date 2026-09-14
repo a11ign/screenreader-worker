@@ -46,6 +46,9 @@ import { samePath , resolvedNavigationUrl } from "./capture-pure.mjs";
 /** Chromium's DevTools endpoint. Loopback only — it is never reachable off the guest. */
 export const CDP_PORT = 9222;
 const AX_TREE_TIMEOUT_MS = 5_000;
+// How long a `DOM.describeNode` reply may take (#1507). The requests go out together, so this bounds the whole describe
+// step rather than each of up to twelve; a reply that never comes leaves that graphic's `element` null.
+const DESCRIBE_NODE_TIMEOUT_MS = 2_000;
 const CDP_HOST = "127.0.0.1";
 
 /**
@@ -562,7 +565,11 @@ function isGeneratedContent(node) {
  * @param {Record<string, any>} census @param {any} node @param {Map<string, any>} byId
  */
 function recordUnnamedGraphic(census, node, byId) {
-  const found = nearestNamedAncestor(node, byId);
+  // WHICH NODE, not only where it sits (#1507). `nearestNamedAncestor` says what surrounds the graphic, and tfl's 1.1.1
+  // referral (#1043) still could not be tied to an element. `backendDOMNodeId` is the id Chromium's DOM domain answers
+  // to -- `null`, never absent, on generated content, which has none. `element` stays null until
+  // `describeUnnamedGraphics` reads it, and on an exempted entry for good: the exception already discharged it.
+  const found = { ...nearestNamedAncestor(node, byId), backendDOMNodeId: node?.backendDOMNodeId ?? null, element: null };
   // 1.1.1'S CONTROLS/INPUT EXCEPTION, enforced 2026-09-04 rather than merely documented.
   //
   //   "If non-text content is a control or accepts user input, then it has a NAME that describes its
@@ -907,6 +914,83 @@ export function truncatedAnnouncements(spoken, names) {
 }
 
 /**
+ * How a graphic is written for a READER to find it on the page: its tag, its source file and its first class, as in
+ * "img logo.png .brand".
+ *
+ * ONE FORMAT FOR BOTH CENSUSES, STATED ONCE (#1507). The DOM census lists unnamed graphics this way, and each
+ * `graphicUnnamedDetail` entry of the tree census now carries the same string, so the two can be matched by eye.
+ * `DOM_CENSUS_EXPRESSION` embeds THIS FUNCTION'S OWN SOURCE, so the page cannot drift from the worker.
+ *
+ * Because it is serialised into the page, its body must stay self-contained: no closure, no import, no backtick (one
+ * would end the expression's template literal), and no named inner function -- a test runner that keeps names wraps
+ * those in a helper the page does not have. Plain split, not a regex, for the escape reason the DOM census gave.
+ *
+ * @param {{ tag: string, src: string | null, className: string | null }} element
+ * @returns {string}
+ */
+export function describeElement({ tag, src, className }) {
+  const file = src ? src.split("?")[0].split("/").pop() : "";
+  const cls = (className || "").trim().split(" ").filter(Boolean)[0];
+  return [String(tag).toLowerCase(), file, cls ? "." + cls : ""].filter(Boolean).join(" ").slice(0, 80);
+}
+
+/**
+ * One attribute from `DOM.Node.attributes`, which CDP sends as a flat `[name1, value1, name2, value2]` array.
+ * @param {string[] | undefined} attributes @param {string} name
+ * @returns {string | null}
+ */
+function attributeOf(attributes, name) {
+  const list = attributes ?? [];
+  for (let i = 0; i + 1 < list.length; i += 2) if (list[i] === name) return list[i + 1];
+  return null;
+}
+
+/**
+ * Describe each unnamed graphic the tree census recorded, by asking Chromium which DOM node backs it (#1507).
+ *
+ * WHY THE TREE CANNOT SAY. An AX node carries a role, a name (empty, for these) and `backendDOMNodeId`, and nothing a
+ * reader can find on a page. `DOM.describeNode` answers from that id with the tag and attributes. Its protocol
+ * description: "does not require domain to be enabled. Does not start tracking any objects" -- a read that changes
+ * nothing on the page.
+ *
+ * BOUNDED BY THE DETAIL'S OWN CAP OF 12, and sent together rather than in turn, because this census also runs at each
+ * stop of the focus-reveal walk. A node with no id (generated content) is not asked about. A node gone by the time it
+ * is asked, or any CDP error, leaves `element` null and records `elementError` -- never a reason the census fails.
+ *
+ * @param {Record<string, any>} census
+ * @param {(method: string, params: Record<string, unknown>) => Promise<any>} call one CDP request, resolving its result
+ */
+export async function describeUnnamedGraphics(census, call) {
+  /** @type {Record<string, any>[]} */
+  const detail = Array.isArray(census.graphicUnnamedDetail) ? census.graphicUnnamedDetail : [];
+  await Promise.all(detail.filter((entry) => entry.backendDOMNodeId != null).map(async (entry) => {
+    try {
+      const node = (await call("DOM.describeNode", { backendNodeId: entry.backendDOMNodeId }))?.node;
+      if (!node) throw new Error("DOM.describeNode answered without a node");
+      entry.element = describeElement({ tag: node.nodeName ?? "",
+        src: attributeOf(node.attributes, "src"), className: attributeOf(node.attributes, "class") });
+    } catch (error) {
+      entry.elementError = (error instanceof Error ? error.message : String(error)).slice(0, 120);
+    }
+  }));
+}
+
+/**
+ * Numbered CDP requests on an open socket, after the census's own request (id 1), each resolving its result.
+ * @param {WebSocket} socket
+ * @returns {(method: string, params: Record<string, unknown>) => Promise<any>}
+ */
+function cdpCaller(socket) {
+  let lastId = 1;
+  return (method, params) => {
+    lastId += 1;
+    const reply = waitForResult(socket, lastId, DESCRIBE_NODE_TIMEOUT_MS);
+    socket.send(JSON.stringify({ id: lastId, method, params }));
+    return reply;
+  };
+}
+
+/**
  * Fetch the census from the live page over the already-open DevTools socket.
  *
  * Returns null rather than throwing: this is a diagnostic, and a capture must never fail because an
@@ -932,6 +1016,8 @@ export async function structuralCensus() {
       // drops that index signature, which turned `census.distinct` into a type error two call sites away
       // in capture-core.mjs for a census that still carries the field at runtime.
       const census = censusFromAXTree((await result)?.nodes);
+      // #1507: say WHICH elements the unnamed graphics are, on this same socket -- see `describeUnnamedGraphics`.
+      await describeUnnamedGraphics(census, cdpCaller(socket));
       census.targetMatch = target.targetMatch;
       // Travels beside `targetMatch` for the same reason: "fallback" alone cannot say whether it was
       // forced (a real second target, unconfirmed) or vacuous (one target, so it is also the only correct
@@ -1081,6 +1167,14 @@ export const DOM_CENSUS_EXPRESSION = `(() => {
     const all = (selector) => [...document.querySelectorAll(selector)].filter(visible);
     // An image with an EMPTY alt is decorative by the author's instruction; Chromium marks it ignored and
     // the AX census does not count it, so counting it here would invent a disagreement on a correct page.
+    // WHAT THIS SELECTOR DOES NOT REACH, recorded rather than widened (#1507). An svg with no role, or with role
+    // graphics-document (which the tree census counts as a graphic), an input of type image, a canvas, an object or
+    // embed, and an image map's area are never selected, so none of them can appear in unnamedGraphics.
+    //
+    // Not widened, for two reasons. Widening moves graphic and unnamedGraphicCount, numbers read beside the tree
+    // census's, and whether Chromium exposes a role-less svg at all has not been measured -- the alt="" filter below
+    // exists because an unmeasured difference once manufactured a disagreement on correct pages. And the tree census
+    // no longer needs this list to say what it counted: each graphicUnnamedDetail entry carries its own element.
     const graphics = all("img, svg[role='img'], [role='img']")
       .filter((el) => el.getAttribute("alt") !== "");
     // WHICH graphics carry no accessible name, not just how many.
@@ -1098,20 +1192,11 @@ export const DOM_CENSUS_EXPRESSION = `(() => {
       || el.getAttribute("aria-labelledby")
       || (el.getAttribute("title") || "").trim()
       || (el.querySelector(":scope > title")?.textContent || "").trim();
-    const describe = (el) => {
-      const src = el.getAttribute("src") || "";
-      const file = src ? src.split("?")[0].split("/").pop() : "";
-      // Plain split, not a regex: a backslash escape inside this template literal has to be doubled
-      // to survive into the page, which ESLint reads as a useless escape in the SOURCE while the page
-      // would have received the right thing. Not worth the argument for a diagnostic label — class
-      // tokens are space-separated and filter(Boolean) absorbs runs of them.
-      //
-      // NOTE FOR ANY COMMENT ADDED HERE: this is inside a template literal, so a BACKTICK ends the
-      // string. The first version of this comment quoted the call in backticks and broke the file at
-      // parse time, which lint reported as "Unexpected token split" ten lines from the real cause.
-      const cls = (el.getAttribute("class") || "").trim().split(" ").filter(Boolean)[0];
-      return [el.tagName.toLowerCase(), file, cls && \`.\${cls}\`].filter(Boolean).join(" ").slice(0, 80);
-    };
+    // ONE FORMAT, STATED ONCE (#1507): the worker's own describeElement, serialised in, so an entry of the tree census's
+    // graphicUnnamedDetail reads exactly like this list. describeElement's comment says what its source may hold.
+    const describeElement = ${describeElement};
+    const describe = (el) => describeElement({ tag: el.tagName, src: el.getAttribute("src"),
+      className: el.getAttribute("class") });
     return {
       heading: all("h1, h2, h3, h4, h5, h6, [role='heading']").length,
       link: all("a[href], [role='link']").length,

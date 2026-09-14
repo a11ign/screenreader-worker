@@ -25,6 +25,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+// A NAMESPACE import, so a missing export reads `undefined` in the test that needs it instead of failing the whole
+// file at link time -- which is what lets the #1507 tests below be run, one red each, against the code before them.
+import * as session from "./browser-session.mjs";
+
 const SOURCE = readFileSync(resolve(import.meta.dirname, "browser-session.mjs"), "utf8");
 
 /**
@@ -169,7 +173,7 @@ test("an image inside a NAMED CONTROL is not counted — the Controls/Input exce
   assert.equal(census.graphicExempted, 1);
   assert.deepEqual(census.graphicExemptedDetail,
     [{ role: "image", ancestorName: "The Care Quality Commission", ancestorRole: "link",
-      controlRole: "link", controlName: "The Care Quality Commission" }]);
+      controlRole: "link", controlName: "The Care Quality Commission", backendDOMNodeId: null, element: null }]);
 });
 
 test("an image inside a named NON-control is still counted", () => {
@@ -188,7 +192,8 @@ test("an image in NO control is still counted, with its detail", () => {
   recordUnnamedGraphic(census, node("2", "image", ""), new Map());
   assert.equal(census.graphicUnnamed, 1);
   assert.deepEqual(census.graphicUnnamedDetail,
-    [{ role: "image", ancestorName: null, ancestorRole: null, controlRole: null, controlName: null }]);
+    [{ role: "image", ancestorName: null, ancestorRole: null, controlRole: null, controlName: null,
+      backendDOMNodeId: null, element: null }]);
 });
 
 test("A NAMED NON-CONTROL WRAPPER MUST NOT STOP THE SEARCH FOR A CONTROL FURTHER OUT", () => {
@@ -212,7 +217,7 @@ test("A NAMED NON-CONTROL WRAPPER MUST NOT STOP THE SEARCH FOR A CONTROL FURTHER
     // survive in the record, because a human reading this later benefits from seeing both facts, not just
     // the one that decided the verdict.
     [{ role: "image", ancestorName: "Photo credit: Jane Doe", ancestorRole: "generic",
-      controlRole: "button", controlName: "Search" }]);
+      controlRole: "button", controlName: "Search", backendDOMNodeId: null, element: null }]);
 });
 
 test("a control ancestor that is itself UNNAMED does not exempt, and does not stop the search either", () => {
@@ -245,4 +250,98 @@ test("a node with no id cannot ADOPT an image that has no parent", () => {
   recordUnnamedGraphic(census, orphan, byId);
   assert.equal(census.graphicUnnamed, 1,
     "an image with no parent must stay a finding — it was not adopted by the id-less link");
+});
+
+/**
+ * #1507: A 1.1.1 CENSUS REFERRAL NAMES THE NODE IT CAME FROM.
+ *
+ * `graphicUnnamedDetail` said where an unnamed graphic sits (its nearest named ancestor and control) and not which
+ * element it is, so tfl's census referral (#1043) could not be tied to anything on the page. Each entry now carries the
+ * AX node's `backendDOMNodeId` and, once `describeUnnamedGraphics` has asked Chromium's DOM domain, an `element` in
+ * the DOM census's own form ("img logo.png .brand", pinned for the page side by `dom-census-expression.test.ts`).
+ */
+type Detail = Record<string, unknown>;
+/** `backendDOMNodeId`s. Any distinct positive ids will do: Chromium assigns them, and the census only carries them. */
+const LOGO = 7, CAPTIONED = 8, ICON = 9;
+const axImage = (nodeId: string, name: string, backendDOMNodeId?: number) =>
+  ({ nodeId, role: { value: "image" }, name: { value: name }, ignored: false, backendDOMNodeId });
+
+function censusOf(nodes: unknown[]): { graphic: number; graphicUnnamedDetail: Detail[] } {
+  assert.equal(typeof session.censusFromAXTree, "function", "censusFromAXTree is gone -- this test examines nothing");
+  return session.censusFromAXTree(nodes as never) as unknown as { graphic: number; graphicUnnamedDetail: Detail[] };
+}
+
+async function describe(census: { graphicUnnamedDetail: Detail[] }, call: (method: string, params: Detail) => unknown) {
+  const run = (session as Record<string, unknown>).describeUnnamedGraphics;
+  assert.equal(typeof run, "function", "describeUnnamedGraphics does not exist");
+  await (run as (c: unknown, f: unknown) => Promise<void>)(census, call);
+}
+
+test("#1507: an unnamed graphic's entry carries its DOM identity, and a NAMED graphic carries no entry", () => {
+  const census = censusOf([axImage("1", "", LOGO), axImage("2", "Transport for London", CAPTIONED)]);
+  assert.equal(census.graphic, 2, "the positive control: both graphics were counted, so the named one was seen");
+  assert.deepEqual(census.graphicUnnamedDetail, [{ role: "image", ancestorName: null, ancestorRole: null,
+    controlRole: null, controlName: null, backendDOMNodeId: LOGO, element: null }]);
+});
+
+test("#1507: a GENERATED-CONTENT node records backendDOMNodeId null -- present, never an absent field", () => {
+  // The census itself never counts one (`classifyAXNode`), so the recorder is asked directly: were it ever handed
+  // one, the entry must say "no DOM node", which an absent field cannot say.
+  const census = fresh();
+  const generated = { nodeId: "-1000000035", role: { value: "image" }, name: { value: "" }, ignored: false };
+  recordUnnamedGraphic(census, generated, new Map());
+  const [entry] = census.graphicUnnamedDetail as Detail[];
+  assert.ok(entry && "backendDOMNodeId" in entry, "the identity field is written");
+  assert.equal(entry.backendDOMNodeId, null);
+  assert.equal(entry.element, null);
+  // And through the census: a generated node beside a real one leaves exactly the real one's entry.
+  assert.deepEqual(censusOf([{ ...generated, backendDOMNodeId: undefined }, axImage("3", "", ICON)])
+    .graphicUnnamedDetail.map((e) => e.backendDOMNodeId), [ICON]);
+});
+
+test("#1507: each identified entry is described from its DOM node, in the DOM census's own form", async () => {
+  const census = censusOf([axImage("1", "", LOGO), axImage("2", "", ICON)]);
+  const nodes: Record<number, Detail> = {
+    [LOGO]: { nodeName: "IMG", localName: "img", attributes: ["src", "/assets/logo.png?v=2", "class", "brand wide"] },
+    [ICON]: { nodeName: "svg", localName: "svg", attributes: ["class", "icon icon--search", "focusable", "false"] },
+  };
+  const asked: unknown[] = [];
+  await describe(census, async (method, params) => {
+    asked.push([method, params]);
+    return { node: nodes[params.backendNodeId as number] };
+  });
+  assert.deepEqual(asked, [["DOM.describeNode", { backendNodeId: LOGO }], ["DOM.describeNode", { backendNodeId: ICON }]]);
+  assert.deepEqual(census.graphicUnnamedDetail.map((e) => e.element), ["img logo.png .brand", "svg .icon"],
+    "the same strings dom-census-expression.test.ts pins for the page's own list");
+});
+
+test("#1507: a node that cannot be described leaves element null, and the others are still described", async () => {
+  const census = { graphicUnnamedDetail: [
+    { role: "image", backendDOMNodeId: LOGO, element: null },
+    { role: "image", backendDOMNodeId: null, element: null },
+    { role: "image", backendDOMNodeId: CAPTIONED, element: null },
+  ] as Detail[] };
+  const asked: unknown[] = [];
+  await describe(census, async (_method, params) => {
+    asked.push(params.backendNodeId);
+    if (params.backendNodeId === LOGO) throw new Error("CDP error: No node with given id found");
+    return { node: { nodeName: "IMG", localName: "img", attributes: ["src", "a.png"] } };
+  });
+  assert.deepEqual(asked, [LOGO, CAPTIONED], "a node with no DOM id is never asked about");
+  assert.deepEqual(census.graphicUnnamedDetail.map((e) => e.element), [null, null, "img a.png"]);
+  assert.match(String(census.graphicUnnamedDetail[0].elementError), /No node with given id/,
+    "the refusal is recorded, not swallowed");
+});
+
+test("#1507: the live census asks for the descriptions, and the page describes with the worker's own function", () => {
+  // Neither is reachable without a browser: `structuralCensus` opens a DevTools socket, and the DOM census is a string
+  // the page evaluates. So both are pinned where they live -- and the page side's OUTPUT is pinned, behaviourally,
+  // by `dom-census-expression.test.ts`.
+  const body = /export async function structuralCensus\(\) \{([\s\S]*?)\n\}/.exec(SOURCE)?.[1];
+  assert.ok(body, "structuralCensus is gone -- this test examines nothing");
+  assert.match(body, /await describeUnnamedGraphics\(census, cdpCaller\(socket\)\)/);
+  const describeElement = (session as Record<string, unknown>).describeElement;
+  assert.equal(typeof describeElement, "function", "describeElement does not exist");
+  assert.ok(session.DOM_CENSUS_EXPRESSION.includes(String(describeElement)),
+    "DOM_CENSUS_EXPRESSION no longer embeds describeElement's own source");
 });
