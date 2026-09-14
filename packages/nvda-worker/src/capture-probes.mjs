@@ -25,6 +25,7 @@ import {
   focusInFrameOf, focusRestoreDecision, focusRestoredRecord, heldInFrame,
   focusRevealVerdict, focusEventVerdict, censusGrowth, focusResetOutcome, titleSourceVerdict,
   activationDeadline, activationBudgetMark, activationLeftTheSite, markLeftSite, notRunAfterLeaving,
+  onlyControlState, pageSpeechAfter,
   readFocusAfterTab,
 } from "./capture-pure.mjs";
 import {
@@ -2429,26 +2430,6 @@ async function waitForAnnouncement(before, kind) {
 }
 
 /**
- * Is everything heard so far the CONTROL's own state rather than the PAGE's answer?
- *
- * NVDA speaks "checked" for a checkbox and "expanded" for a disclosure whatever the page does, so those
- * phrases are the screen reader describing the control, not the page responding to it. `case-matrix.mjs`
- * makes the same distinction on the reading side in `pageResponseTo`; this is the capture side, and the
- * two are pinned by `toggle-state-parity.test.ts`.
- *
- * Empty counts as "only state", because a page that has said nothing has certainly not answered yet.
- */
-const CONTROL_OWN_STATE = /^(?:not\s+)?(?:checked|pressed|selected|expanded|collapsed)$/i;
-
-/** @param {unknown[]} phrases */
-function onlyControlState(phrases) {
-  return phrases.every((phrase) => {
-    const text = String(phrase ?? "").trim();
-    return text === "" || CONTROL_OWN_STATE.test(text);
-  });
-}
-
-/**
  * Wait again when everything heard so far is the control's OWN state.
  *
  * A BUTTON announces nothing of its own, so the first phrase after activating one IS the page's answer and
@@ -2524,8 +2505,14 @@ async function activateAndCaptureDelta(phrase, interaction, kind) {
     // truly says nothing pays one more quiet window and still reports the empty delta that IS the
     // finding.
     log = await waitPastControlState(log, before, kind, interaction);
-    const after = log.slice(before).map((/** @type {unknown} */ s) => String(s).trim()).filter(Boolean).join(" | ");
-    interaction.sweepLog.push(`${kind} ${JSON.stringify(phrase.slice(0, 40))} -> ${JSON.stringify(after)}`);
+    // #1467: WHAT THE PAGE SAID, NOT THE CONTROL RE-ANNOUNCING ITSELF. A press that does not navigate often
+    // makes NVDA re-announce the control, in pieces, and which piece lands inside the quiet window varies:
+    // rehearsal 4's two identical captures of one submit recorded "search landmark" and "button". Neither is
+    // page speech, and `after` is compared evidence. The phrases left out stay in the sweep log, which is not.
+    const after = pageSpeechAfter(phrase, log.slice(before));
+    const heard = log.slice(before).map(String).join(" | ");
+    interaction.sweepLog.push(`${kind} ${JSON.stringify(phrase.slice(0, 40))} -> ${JSON.stringify(after)}`
+      + (heard.trim() === after ? "" : ` heard=${JSON.stringify(heard)}`));
     // `kind` travels with the evidence, because criteria mean different things per activation.
     // 3.3.1 is about a SUBMIT that was rejected silently; it was previously satisfied by any non-empty
     // formChanges, so opening a disclosure counted -- and apache.org's SEARCH toggle was reported as a
