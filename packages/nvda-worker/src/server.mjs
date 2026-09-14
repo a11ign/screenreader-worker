@@ -27,7 +27,7 @@ import {
   screenReaderReady, shutdownScreenReader, warmUpScreenReader,
 } from "./capture-core.mjs";
 import { configuredBrowser, browserProfileDir, resolveBrowser } from "./browsers.mjs";
-import { CAPTURE_HARD_TIMEOUT_DEFAULT_MS, PROBE_FLAGS } from "./capture-pure.mjs";
+import { CAPTURE_HARD_TIMEOUT_DEFAULT_MS, PROBE_FLAGS, viewportFromMarks } from "./capture-pure.mjs";
 import { isLocallyRecoverable } from "./worker-recovery.mjs";
 import { codeVersion } from "./code-version.mjs";
 import { probeWindowOwner, foregroundBlocker } from "./desktop-dialogs.mjs";
@@ -1255,7 +1255,9 @@ async function runCapture(/** @type {any} */ res, /** @type {any} */ { url, opts
       ...result,
       screenReader: environment.screenReader,
       task: opts.task,
-      environment,
+      // #1513: the viewport THIS capture was read at, merged into a copy. `environment` itself is the memoised
+      // runtime object `/health` also serves, and a page's width is not the worker's.
+      environment: { ...environment, ...viewportFromMarks(result.diagnostics) },
     });
   } catch (e) {
     worked.failures += 1;
