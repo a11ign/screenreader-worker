@@ -9,6 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { readFocusAfterTab, FOCUS_READ_ATTEMPTS } from "./capture-pure.mjs";
 
 /** A Tab and a read, scripted: each read answer is a string to return or an Error to throw, in order. */
@@ -71,4 +72,19 @@ test("#1497: a Tab that throws does not stop the read, and is named if the reads
     "the probe has always read after a failed Tab; a reading taken then is still a reading");
   const lost = scripted([new Error("x"), new Error("y")], { tabFails: true });
   assert.match(String((await readFocusAfterTab(lost.io)).unmeasured), /^no focus reading after Tab .*Tab: Tab timed out/);
+});
+
+test("#1497 WIRING: the route probe's focus read goes through readFocusAfterTab, and an unmeasured reason reaches its mark", () => {
+  // READ AS TEXT, never imported: `capture-probes.mjs` imports @guidepup/guidepup, which throws here. Anchored on
+  // code shapes (`return readFocusAfterTab({`, a spread into the mark), not on words a comment could carry.
+  const source = readFileSync(new URL("./capture-probes.mjs", import.meta.url), "utf8");
+  assert.match(source, /\breadFocusAfterTab,\n\} from "\.\/capture-pure\.mjs";/, "the helper is imported from the pure module");
+  const start = source.indexOf("async function focusedAfterTab(");
+  assert.ok(start >= 0, "focusedAfterTab is gone from capture-probes.mjs");
+  const body = source.slice(start, source.indexOf("\n}\n", start));
+  assert.match(body, /return readFocusAfterTab\(\{/, "the probe's read is the pure helper's, retried once");
+  assert.doesNotMatch(body, /\bcatch\b/, "and no local catch turns a failed read back into a bare null");
+  assert.match(source, /const nextFocusAfter = focusAfter\.nextFocusAfter;/, "the typed field is the helper's reading");
+  assert.match(source, /\.\.\.\(focusAfter\.unmeasured \? \{ nextFocusAfterUnmeasured: focusAfter\.unmeasured \} : \{\}\)/,
+    "and a reason for no reading is recorded on the routeChange mark instead of vanishing");
 });
