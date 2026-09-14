@@ -25,6 +25,7 @@ import {
   focusInFrameOf, focusRestoreDecision, focusRestoredRecord, heldInFrame,
   focusRevealVerdict, focusEventVerdict, censusGrowth, focusResetOutcome, titleSourceVerdict,
   activationDeadline, activationBudgetMark, activationLeftTheSite, markLeftSite, notRunAfterLeaving,
+  readFocusAfterTab,
 } from "./capture-pure.mjs";
 import {
   currentPageUrl, mediaCensus, formInputCensus, structuralCensus, domCensus, truncatedAnnouncements,
@@ -2587,17 +2588,18 @@ async function activateAndCaptureDelta(phrase, interaction, kind) {
  * `navigated` travels with the evidence. Aiming it at a nav landmark, or at a link whose href changes the
  * route, is the obvious next step and is deliberately not guessed at here.
  */
-/** One Tab from wherever activation left us, and what it announced. */
-/** @param {string} kind */
+/**
+ * One Tab from wherever activation left us, and what it announced -- through `readFocusAfterTab` (#1497), so a
+ * failed focus read is retried once, never re-Tabbed, and a read that fails every time carries its reason.
+ * `""` is still a reading (focus went somewhere silent) and `null` still means no reading was taken.
+ * @param {string} kind
+ * @returns {Promise<{ nextFocusAfter: string | null, unmeasured: string | null }>}
+ */
 async function focusedAfterTab(kind) {
-  try {
-    await withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, kind).catch(() => undefined);
-    return (await reportFocusedControl()) || "";
-  } catch {
-    // Null, never "": an empty announcement is a real observation here (focus went somewhere silent) and a
-    // failed measurement must not be recorded as one.
-    return null;
-  }
+  return readFocusAfterTab({
+    pressTab: () => withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, kind),
+    readFocused: () => reportFocusedControl(),
+  });
 }
 
 /** @param {string} kind */
@@ -3500,7 +3502,9 @@ async function probeRouteChange({ interaction, deadline, diag }) {
     // `firstHeadingFromTop` and `reportedTitle` both anchor. Taken afterwards it recorded the first link on
     // the page for every variant of every case, identically, which reads as "the skip link did nothing" on
     // a page where it worked perfectly.
-    const nextFocusAfter = await focusedAfterTab("routeChangeFocusAfter");
+    const focusAfter = await focusedAfterTab("routeChangeFocusAfter");
+    // #1497: the TYPED field stays `string | null` (@a11ign/evidence); why a null has no reading goes on the mark.
+    const nextFocusAfter = focusAfter.nextFocusAfter;
     const titleAfter = await currentTitle(diag);
     // The FIRST HEADING, before and after, and it is the signal that makes this probe sound.
     //
@@ -3536,6 +3540,7 @@ async function probeRouteChange({ interaction, deadline, diag }) {
       titleChanged: titleBefore !== titleAfter,
       viewChanged: headingBefore !== headingAfter,
       announcedChars: result.announced.length,
+      ...(focusAfter.unmeasured ? { nextFocusAfterUnmeasured: focusAfter.unmeasured } : {}),
     });
     return result;
   } catch (e) {
