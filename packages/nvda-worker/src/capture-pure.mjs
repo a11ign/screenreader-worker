@@ -917,12 +917,20 @@ const SWEPT_CHANNELS = Object.freeze(["headings", "landmarks", "formFields", "gr
   "tableCells"]);
 
 /**
- * The channels a SKIPPED step would have filled (#1363). The focus pass's are `observed.focusOrder` plus
- * `FOCUS_DEPENDENT_PROBES`, exactly the set `recordWhatWasAsked` writes, so the two cannot drift.
+ * The channels a SKIPPED step would have filled (#1363).
+ *
+ * THE FOCUS PASS FILLS MORE THAN IT IS ASKED FOR (#1575). This list used to be `focusOrder` plus
+ * `FOCUS_DEPENDENT_PROBES`, "exactly the set `recordWhatWasAsked` writes" -- but that set is the OPT-IN probes, the
+ * channels a flag decides. The focus pass also fills `focusReveal` (1.4.13's reveal walk) and `focusEvents` (2.4.7's
+ * F55 detector) without being asked for either, so a live excursion that skipped the pass recorded neither as not
+ * run, and `observed` read as though those two had never been in question.
+ *
+ * The list is therefore the focus STEP's channels, not the flags': `@a11ign/evidence`'s `FOCUS_STEP` in
+ * `left-site.ts`, which this package cannot import. `off-origin-activation.test.ts` pins the two equal, read as text.
  * @type {Record<string, readonly string[]>}
  */
 const CHANNELS_OF_A_SKIPPED_STEP = Object.freeze({
-  focus: ["focusOrder", ...Object.keys(FOCUS_DEPENDENT_PROBES)],
+  focus: ["focusOrder", "focusReveal", "focusEvents", ...Object.keys(FOCUS_DEPENDENT_PROBES)],
   postSubmit: ["postSubmitFields"],
   routeChange: ["routeChange"],
 });

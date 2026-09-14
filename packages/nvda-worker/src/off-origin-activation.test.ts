@@ -79,7 +79,8 @@ test("#1363: what never ran is every sweep with no record of its own, plus every
   const observed = { headings: {}, landmarks: {}, formFields: {} };
   assert.deepEqual(notRunAfterLeaving({ observed, skipped: new Set(["postSubmit", "focus", "routeChange"]) }), [
     "graphics", "links", "lists", "frames", "tableCells", "postSubmitFields",
-    "focusOrder", "dialogEscape", "arrowNavigation", "typedFeedback", "focusContext", "routeChange",
+    "focusOrder", "focusReveal", "focusEvents", "dialogEscape", "arrowNavigation", "typedFeedback", "focusContext",
+    "routeChange",
   ]);
   assert.deepEqual(notRunAfterLeaving({
     observed: { headings: {}, landmarks: {}, formFields: {}, graphics: {}, links: {}, lists: {}, frames: {}, tableCells: {} },
@@ -87,12 +88,54 @@ test("#1363: what never ran is every sweep with no record of its own, plus every
   }), [], "the control: a capture that ran everything lists nothing");
 });
 
-test("#1363: a skipped focus pass names exactly the focus channels `recordWhatWasAsked` writes", () => {
+const EVERY_SWEEP = () =>
+  ({ headings: {}, landmarks: {}, formFields: {}, graphics: {}, links: {}, lists: {}, frames: {}, tableCells: {} });
+
+/**
+ * `@a11ign/evidence`'s focus step, READ AS TEXT (#1575): this package cannot import `left-site.ts`'s `FOCUS_STEP`, and
+ * `@a11ign/evidence` cannot import this one. Comments are stripped first, so a channel named in prose is not read.
+ */
+function evidenceFocusStepChannels(): string[] {
+  const leftSite = stripComments(readFileSync(resolve(import.meta.dirname, "../../evidence/src/left-site.ts"), "utf8"));
+  const step = /const FOCUS_STEP: Step = \{[\s\S]*?interaction: \[([\s\S]*?)\]/.exec(leftSite)?.[1];
+  assert.ok(step, "left-site.ts no longer declares FOCUS_STEP's interaction list -- this parity reads nothing");
+  return [...step.matchAll(/"([A-Za-z]+)"/g)].map((match) => match[1]);
+}
+
+test("#1575: a live excursion that skipped the focus pass records focusReveal and focusEvents as NOT RUN", () => {
+  // What a real capture's `observed` holds when the sweep left the site: `recordWhatWasAsked` wrote the flags' answers,
+  // every sweep recorded itself, and the focus pass never started. Then the real path: `markTheExcursion` calls
+  // `markLeftSite(observed, leftSite, notRunAfterLeaving(...))`, pinned by the WIRING test below.
+  const observed: Record<string, unknown> = EVERY_SWEEP();
+  recordWhatWasAsked({ observed, probeForms: false, probeFocus: true, probeFocusContext: true, interaction: { formChanges: [] } });
+  assert.equal("focusReveal" in observed || "focusEvents" in observed, false,
+    "the positive control: before the fix's path runs, neither channel has any record -- `recordWhatWasAsked` writes neither");
+  markLeftSite(observed, { control: EMBED }, notRunAfterLeaving({ observed, skipped: ["focus"] }));
+  const notRun = { asked: false, why: leftSiteReason({ control: EMBED }) };
+  for (const channel of ["focusReveal", "focusEvents", "focusOrder", "focusContext", "dialogEscape", "arrowNavigation", "typedFeedback"]) {
+    assert.deepEqual(observed[channel], notRun, `${channel} reads NOT RUN, naming the excursion`);
+  }
+  assert.deepEqual(observed.headings, {}, "a sweep that ran keeps its record");
+});
+
+test("#1575 PARITY: the worker's skipped-focus channels are exactly @a11ign/evidence's FOCUS_STEP channels", () => {
+  const evidence = evidenceFocusStepChannels();
+  // THE POSITIVE CONTROL on the text read: it found the step's channels, including one each side names.
+  assert.ok(evidence.includes("focusOrder") && evidence.includes("typedFeedback"), `read ${JSON.stringify(evidence)}`);
+  const worker = notRunAfterLeaving({ observed: EVERY_SWEEP(), skipped: ["focus"] });
+  assert.deepEqual([...worker].sort(), [...evidence].sort(),
+    "a channel added to one focus list and not the other: the worker records what never ran from its list, and "
+    + "evidence names what was not examined from FOCUS_STEP -- the two must be the same step");
+});
+
+test("#1363: every focus channel `recordWhatWasAsked` writes is among the skipped-focus channels", () => {
+  // The old equality, narrowed to what stays true (#1575): the flags' channels are a SUBSET of the step's.
   const observed: Record<string, { asked: boolean; why?: string }> = {};
   recordWhatWasAsked({ observed, probeForms: false, probeFocus: true, interaction: { formChanges: [] } });
   const written = Object.keys(observed).filter((channel) => !["formChanges", "postSubmitFields", "routeChange"].includes(channel));
-  const everySweep = { headings: {}, landmarks: {}, formFields: {}, graphics: {}, links: {}, lists: {}, frames: {}, tableCells: {} };
-  assert.deepEqual(notRunAfterLeaving({ observed: everySweep, skipped: ["focus"] }).sort(), written.sort());
+  const skipped = new Set(notRunAfterLeaving({ observed: EVERY_SWEEP(), skipped: ["focus"] }));
+  assert.ok(written.length > 0, "the positive control: recordWhatWasAsked wrote focus channels to compare");
+  assert.deepEqual(written.filter((channel) => !skipped.has(channel)), []);
 });
 
 test("#1363 PARITY: the worker's copy of the new-window grammar answers exactly as @a11ign/evidence's", () => {
