@@ -903,6 +903,70 @@ export function activationLeftTheSite({ control, kind, after, from, now, phase }
 }
 
 /**
+ * Is everything heard so far the CONTROL's own state rather than the PAGE's answer?
+ *
+ * NVDA speaks "checked" for a checkbox and "expanded" for a disclosure whatever the page does, so those
+ * phrases are the screen reader describing the control, not the page responding to it.
+ * `signal-predicates.mjs` makes the same distinction on the reading side in `pageResponseTo`; this is the
+ * capture side. No test pins the two word lists equal (#1467 found the `toggle-state-parity.test.ts` this
+ * comment named does not exist).
+ *
+ * Empty counts as "only state", because a page that has said nothing has certainly not answered yet.
+ */
+export const CONTROL_OWN_STATE = /^(?:not\s+)?(?:checked|pressed|selected|expanded|collapsed)$/i;
+
+/** @param {unknown[]} phrases */
+export function onlyControlState(phrases) {
+  return phrases.every((phrase) => {
+    const text = String(phrase ?? "").trim();
+    return text === "" || CONTROL_OWN_STATE.test(text);
+  });
+}
+
+/** @param {unknown} text @returns {string[]} its comma-separated parts, trimmed and lowercased */
+const partsOf = (text) => String(text ?? "").split(",").map((part) => part.trim().toLowerCase()).filter(Boolean);
+
+/**
+ * A container announced on its own, with nothing inside it: "search landmark", "region", "main". Read with
+ * `CONTAINER_PREFIX`, so the container vocabulary stays the one copy this file already keeps.
+ * @param {string} part
+ */
+const isBareContainer = (part) => `${part}, `.replace(CONTAINER_PREFIX, "") === "";
+
+/**
+ * #1467: WHAT THE PAGE SAID after an activation, with the pressed control's own re-announcement left out.
+ *
+ * A press that does not navigate often makes NVDA re-announce the focused control, and it speaks that as
+ * separate phrases: rehearsal 4's transcript holds "search landmark, Search:, …" and "button, graphic, Submit
+ * Search" for one search form. `waitForAnnouncement` takes the first phrase after the press as "something was
+ * said", so the delta caught a different piece of the control on two identical captures, "search landmark" in
+ * one and "button" in the other, and `after` is compared evidence.
+ *
+ * A phrase is the control's own only when EVERY part of it is either a part of the control's own announcement
+ * or a bare container. One part the control did not say keeps the whole phrase, so "search landmark, 3 results
+ * found" is page speech. What this cannot tell apart: a page whose entire reply is one word that is also a part
+ * of the control ("Search" after pressing "Search, button"), or a bare landmark the page moved focus into.
+ * Both are left out, and read as a page that said nothing identifiable.
+ *
+ * STATE words are never left out, even when the control announced one. `waitPastControlState` already treats
+ * a state-only delta as "the page has not answered yet", and a toggle's recorded "checked" is what the reading
+ * side's `pageResponseTo` separates. Leaving it out here would change a toggle's evidence, which is not this.
+ *
+ * @param {string} control the phrase NVDA announced for the control before it was pressed
+ * @param {readonly unknown[]} phrases every phrase heard after the press, in order
+ * @returns {string} the page's phrases, trimmed and joined with " | ", or "" when none was the page's
+ */
+export function pageSpeechAfter(control, phrases) {
+  const own = new Set(partsOf(control).filter((part) => !CONTROL_OWN_STATE.test(part)));
+  const isControlsOwn = (/** @type {string} */ phrase) => partsOf(phrase)
+    .every((part) => own.has(part) || isBareContainer(part));
+  return phrases
+    .map((phrase) => String(phrase ?? "").trim())
+    .filter((phrase) => phrase !== "" && !isControlsOwn(phrase))
+    .join(" | ");
+}
+
+/**
  * Mark every channel the capture did not run BECAUSE it stopped at the excursion (#1363), so `observed` says
  * why rather than reading as "asked, and found nothing". Overrides whatever `recordWhatWasAsked` wrote from the
  * flags: a flag says what was requested, and this says what never ran. The wording is `@a11ign/evidence`'s
