@@ -1445,6 +1445,33 @@ export function censusGrowth(before, after) {
     .filter(([, delta]) => Number(delta) > 0));
 }
 
+/** How many names a reveal records. A tooltip or disclosure adds a handful; a cap keeps a runaway page bounded. */
+const REVEALED_NAMES_CAP = 10;
+
+/**
+ * The names present in `after` and not in `before`, as a MULTISET difference -- a second link with a name already
+ * on the page is still something that appeared (#1506). `[]` when either read carries no `names`.
+ *
+ * @param {unknown} before @param {unknown} after
+ * @returns {string[]}
+ */
+export function namesThatAppeared(before, after) {
+  const namesOf = (/** @type {unknown} */ read) => (read && typeof read === "object"
+    && Array.isArray(/** @type {{ names?: unknown }} */ (read).names))
+    ? /** @type {unknown[]} */ (/** @type {{ names: unknown[] }} */ (read).names).map(String) : null;
+  const [b, a] = [namesOf(before), namesOf(after)];
+  if (!b || !a) return [];
+  const remaining = new Map();
+  for (const name of b) remaining.set(name, (remaining.get(name) ?? 0) + 1);
+  const appeared = [];
+  for (const name of a) {
+    const left = remaining.get(name) ?? 0;
+    if (left > 0) remaining.set(name, left - 1);
+    else appeared.push(name);
+  }
+  return appeared.slice(0, REVEALED_NAMES_CAP);
+}
+
 /**
  * 1.4.13 Content on Hover or Focus — what three censuses and two focus reads MEAN, decided here so the
  * decision is testable without NVDA.
@@ -1495,27 +1522,37 @@ export function censusGrowth(before, after) {
  * unaffected and the conformant half keeps reading `dismissed: true`. Refusing on `focusReset.applied`
  * alone would blind the good page too, which trades one silent wrong answer for a louder one.
  *
- * @param {{ before: unknown, onFocus: unknown, afterEscape: unknown,
+ * @param {{ before: unknown, control?: unknown, onFocus: unknown, afterEscape: unknown,
  *           focusBefore: string | null, focusAfter: string | null,
  *           baselineUntouched?: boolean }} reads
  */
-export function focusRevealVerdict({ before, onFocus, afterEscape, focusBefore, focusAfter,
+export function focusRevealVerdict({ before, control, onFocus, afterEscape, focusBefore, focusAfter,
   baselineUntouched = true }) {
   // A FAILED CENSUS IS NOT A READING OF ZERO, AND IT DOES NOT ARRIVE AS `null`. `structuralCensus` returns
   // `{ error }` when the CDP socket did not answer — so the obvious `if (!before)` guard passes the failure
   // straight through, every count reads 0, and a dropped connection becomes "nothing appeared on focus",
   // which is a conformant page. That is absence read as a value, in the one place where absence IS the
   // question, and `tsc` caught it in the first version of this function rather than a capture run.
-  const revealedBy = censusGrowth(before, onFocus);
+  // #1506: FOCUS IS CREDITED ONLY WITH WHAT GREW SINCE THE READ TAKEN IMMEDIATELY BEFORE ITS TAB. Measured from the
+  // walk's single `before`, content a late script added while the walk ran was credited to whichever control held
+  // focus at that stop. A caller that passes no `control` (every caller before #1506) keeps the single-baseline
+  // comparison, and `timeSeparated: false` says the verdict could not tell focus from time.
+  const timeSeparated = control !== undefined;
+  const revealedBy = censusGrowth(timeSeparated ? control : before, onFocus);
   if (revealedBy === null) return { asked: true, why: "census unavailable", revealed: null };
+  if (revealedBy.length === 0 && timeSeparated && (censusGrowth(before, onFocus) ?? []).length > 0) {
+    return { asked: true, revealed: false, timeSeparated,
+      why: "the census grew before the tab, without a focus change -- content that arrived on its own is not a reveal" };
+  }
   if (revealedBy.length === 0) {
     if (!baselineUntouched) {
       return { asked: true, revealed: null,
         why: "a control held focus from an earlier probe, so the baseline was not the untouched document "
           + "-- content already revealed before this probe began cannot appear in its delta" };
     }
-    return { asked: true, revealed: false, why: "nothing appeared on focus" };
+    return { asked: true, revealed: false, timeSeparated, why: "nothing appeared on focus" };
   }
+  const revealedNames = namesThatAppeared(timeSeparated ? control : before, onFocus);
 
   // FOCUS MUST NOT HAVE MOVED, or Escape dismissed nothing — it navigated. The criterion's wording is the
   // whole reason this is checked rather than assumed: a mechanism that moves focus is not a mechanism to
@@ -1523,7 +1560,7 @@ export function focusRevealVerdict({ before, onFocus, afterEscape, focusBefore, 
   const focusHeld = Boolean(focusBefore) && focusBefore === focusAfter;
   const afterGrowth = censusGrowth(before, afterEscape);
   if (afterGrowth === null) {
-    return { asked: true, revealed: true, revealedBy, focusHeld, dismissed: null,
+    return { asked: true, revealed: true, revealedBy, revealedNames, timeSeparated, focusHeld, dismissed: null,
       why: "census unavailable after Escape" };
   }
   const stillThere = afterGrowth.length > 0;
@@ -1531,6 +1568,10 @@ export function focusRevealVerdict({ before, onFocus, afterEscape, focusBefore, 
     asked: true,
     revealed: true,
     revealedBy,
+    // #1506: WHAT appeared, by name, so the evidence carries its own proof rather than a count alone. Capped, and
+    // absent names (a census from before the tree census carried them) read as an empty list, never as a claim.
+    revealedNames,
+    timeSeparated,
     focusHeld,
     // `dismissed` answers Dismissable ONLY when focus held. Reported separately from `focusHeld` so a rule
     // can tell "Escape did nothing" from "Escape worked by navigating away", which are different pages.

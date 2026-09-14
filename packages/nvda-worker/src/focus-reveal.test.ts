@@ -9,7 +9,7 @@ import { test as focusRevealTest } from "node:test";
 import focusRevealAssert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { focusRevealVerdict, censusGrowth, focusResetOutcome } from "./capture-pure.mjs";
+import { focusRevealVerdict, censusGrowth, focusResetOutcome, namesThatAppeared } from "./capture-pure.mjs";
 
 const BASE = { formControl: 2, link: 3, graphic: 0, heading: 1, landmark: 1 };
 const GREW = { ...BASE, link: 4 };
@@ -288,4 +288,80 @@ focusRevealTest("the PROBE passes the baseline's trust to the verdict — a sour
   focusRevealAssert.match(args, /baselineUntouched:\s*focusReset\?\.applied !== true/,
     "the probe must hand the verdict the baseline's trust, derived from `focusReset.applied` -- passing a "
     + "literal restores issue #76, where a failing page reads exactly like a conformant one");
+});
+
+/**
+ * #1506: FOCUS AND TIME ARE SEPARATE VARIABLES.
+ *
+ * `walkToReveal` used to credit the first tab stop whose census had grown since ONE `before` read taken before any
+ * Tab, so content a late script or an on-scroll element added while the walk ran was credited to whichever control
+ * happened to be focused at that stop (worker-judge's #1043 caselaw reading, 5657882063). The walk now re-reads the
+ * census IMMEDIATELY BEFORE each Tab (`control`), and focus is credited only with what grew between that read and
+ * the read after the Tab. Content already present at `control` arrived on its own.
+ *
+ * What remains unseparated, stated rather than hidden: content that arrives on its own DURING the Tab interval
+ * itself (a few hundred ms) is still indistinguishable by count from a reveal. The interval is now one stop wide
+ * instead of the whole walk.
+ */
+const LATE = { ...BASE, link: 4 };                       // a link a script added, with no focus change
+const LATE_AND_REVEALED = { ...LATE, heading: 2 };       // that late link, plus a heading focus revealed
+const named = (census: Record<string, unknown>, names: string[]) => ({ ...census, names });
+
+focusRevealTest("#1506 (a): content that grew with NO focus change reads NOT revealed", () => {
+  const v = focusRevealVerdict({ before: BASE, control: LATE, onFocus: LATE, afterEscape: LATE,
+    focusBefore: "a", focusAfter: "a" });
+  focusRevealAssert.equal(v.revealed, false, "the census grew before the Tab, so focus did not cause it");
+  focusRevealAssert.match(String(v.why), /before the tab|without a focus change|on its own/i);
+});
+
+focusRevealTest("#1506 (b): a genuine focus reveal still reads revealed, and records what grew by count AND name", () => {
+  const v = focusRevealVerdict({
+    before: named(BASE, ["Search", "Help"]), control: named(BASE, ["Search", "Help"]),
+    onFocus: named({ ...BASE, heading: 2 }, ["Search", "Help", "Password rules"]),
+    afterEscape: named({ ...BASE, heading: 2 }, ["Search", "Help", "Password rules"]),
+    focusBefore: "a", focusAfter: "a" });
+  focusRevealAssert.equal(v.revealed, true);
+  focusRevealAssert.deepEqual(v.revealedBy, [["heading", 1]]);
+  focusRevealAssert.deepEqual(v.revealedNames, ["Password rules"], "the evidence carries its own proof");
+});
+
+focusRevealTest("#1506 (c): content that grew on BOTH reads is not credited to focus; only what grew after the Tab is", () => {
+  const both = focusRevealVerdict({ before: BASE, control: LATE, onFocus: LATE, afterEscape: BASE,
+    focusBefore: "a", focusAfter: "a" });
+  focusRevealAssert.equal(both.revealed, false, "the same growth on the control read and the focus read is time, not focus");
+  const onTop = focusRevealVerdict({ before: BASE, control: LATE, onFocus: LATE_AND_REVEALED, afterEscape: LATE,
+    focusBefore: "a", focusAfter: "a" });
+  focusRevealAssert.equal(onTop.revealed, true, "a reveal on top of late content is still found");
+  focusRevealAssert.deepEqual(onTop.revealedBy, [["heading", 1]], "and credited with the heading only, not the late link");
+});
+
+focusRevealTest("#1506: names are a MULTISET difference -- a second element sharing a name already on the page still appeared", () => {
+  // Real pages repeat names heavily (75% of named elements share a name with another, measured 2026-08-29), so a
+  // set difference would report a revealed "Help" link as nothing when the page already had one.
+  focusRevealAssert.deepEqual(namesThatAppeared({ names: ["Help", "Search"] }, { names: ["Help", "Search", "Help"] }), ["Help"]);
+  focusRevealAssert.deepEqual(namesThatAppeared({ names: ["Help"] }, { names: ["Help"] }), [], "nothing new is nothing");
+  focusRevealAssert.deepEqual(namesThatAppeared({ heading: 1 }, { names: ["Help"] }), [], "a read with no names is not a claim");
+});
+
+focusRevealTest("#1506: a verdict without a control read keeps the old single-baseline comparison, and says so", () => {
+  // Callers from before #1506 pass no `control`. Absent is not a reading: the comparison falls back to `before`
+  // and the verdict names that it could not separate focus from time, rather than claiming it did.
+  const v = focusRevealVerdict({ before: BASE, onFocus: GREW, afterEscape: BASE, focusBefore: "a", focusAfter: "a" });
+  focusRevealAssert.equal(v.revealed, true);
+  focusRevealAssert.equal(v.timeSeparated, false);
+  const w = focusRevealVerdict({ before: BASE, control: BASE, onFocus: GREW, afterEscape: BASE, focusBefore: "a", focusAfter: "a" });
+  focusRevealAssert.equal(w.timeSeparated, true);
+});
+
+focusRevealTest("#1506: the walk reads the census BEFORE each Tab and credits only growth since that read", () => {
+  const source = readFileSync(resolve(import.meta.dirname, "capture-probes.mjs"), "utf8");
+  const start = source.indexOf("async function walkToReveal(");
+  const end = source.indexOf("\n}\n", start);
+  focusRevealAssert.ok(start !== -1 && end > start, "the positive control: walkToReveal is found");
+  const walk = source.slice(start, end);
+  const control = walk.indexOf("control = await structuralCensus()");
+  const tab = walk.indexOf('nvda.press("Tab")');
+  focusRevealAssert.ok(control !== -1 && tab !== -1 && control < tab, "the control read comes before the Tab it controls for");
+  focusRevealAssert.ok(walk.includes("censusGrowth(control, onFocus)"), "growth is measured from the control read");
+  focusRevealAssert.ok(!walk.includes("censusGrowth(before, onFocus)"), "not from the walk's single baseline");
 });
