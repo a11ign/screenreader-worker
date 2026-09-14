@@ -1165,6 +1165,12 @@ const NAVIGATION_OUTCOME_EXPRESSION = `(() => {
 export const DOM_CENSUS_EXPRESSION = `(() => {
     const visible = (el) => !el.closest("[aria-hidden='true']");
     const all = (selector) => [...document.querySelectorAll(selector)].filter(visible);
+    // RENDERED, as the browser answers it: \`checkVisibility\` (a closed mega-menu, a heading styled \`display: none\` below a
+    // breakpoint) and an \`[inert]\` subtree, which \`checkVisibility\` does not consider. One predicate for every count that
+    // must mean "a visitor meets this", so the tab-stop denominator and the heading count cannot drift apart (#1549).
+    const rendered = (el) => (typeof el.checkVisibility !== "function" || el.checkVisibility())
+      && (typeof el.closest !== "function" || !el.closest("[inert]"));
+    const headings = all("h1, h2, h3, h4, h5, h6, [role='heading']");
     // An image with an EMPTY alt is decorative by the author's instruction; Chromium marks it ignored and
     // the AX census does not count it, so counting it here would invent a disagreement on a correct page.
     // WHAT THIS SELECTOR DOES NOT REACH, recorded rather than widened (#1507). An svg with no role, or with role
@@ -1198,7 +1204,11 @@ export const DOM_CENSUS_EXPRESSION = `(() => {
     const describe = (el) => describeElement({ tag: el.tagName, src: el.getAttribute("src"),
       className: el.getAttribute("class") });
     return {
-      heading: all("h1, h2, h3, h4, h5, h6, [role='heading']").length,
+      // #1549: HEADINGS A VISITOR MEETS. metoffice's warnings page read 40 DOM headings against 0 in the tree and in NVDA's
+      // sweep: an h1 \`display: none\` below 1280px, h2s in closed menu panels. Counted, they read as "forty headings the tree
+      // cannot see". The ones the page does not render are left out and COUNTED beside, so a capture says how many.
+      heading: headings.filter(rendered).length,
+      headingHidden: headings.filter((el) => !rendered(el)).length,
       link: all("a[href], [role='link']").length,
       // WHICH LANGUAGES THE PAGE DECLARES, for 3.1.2 Language of Parts.
       //
@@ -1259,8 +1269,7 @@ export const DOM_CENSUS_EXPRESSION = `(() => {
       tabbable: all("a[href], button, input:not([type='hidden']), select, textarea, [tabindex]")
         .filter((el) => el.getAttribute("tabindex") !== "-1"
           && !el.hasAttribute("hidden") && !el.hasAttribute("disabled")
-          && (typeof el.checkVisibility !== "function" || el.checkVisibility())
-          && (typeof el.closest !== "function" || !el.closest("[inert]"))).length,
+          && rendered(el)).length,
       // WHAT THE QUICK-NAVIGATION CURSOR IS SEALED INSIDE, if anything -- #897.
       //
       // A screen reader's quick navigation is confined to an open modal, and NVDA's "no next link" is

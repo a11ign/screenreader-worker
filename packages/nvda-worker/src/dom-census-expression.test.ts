@@ -83,6 +83,17 @@ function runAgainst(
   // bare `dialog` query returns, which the expression then filters by `:modal` itself.
   dialogs: { aria?: El[]; native?: El[] } = {},
 ): Record<string, unknown> {
+  return censusOf({ graphics, tabbable, lang, dialogs });
+}
+
+/**
+ * #1549: every route the harness serves, as ONE object, so a new selector is not a fifth positional parameter.
+ * `runAgainst` above keeps its shape for the tests that already call it.
+ */
+function censusOf({ graphics = [], tabbable = [], lang = {}, dialogs = {}, headings = [] }: {
+  graphics?: El[]; tabbable?: El[]; lang?: { documentLang?: string; parts?: El[] };
+  dialogs?: { aria?: El[]; native?: El[] }; headings?: El[];
+}): Record<string, unknown> {
   // `documentElement` is a real object here, not a stub returning nothing, because the census compares
   // AGAINST it: a `[lang]` on <html> is the document's language, not a part's, and a harness where the
   // comparison can never be true would let that filter be wrong and assert nothing.
@@ -94,6 +105,7 @@ function runAgainst(
     documentElement,
     querySelectorAll: (selector: string) => {
       if (selector.startsWith("img")) return graphics;
+      if (selector.startsWith("h1")) return headings;
       if (selector.startsWith("a[href]")) return tabbable;
       if (selector === "[lang]") return lang.parts ?? [];
       if (selector.startsWith("[role='dialog']")) return dialogs.aria ?? [];
@@ -340,4 +352,28 @@ test("alertdialog counts too, and an unnamed modal falls back to something finda
     aria: [element("div", { role: "alertdialog", "aria-modal": "true", id: "session-expiry" })],
   });
   assert.equal(out.openDialog, "session-expiry");
+});
+
+test("#1549: a heading the page does not render is left out of the count, and the hidden count says how many", () => {
+  // metoffice's warnings page: an h1 styled `display: none` below 1280px, and h2s inside closed menu panels. Both answer
+  // `checkVisibility()` with false, which is how this harness models "not rendered".
+  const census = censusOf({ headings: [
+    element("h1", {}),
+    element("h1", { class: "display-none-below-1280" }, undefined, { rendered: false }),
+    element("h2", { class: "in-closed-menu-panel" }, undefined, { rendered: false }),
+  ] });
+  assert.equal(census.heading, 1, "only the rendered heading is one a visitor meets");
+  assert.equal(census.headingHidden, 2, "the two left out are counted, never silently dropped");
+});
+
+test("#1549: a heading sealed inside an [inert] subtree is left out the same way", () => {
+  const census = censusOf({ headings: [element("h2", {}), element("h2", {}, undefined, { inert: true })] });
+  assert.equal(census.heading, 1);
+  assert.equal(census.headingHidden, 1);
+});
+
+test("#1549: a browser without checkVisibility still counts its headings, rather than reporting none", () => {
+  const census = censusOf({ headings: [elementWithoutVisibilityApi("h2", {}), elementWithoutVisibilityApi("h3", {})] });
+  assert.equal(census.heading, 2);
+  assert.equal(census.headingHidden, 0);
 });
