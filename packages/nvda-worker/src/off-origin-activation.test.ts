@@ -14,6 +14,7 @@ import { announcesANewWindow, leftSiteReason } from "@a11ign/evidence";
 import { stripComments } from "@a11ign/evidence/source-text";
 import {
   activationLeftTheSite, leftTheOrigin, markLeftSite, notRunAfterLeaving, probeKindFor, recordWhatWasAsked,
+  sweepObservation,
 } from "./capture-pure.mjs";
 
 // Quoted from run 34767932873's `a11ign-result.json`, `structure.formFields[0]`.
@@ -88,8 +89,16 @@ test("#1363: what never ran is every sweep with no record of its own, plus every
   }), [], "the control: a capture that ran everything lists nothing");
 });
 
-const EVERY_SWEEP = () =>
-  ({ headings: {}, landmarks: {}, formFields: {}, graphics: {}, links: {}, lists: {}, frames: {}, tableCells: {} });
+type Observation = { asked: boolean; complete?: boolean; why?: string; stop?: { prev: string; next: string } };
+const SWEEPS = ["headings", "landmarks", "formFields", "graphics", "links", "lists", "frames", "tableCells"];
+
+/**
+ * `observed` with every sweep recorded, each record the real one: `sweepObservation` is what `collectByType` writes for
+ * a sweep (`capture-probes.mjs`, `ctx.observed[...] = { ...sweepObservation(prevOutcome, nextOutcome), ... }`), here for
+ * a sweep both of whose directions were exhausted.
+ */
+const EVERY_SWEEP = (): Record<string, Observation> =>
+  Object.fromEntries(SWEEPS.map((sweep) => [sweep, sweepObservation({ stop: "exhausted" }, { stop: "exhausted" })]));
 
 /**
  * `@a11ign/evidence`'s focus step, READ AS TEXT (#1575): this package cannot import `left-site.ts`'s `FOCUS_STEP`, and
@@ -106,7 +115,7 @@ test("#1575: a live excursion that skipped the focus pass records focusReveal an
   // What a real capture's `observed` holds when the sweep left the site: `recordWhatWasAsked` wrote the flags' answers,
   // every sweep recorded itself, and the focus pass never started. Then the real path: `markTheExcursion` calls
   // `markLeftSite(observed, leftSite, notRunAfterLeaving(...))`, pinned by the WIRING test below.
-  const observed: Record<string, unknown> = EVERY_SWEEP();
+  const observed = EVERY_SWEEP();
   recordWhatWasAsked({ observed, probeForms: false, probeFocus: true, probeFocusContext: true, interaction: { formChanges: [] } });
   assert.equal("focusReveal" in observed || "focusEvents" in observed, false,
     "the positive control: before the fix's path runs, neither channel has any record -- `recordWhatWasAsked` writes neither");
@@ -115,7 +124,10 @@ test("#1575: a live excursion that skipped the focus pass records focusReveal an
   for (const channel of ["focusReveal", "focusEvents", "focusOrder", "focusContext", "dialogEscape", "arrowNavigation", "typedFeedback"]) {
     assert.deepEqual(observed[channel], notRun, `${channel} reads NOT RUN, naming the excursion`);
   }
-  assert.deepEqual(observed.headings, {}, "a sweep that ran keeps its record");
+  // THE CONTROL STAYS A CONTROL: a sweep that ran keeps the record it wrote, asked and complete, beside channels that
+  // read not run -- so the loop above is not satisfied by marking everything.
+  assert.deepEqual(observed.headings, { asked: true, complete: true, stop: { prev: "exhausted", next: "exhausted" } },
+    "a sweep that ran keeps its record");
 });
 
 test("#1575 PARITY: the worker's skipped-focus channels are exactly @a11ign/evidence's FOCUS_STEP channels", () => {
