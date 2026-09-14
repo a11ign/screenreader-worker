@@ -198,3 +198,15 @@ test("#1363 WIRING: a sweep stops where the site was left, and the probe sequenc
     /recordIfLeftTheSite\(\{ phrase: control, interaction, from: site\.pageUrl, phase: "routeChange"/);
   assert.match(bodyOf("interactionEvidence"), /\.\.\.\(interaction\.leftSite \? \{ leftSite: interaction\.leftSite \} : \{\}\)/);
 });
+
+test("#1365 WIRING: the route-change probe does not run once the site was left, and its skip is recorded", () => {
+  // Rehearsal 2's contradiction was this probe run on the other site: `routeChange` followed "You Tube Home, link" in
+  // the youtube.com tab while `navigatedOnSubmit` still read w3.org. #1376 gated it; this pins the gate itself, which
+  // the WIRING test above reads only by its ternary's tail.
+  assert.match(bodyOf("navigateByStructure"),
+    /const routeChange = probeNavigation && !site\.ended\(\) \? await probeRouteChange\(\{ interaction, deadline, diag \}\) : null;/,
+    "the route-change probe runs only while the capture is still on the page's site");
+  assert.match(bodyOf("watchTheRouteChange"),
+    /if \(probeNavigation && !routeChange && site\.ended\(\)\) site\.skipped\.add\("routeChange"\);/,
+    "a route-change probe skipped because the site was left is recorded as skipped, so `observed` says why");
+});
