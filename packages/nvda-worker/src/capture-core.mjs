@@ -49,7 +49,7 @@ import {
   screenReaderWasSilentAtStart,
   shouldInstallFocusEventListenerEarly,
 } from "./capture-pure.mjs";
-import { endCaptureUrls, installFocusEventLog } from "./browser-session.mjs";
+import { endCaptureUrls, installFocusEventLog, viewportMeasure } from "./browser-session.mjs";
 import { parkPointer } from "./pointer.mjs";
 import {
   reuseBrowserFor, openPage, assertLandedOnRequestedPage, assertPageWasServed, waitForPageToSettle,
@@ -166,6 +166,10 @@ export async function captureWithNvda(url, opts = {}) {
   await assertLandedOnRequestedPage(url, diag);
   await assertPageWasServed(url, diag);
   await waitForPageToSettle(diag);
+  // #1513: the CSS viewport this capture is read at, once the page has settled and before any probe can move or
+  // resize anything. `server.mjs` merges it into this capture's environment (`viewportFromMarks`).
+  const viewport = await viewportMeasure();
+  diag.mark("viewport", viewport);
   let succeeded = false;
   try {
     const result = await runCapturePhases(url, opts, diag);

@@ -177,6 +177,36 @@ export function createDiagnostics(sink) {
 }
 
 /**
+ * THE CSS VIEWPORT A CAPTURE WAS READ AT, as `capture.environment` fields -- #1513, the record half.
+ *
+ * Captures launch `--start-maximized` with no window size, so the width is each worker's display: caselaw's two
+ * captures matched <768px and >=992px layouts and yielded different findings (#1043), and nothing recorded which.
+ * `capture-core.mjs` reads the page once it settles and marks `viewport`; `server.mjs` merges these fields into
+ * that capture's environment only.
+ *
+ * THE LAST MARK WINS. `runCapture` passes one sink array to `captureWithLocalRecovery`, and a recoverable fault
+ * re-runs the capture into the SAME array, so a retried capture's diagnostics hold both attempts' reads -- and the
+ * result is the retry's. A last read that failed records nothing, even if an earlier attempt read a width: that
+ * width is not the one this result was captured at.
+ *
+ * ABSENT, NEVER ZERO. No mark, or a read that did not return three positive numbers, returns `{}`, so an older
+ * worker, a failed read and a real width can never be confused. Not a cache key and not `MUST_MATCH`: pinning the
+ * window, and keying on it, is the separate pin row.
+ *
+ * @param {{ event?: string, [key: string]: unknown }[] | undefined} diagnostics
+ * @returns {{ innerWidth?: number, innerHeight?: number, devicePixelRatio?: number }}
+ */
+export function viewportFromMarks(diagnostics) {
+  const reads = (Array.isArray(diagnostics) ? diagnostics : []).filter((m) => m?.event === "viewport");
+  const last = reads[reads.length - 1];
+  if (!last) return {};
+  const values = [last.innerWidth, last.innerHeight, last.devicePixelRatio];
+  if (!values.every((v) => typeof v === "number" && Number.isFinite(v) && v > 0)) return {};
+  const [innerWidth, innerHeight, devicePixelRatio] = /** @type {number[]} */ (values);
+  return { innerWidth, innerHeight, devicePixelRatio };
+}
+
+/**
  * @typedef {{ entries: { event: string, [key: string]: any }[] }} MarkLog
  *   What a READER of the diagnostics needs. Split from the writer below because most helpers here only
  *   read, and `capture-pure.corpus.test.ts` drives them with a bare `{ entries }` -- correctly, since a

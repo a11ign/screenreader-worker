@@ -1377,6 +1377,26 @@ export async function documentTitle() {
 }
 
 /**
+ * The CSS viewport the page is being read at -- #1513. One `Runtime.evaluate` on the page target, the same shape as
+ * `documentTitle`: `innerWidth`/`innerHeight` in CSS pixels and `devicePixelRatio`, read FROM THE PAGE rather than
+ * assumed from launch flags, because Windows clamps a window to the display and a flag says only what was asked for.
+ * Never fails a capture; nulls read as "not measured" (`viewportFromMarks` records nothing for them).
+ */
+export async function viewportMeasure() {
+  try {
+    const { value, targetMatch } = await evaluateOnPageTarget("({ innerWidth, innerHeight, devicePixelRatio })");
+    const read = value && typeof value === "object" ? value : {};
+    return {
+      innerWidth: read.innerWidth ?? null, innerHeight: read.innerHeight ?? null,
+      devicePixelRatio: read.devicePixelRatio ?? null, targetMatch,
+    };
+  } catch (error) {
+    void error; // a diagnostic-grade read must never fail a capture
+    return { innerWidth: null, innerHeight: null, devicePixelRatio: null, targetMatch: undefined };
+  }
+}
+
+/**
  * Run one `Runtime.evaluate` expression against the page target, with the same open/send/close shape
  * `structuralCensus` and `domCensus` already use.
  *
