@@ -3326,20 +3326,28 @@ async function probeDialogEscape({ interaction, deadline, diag }) {
  * which ESLint cannot catch: `skipComments: true` lets a comment-dense function run to twice its
  * 70-line lint budget.
  *
- * @param {{ before: unknown, interaction: Record<string, any>, deadline: number }} ctx
- * @returns {Promise<{onFocus: unknown, revealedAt: number, tabs: number}>}
+ * #1506: it no longer compares against the probe's `before` read. Each stop takes its own control read immediately
+ * before its Tab, and credits only what grew since then, so `before` is not a parameter.
+ *
+ * @param {{ interaction: Record<string, any>, deadline: number }} ctx
+ * @returns {Promise<{onFocus: unknown, control: unknown, revealedAt: number, tabs: number}>}
  */
-async function walkToReveal({ before, interaction, deadline }) {
+async function walkToReveal({ interaction, deadline }) {
     // WALK THE TAB ORDER, do not press Tab once — `probeFocusContext` twenty lines up learned this the
   // same way: "the first version pressed once and every one of its 28 corpus cases came back BLIND ...
   // the FIRST focusable thing on a page is almost never the control you mean." `page()` gives every
   // corpus page furniture, and a real page's first stop is the skip link. Walking is also the truer
   // reading: 1.4.13 is about ANY control that reveals content on focus, not about the first one.
   let onFocus = null;
+  let control = null;
   let revealedAt = -1;
   let tabs = 0;
   for (let stop = 0; stop < FOCUS_REVEAL_STOPS; stop += 1) {
     if (Date.now() > deadline) break;
+    // #1506: THE CONTROL READ, immediately before the Tab it controls for. Content that appears between `before`
+    // and here arrived with no focus change at this stop, so only what grows AFTER this read is credited to focus.
+    // One CDP read per stop, no keystrokes.
+    control = await structuralCensus();
     await withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, "focusReveal").catch(() => undefined);
     tabs += 1;
     // WITH RETRY, like every other focus read that decides something. `reportFocusedControl` throws on
@@ -3350,12 +3358,12 @@ async function walkToReveal({ before, interaction, deadline }) {
     // wrapper; two reads in one loop disagreeing about it is the defect, not the choice.
     if (!await reportFocusedControlWithRetry(interaction)) break;
     onFocus = await structuralCensus();
-    const grew = censusGrowth(before, onFocus);
+    const grew = censusGrowth(control, onFocus);
     // Stop at the FIRST control that reveals something: the evidence has to name which one did it, and
     // walking on would report the last control rather than the one that mattered.
     if (grew && grew.length > 0) { revealedAt = stop; break; }
   }
-  return { onFocus, revealedAt, tabs };
+  return { onFocus, control, revealedAt, tabs };
 }
 
 /**
@@ -3413,7 +3421,7 @@ async function probeFocusReveal({ interaction, deadline, diag }) {
     // inversion cost all 18 of the 1.4.13 cases -- the delta was zero by construction, because the panel
     // was already open before this probe took its first census. `docs/capture-probe-incidents.md`.
     const before = await structuralCensus();
-    const { onFocus, revealedAt, tabs } = await walkToReveal({ before, interaction, deadline });
+    const { onFocus, control, revealedAt, tabs } = await walkToReveal({ interaction, deadline });
     if (!onFocus) {
       // NOTHING FOCUSABLE is not "nothing appeared" — the question was never asked. Kept apart for the
       // same reason every absence in this file is, and `tabs` says which of the two it was.
@@ -3439,8 +3447,8 @@ async function probeFocusReveal({ interaction, deadline, diag }) {
     // the baseline rather than in the delta. Passed rather than judged here: what an untrusted baseline
     // MEANS is `focusRevealVerdict`'s decision, testable without NVDA, like every other verdict in that
     // file.
-    const verdict = focusRevealVerdict({ before, onFocus, afterEscape, focusBefore, focusAfter,
-      baselineUntouched: focusReset?.applied !== true });
+    const verdict = focusRevealVerdict({ before, control: control ?? undefined, onFocus, afterEscape, focusBefore,
+      focusAfter, baselineUntouched: focusReset?.applied !== true });
     // `tabs`, `focusBefore` and `focusAfter` are on the MARK and not in the verdict.
     //
     // `tabs` because "nothing revealed in 8 stops" and "we got one stop before the deadline" are different
