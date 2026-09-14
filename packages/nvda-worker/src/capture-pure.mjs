@@ -839,7 +839,9 @@ export function recordWhatWasAsked({ observed, probeForms, probeFocus, formState
   }
   observed.routeChange = flags.probeNavigation
     ? { asked: true }
-    : notObserved("probeNavigation is opt-in: it ACTIVATES A LINK and can leave the page under measurement");
+    // #1392 (ceo, 5655434240): navigation is ON by default in the CLI and the Action, so "opt-in" said the opposite.
+    : notObserved("probeNavigation is ON by default and this capture turned it off (`--no-probe-navigation`, or "
+      + "the Action's `probe-navigation: false`): it ACTIVATES A LINK and can leave the page under measurement");
 }
 
 /**
