@@ -1,5 +1,5 @@
 // @ts-check
-// Run by `scripts/isolation-gate.mjs` from a throwaway directory OUTSIDE this repository, against the
+// Run by `packages/guards/src/isolation-gate.mjs` from a throwaway directory OUTSIDE this repository, against the
 // installed tarball.
 //
 // The hard part is that this package cannot be exercised without Windows, NVDA and an interactive desktop, and
