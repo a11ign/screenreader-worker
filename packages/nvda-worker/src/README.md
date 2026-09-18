@@ -33,7 +33,7 @@ winget install --id OpenJS.NodeJS.LTS -e --silent --accept-source-agreements --a
 winget install --id Git.Git -e --silent --accept-source-agreements --accept-package-agreements
 
 # Project + deps
-git clone https://github.com/DanBeckDev/a11y-witness.git
+git clone https://github.com/a11ign/a11ign.git
 cd a11y-witness; npm install
 
 # `setup` zeroes ForegroundLockTimeout so the browser can take focus during
