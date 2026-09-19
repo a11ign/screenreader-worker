@@ -18,7 +18,6 @@
  * calls back in at exactly one place, `navigateByStructureThenAudit`, to run this whole phase; nothing
  * here calls back into `capture-core.mjs`.
  */
-import { nvda } from "@guidepup/guidepup";
 import {
   crossCheckStructure, dedupeKey, elementsListRowName, MIN_CONTROL_NAME_LEN, probeKindFor,
   sweepStepFromSpeech, focusOrderCycled, focusWalkTruncated, sweepObservation, notObserved, recordWhatWasAsked,
@@ -38,6 +37,11 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   withTimeout, errMsg, anchorToTop, waitForSpeechQuiet, refreshBrowseBuffer, reportedTitle,
   NAV_TIMEOUT_MS, QUERY_TIMEOUT_MS, STATE_POLL_MS,
+  // `nvda`/`ensureGuidepup` rather than `@guidepup/guidepup` directly (#1772): that package throws at
+  // IMPORT where no screen reader exists, so importing it here statically crashed every consumer of this
+  // file on any other host. `capture-setup.mjs` already owns the one lazy-loaded binding; `nvda` is a live
+  // `export let`, so it reflects whatever `ensureGuidepup()` fills in there.
+  nvda, ensureGuidepup,
 } from "./capture-setup.mjs";
 
 /**
@@ -226,6 +230,10 @@ function recordDomOnlyEvidence(result, { mediaRead, formsRead, readAt }, diag) {
  */
 /** @param {Record<string, any> & { diag: Diag, deadline: number }} options */
 export async function navigateByStructureThenAudit(options) {
+  // Called after `capture-setup.mjs`'s own `bringUpCaptureEnvironment` in the real capture flow, which
+  // already resolved `nvda` -- but this is this file's ONE entry point from `capture-core.mjs`, so it
+  // guards itself rather than trusting call order.
+  await ensureGuidepup();
   // The audit ADDS to what the structural pass produced -- the cross-check marks below -- so the
   // accumulator is declared rather than inferred, for the same reason as the two inside
   // `navigateByStructure`: an inferred type makes adding evidence the error and dropping it the default.

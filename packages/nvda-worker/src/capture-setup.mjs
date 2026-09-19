@@ -11,7 +11,6 @@
  * too. Keeping those here — rather than in `capture-core.mjs` or duplicated — is what keeps the import
  * graph a DAG: `capture-probes.mjs` depends on this file, this file depends on neither of the other two.
  */
-import { nvda, windowsActivate, windowsQuit } from "@guidepup/guidepup";
 import { focusExistingBrowserWindow } from "./window-focus.mjs";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -59,6 +58,33 @@ import { setTimeout as sleep } from "node:timers/promises";
  * Remote is tracked. Idempotent, so importing this module twice is harmless.
  */
 const speechChannel = installSpeechChannelShim();
+
+/**
+ * `@guidepup/guidepup`'s own `index.js` constructs a module-level `ScreenReader` singleton at IMPORT
+ * TIME, throwing `No available supported screen readers` unless it resolves macOS VoiceOver or Windows
+ * NVDA -- so a static `import … from "@guidepup/guidepup"` here crashed every consumer of this module on
+ * every other host, including the HTTP `--worker` client path, which never drives NVDA locally and never
+ * needed the throw to happen at all (#1772). `nvda`/`windowsActivate`/`windowsQuit` start `undefined` and
+ * are filled in here, on first real use, so the crash stays where it belongs -- the first attempt to
+ * drive a screen reader IN THIS PROCESS, never at import.
+ *
+ * Exported (with `ensureGuidepup`) so `capture-probes.mjs` shares this same lazily-loaded binding rather
+ * than importing `@guidepup/guidepup` a second time -- a live `export let` binding, so a caller that reads
+ * `nvda` AFTER awaiting `ensureGuidepup()` sees it populated.
+ *
+ * @type {any}
+ */
+export let nvda;
+/** @type {(applicationPath: string, applicationWindowTitle: string) => Promise<void>} */
+let windowsActivate;
+/** @type {(application: string) => Promise<void>} */
+let windowsQuit;
+
+/** Every function below that touches `nvda`/`windowsActivate`/`windowsQuit` calls this first. */
+export async function ensureGuidepup() {
+  if (nvda) return;
+  ({ nvda, windowsActivate, windowsQuit } = await import("@guidepup/guidepup"));
+}
 
 const NVDA_SPEECH_BUDGET_MS = 10_000; // how long a fresh NVDA gets to SPEAK before silence is a fault
 
@@ -448,6 +474,7 @@ const FAST_FOCUS_MS = 15_000;
  * @returns {Promise<{ok: boolean, via: string, error: string, fastReason: string}>}
  */
 async function activateBrowserWithinDeadline(deadline) {
+  await ensureGuidepup();
   const remaining = () => deadline - Date.now();
   if (remaining() <= 0) return { ok: false, via: "none", error: "no time left to activate", fastReason: "" };
 
@@ -554,6 +581,7 @@ export async function refreshBrowseBuffer(diag) {
     diag.mark("browseBufferFresh", { reason: "a new window was launched, so NVDA built its buffer here" });
     return;
   }
+  await ensureGuidepup();
   try {
     await withTimeout(
       nvda.perform(nvda.keyboardCommands.refreshBrowseDocument), NAV_TIMEOUT_MS, "refreshBrowseDocument");
@@ -582,6 +610,7 @@ export async function refreshBrowseBuffer(diag) {
  */
 /** @param {Diag} diag @param {number} [budgetMs] */
 async function waitForBufferReady(diag, budgetMs = BUFFER_READY_BUDGET_MS) {
+  await ensureGuidepup();
   const startedAt = Date.now();
   const deadline = startedAt + budgetMs;
   let sawLoading = false;
@@ -859,6 +888,7 @@ export async function waitForDocument(diag) {
 // trip and normally answers on the first attempt.
 /** @param {Diag} diag */
 export async function reportedTitle(diag) {
+  await ensureGuidepup();
   try {
     await withTimeout(nvda.perform(nvda.keyboardCommands.reportTitle), NAV_TIMEOUT_MS, "reportTitle");
     await waitForSpeechQuiet("anchorSettle");
@@ -1036,6 +1066,7 @@ const CAPTURE_OPTIONS = undefined;
 
 /** @param {Diag} diag */
 async function startFreshScreenReader(diag) {
+  await ensureGuidepup();
   try {
     await withTimeout(nvda.start(CAPTURE_OPTIONS), NVDA_START_TIMEOUT_MS, "nvda.start");
     diag.mark("nvdaStart", { ok: true, reused: false });
@@ -1085,6 +1116,7 @@ async function startFreshScreenReader(diag) {
  */
 /** @param {Diag} diag */
 async function screenReaderIsSpeaking(diag) {
+  await ensureGuidepup();
   try {
     await withTimeout(nvda.clearSpokenPhraseLog(), QUERY_TIMEOUT_MS, "livenessClear");
     // Reading the current line is the cheapest command that MUST produce speech: no navigation, no
@@ -1184,6 +1216,7 @@ export async function ensureSpeechChannel(diag) {
 
 /** @param {Diag} diag */
 export async function resetSpeechLogs(diag) {
+  await ensureGuidepup();
   try {
     await withTimeout(nvda.clearSpokenPhraseLog(), QUERY_TIMEOUT_MS, "clearSpeechLog");
     await withTimeout(nvda.clearItemTextLog(), QUERY_TIMEOUT_MS, "clearItemLog");
@@ -1216,6 +1249,7 @@ async function waitForScreenReaderGone(diag) {
 /** @param {Diag} diag */
 async function stopScreenReader(diag) {
   if (!screenReader.running) return;
+  await ensureGuidepup();
   try { await withTimeout(nvda.stop(), NVDA_STOP_TIMEOUT_MS, "nvda.stop"); }
   catch (e) { diag.mark("nvdaStop", { error: errMsg(e) }); }
   screenReader = { running: false, captures: 0 };
@@ -1293,8 +1327,15 @@ export async function warmUpScreenReader() {
  *
  * Available from guidepup 0.30.0 (`getSettings`); returns null on anything older, which is a real
  * answer rather than an error.
+ *
+ * SYNC, so it cannot await `ensureGuidepup()` -- and must not: a diagnostics endpoint can be asked this
+ * before anything in this process has ever driven a screen reader, and loading guidepup just to answer it
+ * would put the import-time crash back behind a request nobody expected to touch NVDA. `nvda` is
+ * `undefined` until then, which is the same "nothing to report yet" this function already returns for a
+ * guidepup too old to have `getSettings` -- one more real answer, not an error.
  */
 export function screenReaderSettings() {
+  if (!nvda) return null;
   try {
     return typeof nvda.getSettings === "function" ? nvda.getSettings() : null;
   } catch (error) {
@@ -1318,6 +1359,7 @@ export async function shutdownScreenReader() {
 // first thing to check when a result comes back blank.
 /** @param {Diag} diag */
 export async function recordStartupHealth(diag) {
+  await ensureGuidepup();
   try {
     const spoken = await withTimeout(nvda.lastSpokenPhrase(), QUERY_TIMEOUT_MS, "afterStart");
     diag.mark("afterStart", { lastSpoken: spoken || "" });
@@ -1359,6 +1401,7 @@ async function readPageInOrder({ steps, navStrategy, deadline, diag, silentAtSta
 // or the top line (often the first heading) is skipped.
 /** @param {Diag} diag */
 async function readFirstItem(diag) {
+  await ensureGuidepup();
   try {
     const item = ((await withTimeout(nvda.itemText(), QUERY_TIMEOUT_MS, "itemText")
       .catch(() => "")) || "").trim();
@@ -1383,6 +1426,7 @@ async function readFirstItem(diag) {
 // Advance one step (line or object) and return what was announced.
 /** @param {string} navStrategy */
 async function advanceAndRead(navStrategy) {
+  await ensureGuidepup();
   if (navStrategy === "object") await withTimeout(nvda.perform(nvda.keyboardCommands.moveToNextObject), ADVANCE_TIMEOUT_MS, "advance");
   else await withTimeout(nvda.next(), ADVANCE_TIMEOUT_MS, "advance");
   return ((await withTimeout(nvda.lastSpokenPhrase(), READ_TIMEOUT_MS, "read")) || "").trim();
@@ -1481,6 +1525,7 @@ const SPEECH_QUIET_BUDGET_MS = 5_000;
  *   for the whole window -- both recorded, never silently treated as settled.
  */
 export async function waitForSpeechQuiet(label, budgetMs = SPEECH_QUIET_BUDGET_MS) {
+  await ensureGuidepup();
   const startedAt = Date.now();
   const deadline = startedAt + budgetMs;
   let length = -1;
@@ -1516,6 +1561,7 @@ export async function waitForSpeechQuiet(label, budgetMs = SPEECH_QUIET_BUDGET_M
 // Moving the caret also cancels NVDA's "Automatic say all on page load" (on by
 // default), so its auto-read can't race our line-stepping.
 export async function anchorToTop() {
+  await ensureGuidepup();
   await withTimeout(nvda.press("Escape"), NAV_TIMEOUT_MS, "esc").catch(() => undefined);
   await withTimeout(nvda.press("Control+Home"), NAV_TIMEOUT_MS, "ctrlHome").catch(() => undefined);
   await waitForSpeechQuiet("anchorSettle");
@@ -1551,6 +1597,7 @@ export async function stopAndCleanup(diag, browser, { keepScreenReader, reuseBro
 // the escalation for a browser that ignores the request, and the unowned fallback path.
 /** @param {Diag} diag @param {any} browser */
 async function closeBrowser(diag, browser) {
+  await ensureGuidepup();
   // Whatever `openPage` actually launched, which is not necessarily what this request asked for.
   const app = runningApp();
   const exited = browser ? once(browser, "exit") : null;
