@@ -14,8 +14,8 @@
  *
  * `server.mjs` imports these and uses them exactly as before; every existing caller is unchanged.
  */
-import { listBlockingDialogs, dismissBlockingDialogs, probeWindowOwner, foregroundBlocker }
-  from "./desktop-dialogs.mjs";
+import { listBlockingDialogs, dismissBlockingDialogs, probeWindowOwner, foregroundBlocker,
+  dismissForegroundBlocker } from "./desktop-dialogs.mjs";
 
 /**
  * The last observed state of the desktop, sampled in the BACKGROUND.
@@ -131,11 +131,13 @@ function abandonedAfter(signal, marks, after, log) {
  * @param {Record<string, unknown>[]} marks
  * @param {AbortSignal} [signal]
  * @param {{ dismissBlockingDialogs?: typeof dismissBlockingDialogs, probeWindowOwner?: typeof probeWindowOwner,
+ *           dismissForegroundBlocker?: typeof dismissForegroundBlocker,
  *           log?: (message: string) => void }} [deps]
  */
 export async function prepareDesktop(marks, signal, deps = {}) {
   const dismiss = deps.dismissBlockingDialogs ?? dismissBlockingDialogs;
   const probe = deps.probeWindowOwner ?? probeWindowOwner;
+  const dismissForeground = deps.dismissForegroundBlocker ?? dismissForegroundBlocker;
   const log = deps.log ?? console.log;
   const cleared = await dismiss((reason) => log(`could not dismiss desktop dialogs: ${reason}`));
   if (abandonedAfter(signal, marks, "dismissBlockingDialogs", log)) return;
@@ -165,7 +167,12 @@ export async function prepareDesktop(marks, signal, deps = {}) {
   foregroundCache = { at: Date.now(), foreground };
   const holding = foregroundBlocker(foreground);
   if (holding) {
-    log(`  the foreground is held by ${holding.owner} (${holding.title}) — Edge may not take focus`);
-    marks.push({ event: "foregroundBlocked", atMs: 0, ...holding });
+    log(`  the foreground is held by ${holding.owner} (${holding.title}) — clearing it before capture`);
+    const clearedForeground = await dismissForeground(foreground.handle,
+      (reason) => log(`could not clear the foreground holder: ${reason}`));
+    if (abandonedAfter(signal, marks, "dismissForegroundBlocker", log)) return;
+    log(clearedForeground ? "  cleared the foreground holder"
+      : "  could not clear the foreground holder; capture will proceed regardless");
+    marks.push({ event: "foregroundBlocked", atMs: 0, ...holding, cleared: clearedForeground });
   }
 }

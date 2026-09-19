@@ -37,7 +37,7 @@ test("prepareDesktop still writes both caches when nothing abandons it — the r
   const found: Record<string, unknown>[] = marks();
   await prepareDesktop(found, undefined, {
     dismissBlockingDialogs: async () => ({ dismissed: [] }),
-    probeWindowOwner: async () => ({ title: "Microsoft Edge", owner: "msedge.exe", ok: true }),
+    probeWindowOwner: async () => ({ title: "Microsoft Edge", owner: "msedge.exe", handle: "1", ok: true }),
   });
   const after = desktopCachesForTest();
   assert.notEqual(after.dialogCache, before.dialogCache, "the dialog cache must still be refreshed normally");
@@ -55,7 +55,7 @@ test("a signal already aborted before prepareDesktop starts drops BOTH writes, a
   const found: Record<string, unknown>[] = marks();
   await prepareDesktop(found, controller.signal, {
     dismissBlockingDialogs: async () => ({ dismissed: [{ handle: "1", title: "Error", message: "x", owner: "y" }] }),
-    probeWindowOwner: async () => ({ title: "Notepad", owner: "notepad.exe", ok: false }),
+    probeWindowOwner: async () => ({ title: "Notepad", owner: "notepad.exe", handle: "2", ok: false }),
   });
   const after = desktopCachesForTest();
   assert.equal(after.dialogCache, before.dialogCache,
@@ -80,7 +80,7 @@ test("abandonment mid-flight, between the two writes, drops only the SECOND one"
       // Simulates the external timeout firing WHILE this exact call is outstanding -- the realistic case,
       // never reachable by aborting before the call starts.
       controller.abort();
-      return { title: "Notepad", owner: "notepad.exe", ok: false };
+      return { title: "Notepad", owner: "notepad.exe", handle: "3", ok: false };
     },
   });
   const after = desktopCachesForTest();
