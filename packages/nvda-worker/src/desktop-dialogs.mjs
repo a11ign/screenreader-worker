@@ -300,11 +300,20 @@ export async function dismissBlockingDialogs(onError) {
  */
 const SW_MINIMIZE = 6;
 
+// THE CHECK IS THE FOREGROUND HANDLE AFTER THE CALL, NOT `ShowWindow`'S OWN RETURN VALUE -- the identical
+// trap `window-focus.mjs`'s `ACTIVATE_SCRIPT` already documents for `SetForegroundWindow`. `ShowWindow`
+// returns whether the window was PREVIOUSLY VISIBLE, not whether this call changed anything: a window
+// already minimised, or one Windows refused to touch, reports exactly the same nonzero/zero either way.
+// Trusting it here would report `cleared: true` for a foreground holder that never moved -- the false
+// positive the dialog path avoids by enumerating AFTER dismissing, and the reason a capture pipeline
+// keeps rediscovering "the API said yes" is not "the desktop agrees".
 /** @param {string} handle */
 const clearForegroundScript = (handle) => `
 ${USER32}
 [A11yUser32]::ShowWindow([IntPtr]${handle}, ${SW_MINIMIZE}) | Out-Null
-"DONE"
+Start-Sleep -Milliseconds 120
+$fg = [A11yUser32]::GetForegroundWindow()
+if ($fg -ne [IntPtr]${handle}) { "CLEARED" } else { "STILL-HELD" }
 `;
 
 /**
@@ -317,10 +326,10 @@ ${USER32}
  *
  * @param {string} handle
  * @param {(reason: string) => void} [onError]
- * @returns {Promise<boolean>} whether the window was minimised
+ * @returns {Promise<boolean>} whether the foreground handle actually changed away from this window
  */
 export async function dismissForegroundBlocker(handle, onError) {
   if (!/^\d+$/.test(String(handle ?? ""))) return false;
   const out = await powershell(clearForegroundScript(handle), onError);
-  return out.trim() === "DONE";
+  return out.trim() === "CLEARED";
 }
