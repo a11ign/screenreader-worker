@@ -108,6 +108,9 @@ $out -join "\`n"
 
 // Same two calls as the per-dialog body above, against a window that always exists. NO BACKTICKS -- see
 // the warning on LIST_SCRIPT.
+//
+// The handle rides along beside title/owner so a caller that finds a blocker can act on the SAME window
+// it just identified, rather than probing a second time and risking a different window by then.
 const OWNER_PROBE_SCRIPT = `
 ${USER32}
 $h = [A11yUser32]::GetForegroundWindow()
@@ -117,7 +120,7 @@ try {
   [A11yUser32]::GetWindowThreadProcessId($h, [ref]$ownerPid) | Out-Null
   if ($ownerPid -gt 0) { $owner = (Get-Process -Id $ownerPid -ErrorAction Stop).ProcessName }
 } catch { $owner = 'unknown' }
-"{0}${SEP}{1}" -f (Get-A11yText $h), $owner
+"{0}${SEP}{1}${SEP}{2}" -f (Get-A11yText $h), $owner, $h.ToInt64()
 `;
 
 /** WM_CLOSE to each handle. Equivalent to clicking the dialog's X or its default OK button. */
@@ -211,7 +214,7 @@ export async function listBlockingDialogs(onError) {
  * use and the worker stopped answering altogether.
  *
  * @param {(reason: string) => void} [onError]
- * @returns {Promise<{title:string,owner:string,ok:boolean}>}
+ * @returns {Promise<{title:string,owner:string,handle:string,ok:boolean}>}
  */
 export async function probeWindowOwner(onError) {
   // TRIM THE FIELDS, NEVER THE LINE. Caught on this probe's first run against a real worker, which is
@@ -221,10 +224,10 @@ export async function probeWindowOwner(onError) {
   // fact worked perfectly. A separator-delimited line must be split before it is trimmed, or an empty
   // leading field silently shifts every field after it.
   const out = (await powershell(OWNER_PROBE_SCRIPT, onError)).replace(/[\r\n]+$/, "");
-  const [title = "", owner = ""] = out.split(SEP).map((part) => part.trim());
+  const [title = "", owner = "", handle = ""] = out.split(SEP).map((part) => part.trim());
   // `ok` is the point: it says the two calls RAN, which is the thing three green smoke runs could not say.
   // An empty result means the shell-out itself degraded, which `powershell` reports as "" by design.
-  return { title, owner, ok: owner !== "" };
+  return { title, owner, handle, ok: owner !== "" };
 }
 
 /**
@@ -287,4 +290,37 @@ export async function dismissBlockingDialogs(onError) {
   if (dialogs.length === 0) return { dismissed: [] };
   await powershell(closeScript(dialogs.map((d) => d.handle)), onError);
   return { dismissed: dialogs };
+}
+
+/**
+ * SW_MINIMIZE. Releases the foreground without closing anything -- a toast or a shell surface is not a
+ * window this project opened, so `WM_CLOSE` (the dialog remedy above) is not the right verb for it. What a
+ * launching browser actually needs is for something else to become the foreground window, and minimising
+ * the current holder does exactly that, the same way a user alt-tabbing away from a toast would.
+ */
+const SW_MINIMIZE = 6;
+
+/** @param {string} handle */
+const clearForegroundScript = (handle) => `
+${USER32}
+[A11yUser32]::ShowWindow([IntPtr]${handle}, ${SW_MINIMIZE}) | Out-Null
+"DONE"
+`;
+
+/**
+ * Minimise the window currently holding the foreground, so a launching browser can take it.
+ *
+ * Bounded and degrade-safe like every other call in this module: a foreground holder this cannot clear is
+ * reported, never thrown -- `prepareDesktop` still records what it found (`foregroundBlocker`'s
+ * `owner`/`title`) whether or not the clear succeeded, and a capture proceeds on whatever desktop it gets.
+ * Refuses a non-numeric handle outright rather than asking PowerShell to `[IntPtr]`-cast garbage.
+ *
+ * @param {string} handle
+ * @param {(reason: string) => void} [onError]
+ * @returns {Promise<boolean>} whether the window was minimised
+ */
+export async function dismissForegroundBlocker(handle, onError) {
+  if (!/^\d+$/.test(String(handle ?? ""))) return false;
+  const out = await powershell(clearForegroundScript(handle), onError);
+  return out.trim() === "DONE";
 }
