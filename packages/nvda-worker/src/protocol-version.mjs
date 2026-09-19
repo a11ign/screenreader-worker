@@ -90,4 +90,35 @@
  * The recapture rides orchestrator's #914 fleet batch, deployed with `--allow-protocol-change` there only. The
  * Action path never reads the capture cache, so rehearsal 3 is unaffected.
  */
-export const CAPTURE_PROTOCOL_VERSION = 18;
+/**
+ * 18 -> 19 on 2026-09-19, `ceo`'s ruling (a) on #1506 -- ONE bump carrying FOUR meaning changes rather
+ * than two full cache misses for one change of meaning (rejecting option (c)).
+ *
+ * - **#1506 (focus-reveal probe):** `interaction.focusReveal.revealed` stops crediting focus for content
+ *   that arrived on its own. A page that read `revealed: true` from late content now reads `false`.
+ *   1.4.13's `addFocusRevealFindings`, outcomes and coverage all read the field.
+ * - **#1561 (window pin):** the capture window's width joins `environmentKey` and `MUST_MATCH`. #1561
+ *   keeps that code; the bump moved here so it lands once, at the same time as the other three.
+ * - **#1575 (skipped-focus channels):** a live excursion's `observed` block now records `focusReveal` and
+ *   `focusEvents` as not run -- the record `outcomes` and `coverage` read to say "examined and clean"
+ *   versus "not examined" for 1.4.13 and 2.4.7 on a left-site capture.
+ * - **#1549 (DOM census hidden headings):** `dom.heading` stops counting headings `checkVisibility()`
+ *   reports hidden -- merged 2026-09-14 (935d51879) and inert until this bump, the same mixed-dataset
+ *   shape as 16 -> 17. `check-real-page-findings.ts` reads the field.
+ * - **#1467 (formChanges own-context fragment), the conditional fifth, on main when this row was
+ *   claimed (`1247cacf`):** `interaction.formChanges[].after` stops recording the pressed control's own
+ *   landmark, name or role fragment. Capture-side, not a reading-side strip -- it changes what
+ *   `pageSpeechAfter` records, so a v18 capture is not byte-identical under the new code, and the
+ *   exception `ceo` named for a no-op strip does not apply.
+ *
+ * **Why it is safe.** No v18 capture on disk changes meaning: nothing is written under the old key. The
+ * dispatch constraint on #914 -- no capture dispatched at code including #1506 until this bump is on main
+ * and deployed -- is content-keyed on #1506, not on this row's position in merge order; a later ruling
+ * on this row's own done-when 3 (#1573, `ceo`) confirmed that explicitly after 13 unrelated PRs merged
+ * between the post-transfer publish (`b373d1d7d0f8`, 2026-09-19T09:44:24Z) and this one, none of them
+ * touching this file, `.changeset/`, or otherwise affecting capture-protocol-relevant code.
+ *
+ * The cost is a full recapture, paid once for all five reasons, in orchestrator's fleet window after
+ * this merges and redeploys.
+ */
+export const CAPTURE_PROTOCOL_VERSION = 19;
