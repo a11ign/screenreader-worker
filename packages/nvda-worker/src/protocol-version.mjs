@@ -121,4 +121,18 @@
  * The cost is a full recapture, paid once for all five reasons, in orchestrator's fleet window after
  * this merges and redeploys.
  */
-export const CAPTURE_PROTOCOL_VERSION = 19;
+/**
+ * 19 -> 20 on 2026-09-20, #1105: `activateAndCaptureDelta` no longer settles for NVDA's own "unknown"
+ * placeholder for a still-resolving document title, on a submit that navigated. `waitPastUnresolvedTitle`'s
+ * retry can now capture the REAL title where v19 recorded `"unknown"`, and `formChanges[].after` also
+ * gains a new field, `afterUnresolved`, set `true` when the placeholder survives that retry -- so a v19
+ * capture is not byte-identical under the new code even on the fraction where the retry catches nothing,
+ * and the new field is exactly the shape #170's bump comment warns about: read by nothing on any capture
+ * already on disk, which reads as "resolved" rather than "not yet asked".
+ *
+ * The cost is the repeat-capture round this row's own Acceptance already asked for -- the four named
+ * populations (`focus-removed-on-receipt-{claim,order,booking}`, `acceptance-button-off-the-tab-order`),
+ * orchestrator's to run post-merge and post-deploy, confirming the rate against the pre-fix 11/32 (34.4%)
+ * baseline measured on v19.
+ */
+export const CAPTURE_PROTOCOL_VERSION = 20;
