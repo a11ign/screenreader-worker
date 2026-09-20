@@ -79,7 +79,17 @@ test("#1467 WIRING: activateAndCaptureDelta records `after` through pageSpeechAf
   assert.notEqual(at, -1, "activateAndCaptureDelta no longer exists under that name");
   const body = source.slice(at);
   const delta = body.slice(0, body.indexOf("\n}\n"));
-  assert.match(delta, /const after = pageSpeechAfter\(phrase, log\.slice\(before\)\);/,
-    "`after` is no longer the page's speech with the control's own left out");
+  // #1105 moved the `after` computation into `pageSpeechAfterRetries` (it now also decides
+  // `afterUnresolved`), called from here rather than inlined -- the entry it returns is still built the
+  // same way, so this checks the call and the helper's own body rather than an inlined `pageSpeechAfter`.
+  assert.match(delta,
+    /const \{ after, afterUnresolved \} = pageSpeechAfterRetries\(\{ phrase, log, before, kind, interaction \}\);/,
+    "activateAndCaptureDelta no longer derives `after` from pageSpeechAfterRetries");
   assert.match(delta, /const entry = \{ control: phrase, kind, after,/, "the entry no longer records that `after`");
+
+  const helperAt = source.indexOf("function pageSpeechAfterRetries");
+  assert.notEqual(helperAt, -1, "pageSpeechAfterRetries no longer exists under that name");
+  const helperBody = source.slice(helperAt, source.indexOf("\n}\n", helperAt));
+  assert.match(helperBody, /const after = pageSpeechAfter\(phrase, log\.slice\(before\)\);/,
+    "`after` is no longer the page's speech with the control's own left out");
 });
