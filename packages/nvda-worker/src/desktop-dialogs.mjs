@@ -27,7 +27,15 @@
  * `Add-Type` compiles C# and the request was waiting on it. "Safe to poll" was the wrong claim and it broke
  * the endpoint it was meant to improve. Dismissal has a side effect, so it happens where a side effect is
  * expected: at the start of a capture, the one moment we know the desktop must be clear. Putting dismissal in
- * a polled endpoint would rebuild the health-driven-restart loop this repo's notes blame for wedging a guest.
+ * `/health`'s OWN request path would rebuild the health-driven-restart loop this repo's notes blame for
+ * wedging a guest.
+ *
+ * `dismissForegroundBlocker` (below) is the one exception, and it is a narrower one than it looks: #1815
+ * added a second caller, `desktop-prepare.mjs`'s background watch, which is off-path in exactly the same
+ * sense the dialog SAMPLE is -- a timer, never `/health`'s own request handling -- and gates the shell-out
+ * on the identical condition `prepareDesktop` already applies: only when a blocker is already cached. It
+ * exists because a foreground holder `prepareDesktop` could not clear otherwise sits until the NEXT
+ * capture, which a held worker never receives.
  *
  * ## Why it cannot hang
  *

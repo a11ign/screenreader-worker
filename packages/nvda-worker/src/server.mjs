@@ -31,7 +31,8 @@ import { CAPTURE_HARD_TIMEOUT_DEFAULT_MS, PROBE_FLAGS, viewportFromMarks } from 
 import { isLocallyRecoverable } from "./worker-recovery.mjs";
 import { codeVersion } from "./code-version.mjs";
 import { probeWindowOwner, foregroundBlocker } from "./desktop-dialogs.mjs";
-import { dialogCache, foregroundCache, sampleDesktopDialogs, prepareDesktop } from "./desktop-prepare.mjs";
+import { dialogCache, foregroundCache, sampleDesktopDialogs, prepareDesktop,
+  startForegroundWatch } from "./desktop-prepare.mjs";
 import { faultCode, captureFault, FAULT } from "./capture-faults.mjs";
 import { createResultStore, isValidCaptureId, storedResultResponse } from "./capture-results.mjs";
 import { edgePolicy, guestDiagnostics, processCounts, screenReaderState, screenReaderDefaults, treeSize } from "./diagnostics.mjs";
@@ -814,6 +815,14 @@ function nvdaConfigPaths() {
 // that merely imported this module should not pay it at all.
 if (IS_MAIN) void sampleDesktopDialogs({ log });
 
+// #1815: a foreground holder `prepareDesktop` could not clear -- or one that arrives after the last
+// capture ends -- sits on the desktop indefinitely, because a held worker reports `not ready` and
+// `prepareDesktop` runs only at the START of a capture nothing ever dispatches to it. This is `desktop-
+// prepare.mjs`'s own off-path shape (see its header on `foregroundWatchTick`), never `readiness()` -- a
+// cache read on every tick, a shell-out only when the cache already names a blocker, rate-limited even
+// then. Gated with the listener for the identical reason the boot sample above is.
+const foregroundWatchTimer = IS_MAIN ? startForegroundWatch({ log }) : null;
+
 async function readiness() {
   warmUpOnceIfNeeded();
   const dialogs = dialogCache.dialogs;
@@ -1373,6 +1382,7 @@ for (const fatal of ["uncaughtException", "unhandledRejection"]) {
 for (const signal of IS_MAIN ? ["SIGINT", "SIGTERM"] : []) {
   process.on(signal, async () => {
     log(`${signal}: stopping NVDA before exit`);
+    if (foregroundWatchTimer) clearInterval(foregroundWatchTimer);
     await shutdownScreenReader();
     process.exit(0);
   });
