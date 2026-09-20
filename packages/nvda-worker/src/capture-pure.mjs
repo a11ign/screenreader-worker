@@ -967,6 +967,25 @@ export function pageSpeechAfter(control, phrases) {
 }
 
 /**
+ * NVDA's placeholder for a document whose accessible name has not resolved yet, on a submit that
+ * navigated (#1105). Every sighting so far — the arm-2 repeat, the acceptance pair, and the 11/32
+ * bounded rate the follow-up round measured across all four named populations — recorded this bare
+ * word, never `"unknown, document"` or any other phrasing, so that is the literal this matches, plus
+ * the role suffix as a defensive superset rather than an observed shape.
+ *
+ * This is NOT a page that has no title: 7 of 8 same-page repeats in the `claim` population, and every
+ * repeat of `order`, read the real title. It is a race between the activation delta being read and the
+ * new document's title becoming available — `activateAndCaptureDelta` reads it too early on some
+ * fraction of submits and gets NVDA's own "I don't know yet" rather than an answer.
+ */
+export const UNRESOLVED_DOCUMENT_TITLE = /^unknown(?:,\s*document)?$/i;
+
+/** @param {string} after */
+export function isUnresolvedDocumentTitle(after) {
+  return UNRESOLVED_DOCUMENT_TITLE.test(String(after ?? "").trim());
+}
+
+/**
  * Mark every channel the capture did not run BECAUSE it stopped at the excursion (#1363), so `observed` says
  * why rather than reading as "asked, and found nothing". Overrides whatever `recordWhatWasAsked` wrote from the
  * flags: a flag says what was requested, and this says what never ran. The wording is `@a11ign/evidence`'s

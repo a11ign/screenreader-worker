@@ -24,7 +24,7 @@ import {
   focusInFrameOf, focusRestoreDecision, focusRestoredRecord, heldInFrame,
   focusRevealVerdict, focusEventVerdict, censusGrowth, focusResetOutcome, titleSourceVerdict,
   activationDeadline, activationBudgetMark, activationLeftTheSite, markLeftSite, notRunAfterLeaving,
-  onlyControlState, pageSpeechAfter,
+  onlyControlState, pageSpeechAfter, isUnresolvedDocumentTitle,
   readFocusAfterTab,
 } from "./capture-pure.mjs";
 import {
@@ -50,7 +50,7 @@ import {
  *   file passes it to forty of them, and forty inline shapes is forty chances to disagree.
  *
  * @typedef {{ headings: string[], landmarks: string[], formFields: string[], graphics: string[], links: string[], lists: string[], tableCells: string[], frames: string[] }} CapturedStructure
- * @typedef {{ control: string, after: string }} AnnouncedChange
+ * @typedef {{ control: string, after: string, afterUnresolved?: boolean }} AnnouncedChange
  * @typedef {{ controls: string[], stateChanges: AnnouncedChange[], formChanges: AnnouncedChange[], postSubmitFields: string[], focusOrder: string[], routeChange?: unknown, navigatedOnSubmit?: unknown, postSubmitNames?: string[], leftSite?: unknown }} CapturedInteraction
  *
  * @typedef {{ asked: boolean, complete?: boolean, why?: string, activated?: number,
@@ -2461,6 +2461,54 @@ async function waitPastControlState(log, before, kind, interaction) {
   return second.length > log.length ? second : log;
 }
 
+/**
+ * Wait again when a submit's delta reads as NVDA's "unknown" placeholder for a document whose title
+ * has not resolved yet (#1105) — a condition, not a longer sleep, so a submit that stays on the page
+ * pays nothing extra.
+ *
+ * MEASURED ACROSS 32 REPEAT CAPTURES OF THE FOUR POPULATIONS THIS RACE WAS SEEN ON: 11/32 (34.4%)
+ * recorded `"unknown"` where a sibling capture of the identical page recorded the real title, and
+ * `baselineWaitedMs` does not cleanly separate the two outcomes either way — `claim`'s unknown captures
+ * all sat at the ~300ms floor while its clean ones waited longer, but `booking` showed the opposite, one
+ * unknown capture outwaiting four of its own clean siblings. So a longer wait is not proven to resolve
+ * every case, which is why this is paired with `afterUnresolved` below rather than trusted alone: this
+ * catches what a second `waitForAnnouncement` naturally catches without costing more than the one retry
+ * `waitPastControlState` already uses for the same shape of race, and whatever it does not catch is
+ * still marked rather than mistaken for an announcement.
+ *
+ * @param {string[]} log @param {number} before
+ * @param {{ kind: string, control: string, interaction: any }} ctx
+ * @returns {Promise<string[]>} the log, extended if a second wait resolved the title
+ */
+async function waitPastUnresolvedTitle(log, before, { kind, control, interaction }) {
+  if (!isUnresolvedDocumentTitle(pageSpeechAfter(control, log.slice(before)))) return log;
+  const second = await waitForAnnouncement(log.length, kind);
+  const resolved = second.length > log.length
+    && !isUnresolvedDocumentTitle(pageSpeechAfter(control, second.slice(before)));
+  interaction.sweepLog.push(`${kind} SECOND-WAIT-AFTER-UNRESOLVED-TITLE resolved=${resolved}`);
+  return resolved ? second : log;
+}
+
+/**
+ * `after`, and whether it is still NVDA's unresolved-title placeholder once the retry above has run.
+ * #1105: checked even post-retry, which `waitPastUnresolvedTitle`'s own comment shows is not proven to
+ * resolve every case -- a finding must never be built on an unresolved `after` either way.
+ *
+ * #1467: WHAT THE PAGE SAID, NOT THE CONTROL RE-ANNOUNCING ITSELF. A press that does not navigate often
+ * makes NVDA re-announce the control, in pieces, and which piece lands inside the quiet window varies:
+ * rehearsal 4's two identical captures of one submit recorded "search landmark" and "button". Neither is
+ * page speech, and `after` is compared evidence. The phrases left out stay in the sweep log, which is not.
+ *
+ * @param {{ phrase: string, log: string[], before: number, kind: string, interaction: any }} ctx
+ * @returns {{ after: string, afterUnresolved: boolean }}
+ */
+function pageSpeechAfterRetries({ phrase, log, before, kind, interaction }) {
+  const after = pageSpeechAfter(phrase, log.slice(before));
+  const afterUnresolved = isUnresolvedDocumentTitle(after);
+  if (afterUnresolved) interaction.sweepLog.push(`${kind} UNRESOLVED-TITLE-AFTER-RETRY ${JSON.stringify(after)}`);
+  return { after, afterUnresolved };
+}
+
 /** @param {string} phrase @param {Record<string, any>} interaction @param {string} kind */
 async function activateAndCaptureDelta(phrase, interaction, kind) {
   try {
@@ -2513,11 +2561,10 @@ async function activateAndCaptureDelta(phrase, interaction, kind) {
     // truly says nothing pays one more quiet window and still reports the empty delta that IS the
     // finding.
     log = await waitPastControlState(log, before, kind, interaction);
-    // #1467: WHAT THE PAGE SAID, NOT THE CONTROL RE-ANNOUNCING ITSELF. A press that does not navigate often
-    // makes NVDA re-announce the control, in pieces, and which piece lands inside the quiet window varies:
-    // rehearsal 4's two identical captures of one submit recorded "search landmark" and "button". Neither is
-    // page speech, and `after` is compared evidence. The phrases left out stay in the sweep log, which is not.
-    const after = pageSpeechAfter(phrase, log.slice(before));
+    // #1105: same shape as the control-state wait above, for NVDA's own "not yet" placeholder on a
+    // submit that navigated -- see `waitPastUnresolvedTitle`'s comment for the measured rate.
+    log = await waitPastUnresolvedTitle(log, before, { kind, control: phrase, interaction });
+    const { after, afterUnresolved } = pageSpeechAfterRetries({ phrase, log, before, kind, interaction });
     const heard = log.slice(before).map(String).join(" | ");
     interaction.sweepLog.push(`${kind} ${JSON.stringify(phrase.slice(0, 40))} -> ${JSON.stringify(after)}`
       + (heard.trim() === after ? "" : ` heard=${JSON.stringify(heard)}`));
@@ -2536,7 +2583,8 @@ async function activateAndCaptureDelta(phrase, interaction, kind) {
     // "settles at 19.9 s of 20" print the same `true`, and they are the difference between a robust wait
     // and one record from the cliff. The budget was raised once already because it was too short for a
     // browser recycle AND nothing could say so; recording the wait is what stops that recurring silently.
-    const entry = { control: phrase, kind, after, baselineQuiet: baseline.quiet, baselineWaitedMs: baseline.waitedMs };
+    const entry = { control: phrase, kind, after, baselineQuiet: baseline.quiet, baselineWaitedMs: baseline.waitedMs,
+      ...(afterUnresolved ? { afterUnresolved: true } : {}) };
     interaction.formChanges.push(entry);
     // RETURNED as well as pushed, so a caller that needs the result does not have to reach into the array
     // and assume its own entry is the last one. `probeRouteChange` needs it; the three existing callers
