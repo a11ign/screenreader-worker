@@ -41,7 +41,10 @@ export let dialogCache = { at: 0, dialogs: null };
  * 3.5 hours of exactly that, with every readiness check green.
  *
  * `null` means NOT SAMPLED and never means fine — the same contract `dialogCache` carries.
- * @type {{ at: number, foreground: null | {title:string,owner:string,ok:boolean} }}
+ *
+ * `handle` is carried alongside `title`/`owner`/`ok` because `startForegroundWatch` below needs to act on
+ * the SAME window it just read, exactly the reason `probeWindowOwner`'s own return type carries it.
+ * @type {{ at: number, foreground: null | {title:string,owner:string,handle:string,ok:boolean} }}
  */
 export let foregroundCache = { at: 0, foreground: null };
 
@@ -175,4 +178,82 @@ export async function prepareDesktop(marks, signal, deps = {}) {
       : "  could not clear the foreground holder; capture will proceed regardless");
     marks.push({ event: "foregroundBlocked", atMs: 0, ...holding, cleared: clearedForeground });
   }
+}
+
+/**
+ * Between a capture's own clear (above) and the next one, a foreground holder that `prepareDesktop`
+ * found but could not clear -- or one that arrived after the last capture ended -- sits on the desktop
+ * with nothing dispatched to it: a held worker reports `not ready`, so `prepareDesktop` itself never runs
+ * again. #1815: three real workers sat this way for hours to days, each cleared only by a console reboot.
+ *
+ * THE FIX IS NOT `readiness()` CALLING `dismissForegroundBlocker` ITSELF (#1815's ruling, refusing that
+ * shape). `desktop-dialogs.mjs`'s own header on `probeWindowOwner` says why: wiring a shell-out into the
+ * polled `/health` path once already stopped it answering, because `Add-Type` compiles C# on first use.
+ * `/health` is polled continuously -- `worker-ctl.sh`, the pool lease, `doctor` -- not once at boot, so
+ * that defect would reproduce on every tick rather than once.
+ *
+ * So this extends `sampleDesktopDialogs`'s OWN off-path shape -- a timer, never the request path -- from
+ * "runs once at boot" to "runs on a slow independent schedule", and gates the shell-out identically to
+ * how `prepareDesktop` already gates it: only when a blocker is ALREADY sampled. `foregroundWatchTick`
+ * below is a plain cache read on every tick and costs nothing; only when `foregroundCache` already names
+ * a blocker does it call PowerShell at all, and even then no more often than `FOREGROUND_CLEAR_MIN_INTERVAL_MS`
+ * -- a worker genuinely held by something `dismissForeground` cannot clear must not spin PowerShell
+ * forever, the same reasoning `server.mjs`'s own comment gives for why the ORIGINAL 30 s sampling timer
+ * loaded a starved 3 GB guest and made the condition it watched for more likely.
+ */
+
+/** A cache read on every tick; cheap enough that this can run far more often than a shell-out could. */
+export const FOREGROUND_WATCH_TICK_MS = 5_000;
+
+/**
+ * The floor between two ACTUAL clear attempts -- distinct from the tick above. Ten times the tick keeps
+ * a healthy clear responsive while refusing to spin PowerShell on a worker that stays held.
+ */
+export const FOREGROUND_CLEAR_MIN_INTERVAL_MS = 60_000;
+
+/**
+ * One tick: read the cache, and only when it already shows a blocker AND the rate limit allows, attempt
+ * a clear. Takes `lastAttemptAt` and `now` as parameters rather than owning them in a module global --
+ * the same reason `abandonedAfter` takes `signal` as a parameter -- so the caller (or a test) controls the
+ * clock and the rate-limit state explicitly rather than this function hiding either.
+ *
+ * @param {number | null} lastAttemptAt when the last clear attempt was made, or `null` for never
+ * @param {number} now
+ * @param {{ dismissForegroundBlocker?: typeof dismissForegroundBlocker, log?: (message: string) => void }} [deps]
+ * @returns {Promise<number | null>} the new `lastAttemptAt` -- unchanged if this tick made no attempt
+ */
+export async function foregroundWatchTick(lastAttemptAt, now, deps = {}) {
+  const holding = foregroundBlocker(foregroundCache.foreground);
+  if (!holding) return lastAttemptAt;
+  if (lastAttemptAt !== null && now - lastAttemptAt < FOREGROUND_CLEAR_MIN_INTERVAL_MS) return lastAttemptAt;
+  const dismissForeground = deps.dismissForegroundBlocker ?? dismissForegroundBlocker;
+  const log = deps.log ?? console.log;
+  log(`  background watch: ${holding.owner} (${holding.title}) still holds the foreground -- clearing it`);
+  const handle = /** @type {{handle:string}} */ (foregroundCache.foreground).handle;
+  const cleared = await dismissForeground(handle,
+    (reason) => log(`could not clear the foreground holder: ${reason}`));
+  log(cleared ? "  background watch cleared the foreground holder"
+    : "  background watch could not clear the foreground holder; will retry after the cooldown");
+  return now;
+}
+
+/**
+ * Start the background watch as an off-path timer -- `sampleDesktopDialogs`'s own shape, moved from
+ * ONCE at boot to a SLOW REPEATING cadence, and gated the identical way `prepareDesktop` already gates
+ * its own clear: a shell-out only when a blocker is already known. `unref`'d so a process holding nothing
+ * else can still exit; `server.mjs` also stops it explicitly on `SIGINT`/`SIGTERM`.
+ *
+ * @param {{ dismissForegroundBlocker?: typeof dismissForegroundBlocker, log?: (message: string) => void,
+ *           tickMs?: number, now?: () => number }} [deps]
+ * @returns {NodeJS.Timeout}
+ */
+export function startForegroundWatch(deps = {}) {
+  const tickMs = deps.tickMs ?? FOREGROUND_WATCH_TICK_MS;
+  const now = deps.now ?? Date.now;
+  let lastAttemptAt = /** @type {number | null} */ (null);
+  const timer = setInterval(() => {
+    void foregroundWatchTick(lastAttemptAt, now(), deps).then((next) => { lastAttemptAt = next; });
+  }, tickMs);
+  timer.unref?.();
+  return timer;
 }
