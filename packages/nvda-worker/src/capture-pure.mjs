@@ -2033,3 +2033,38 @@ export async function readFocusAfterTab({ pressTab, readFocused }) {
     unmeasured: `no focus reading after Tab (${FOCUS_READ_ATTEMPTS} reads failed): ${failures.join(" | ")}`,
   };
 }
+
+/**
+ * NVDA's own confirmation that an activation reached a NEW top-level document: the title, then the role
+ * "document" (`"Energy results, document"`), plus that confirmation followed by the transient "busy" state
+ * (`"...document, busy"`, the two `disinfectants-defra-gov-uk*.json` near-misses #1850's own measurement
+ * named -- a genuine navigation the unwidened pattern under-matched). The worker's copy of
+ * `packages/lab/src/training/route-change-identity.mjs`'s `announcementIdentitySignal`
+ * (`packages/evidence/src/verify.ts`'s `DOCUMENT_ANNOUNCEMENT`, `/,\s*document$/i`): nothing under this
+ * package's `src/*.mjs` imports either at capture time (`field-match.mjs`'s comment explains why), so this
+ * is a THIRD copy rather than a pin against one of the other two -- the ", busy" widening is deliberately
+ * NOT applied to `verify.ts`'s pattern, whose own header explains that relaxing it needs a fresh corpus
+ * measurement behind it, which `submitNavigatedTheDocument`'s established oracle does not have yet.
+ */
+const DOCUMENT_ANNOUNCEMENT_RE = /,\s*document(?:,\s*busy)?$/i;
+
+/**
+ * `probeRouteChange`'s activation reached NVDA's own confirmation of a new document -- what `navigated`
+ * now reports in place of the unconditional `true` literal it used to write on every successful
+ * activation (#1850).
+ *
+ * #142's own measurement also found captures where a genuinely real navigation's confirmation never
+ * arrived within the observation window, and NVDA had announced only `"Loading page"` when this probe
+ * stopped listening. `"Loading page"` does not match `DOCUMENT_ANNOUNCEMENT_RE`, so those read `false`
+ * here, the same as an activation that announced its own state and genuinely went nowhere -- ACCEPTED
+ * rather than chased: widening the wait is a capture-timing change with its own fleet cost, and #1790's
+ * own measurement already carried these captures as disagreements against the heading proxy rather than
+ * dropping them silently. Named here, in writing, rather than left for a reader to discover as an
+ * implicit consequence of reusing the pattern.
+ *
+ * @param {string | null | undefined} announced
+ * @returns {boolean}
+ */
+export function routeChangeNavigated(announced) {
+  return DOCUMENT_ANNOUNCEMENT_RE.test(String(announced ?? ""));
+}

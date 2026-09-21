@@ -25,7 +25,7 @@ import {
   focusRevealVerdict, focusEventVerdict, censusGrowth, focusResetOutcome, titleSourceVerdict,
   activationDeadline, activationBudgetMark, activationLeftTheSite, markLeftSite, notRunAfterLeaving,
   onlyControlState, pageSpeechAfter, isUnresolvedDocumentTitle,
-  readFocusAfterTab,
+  readFocusAfterTab, routeChangeNavigated,
 } from "./capture-pure.mjs";
 import {
   currentPageUrl, mediaCensus, formInputCensus, structuralCensus, domCensus, truncatedAnnouncements,
@@ -3584,7 +3584,10 @@ async function probeRouteChange({ interaction, deadline, diag }) {
       //
       nextFocusAfter,
       announced: activation?.after ?? "",
-      navigated: true,
+      // #1850: derived from NVDA's own document-change announcement, replacing the unconditional literal
+      // this field used to write on every successful activation -- see `routeChangeNavigated`'s own
+      // comment for what a non-matching announcement can mean and why.
+      navigated: routeChangeNavigated(activation?.after),
     };
     mark({
       found: true,
