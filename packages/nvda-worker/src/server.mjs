@@ -447,6 +447,9 @@ function runtimeEnvironment() {
     // hashed on the host, so it describes what the guest ACTUALLY has -- provisioning changes
     // NVDA's config, Edge's policies and ForegroundLockTimeout, all of which change the evidence.
     provisionRevision: provisionRevision(),
+    // THE SIZE OF THE DESKTOP THIS WORKER CAPTURES ON, so the fleet can compare it (#1953). The
+    // reasoning, the read, and why it is not memoised are on `displayMode` below.
+    displayMode: displayMode(),
   };
 }
 
@@ -464,6 +467,69 @@ function provisionRevision() {
     // caused by re-provisioning is explainable after the fact.
     return "unstamped";
   }
+}
+
+/**
+ * The primary monitor's size, as `"<width>x<height>"` -- the one environment fact the fleet was
+ * claiming uniformity over without ever reading it (#1953).
+ *
+ * `fleet:status` printed "fleet CONSISTENT across 10 of 10 -- these workers are interchangeable for
+ * capture" at 2026-09-22T18:21Z over a fleet running 1024x768 on five guests and 640x480 on the other
+ * five. `MUST_MATCH` had nine fields and none of them was the screen, and it could not have had one:
+ * this environment block reported the browser, the screen reader, the OS, the architecture, the
+ * protocol, the profile, the settings and the provision stamp, and nothing about the display.
+ *
+ * ## Read from THIS process, which is the only place it can honestly be read from
+ *
+ * A display call made over the fleet's Ansible/SSH path lands in session 0, which has no interactive
+ * window station and therefore answers for no desktop (#1955) -- that is why `set-display-mode.ps1` is
+ * invoked through `tasks/run-interactive.yml` at all. The worker does not have that problem: the
+ * `a11ysrv` task is registered with `logon_type: interactive_token` (`roles/worker/tasks/tasks.yml`),
+ * mandatory because NVDA needs a real logged-on desktop. So this read runs in the same session the
+ * capture runs in, and returns the screen the capture actually got. A host-side read would have
+ * reported "no monitor" for workers 7-11, which is wrong in the one direction that matters -- it
+ * describes the SSH session rather than the guest.
+ *
+ * ## GetSystemMetrics, deliberately, and not EnumDisplaySettings
+ *
+ * #1955 measured on this fleet that every GDI call naming a NULL device refuses -- `EnumDisplaySettings`
+ * and `EnumDisplayDevices` alike, ANSI and Unicode -- while the device-less metric answers:
+ * `GetSystemMetrics screen=1024x768 monitors=1` inside the interactive task on a11y-worker-2, and
+ * `640x480` on a11y-worker-7. `SystemInformation.PrimaryMonitorSize` IS `SM_CXSCREEN`/`SM_CYSCREEN`, so
+ * this reports the same numbers the row's measurements are stated in, and it loads a shipped assembly
+ * rather than compiling C# with `Add-Type -MemberDefinition` on every read.
+ *
+ * ## NOT memoised, and that is a choice rather than a copy
+ *
+ * `windowsVersion` is a `bootConstant` because it is a CAPTURE-CACHE-KEY input and a slow PowerShell
+ * moment silently changing a key fragmented the corpus once already. Neither half of that applies here:
+ * the display is not in `environmentKey` (this row deliberately does not put it there -- see the
+ * changeset), so a bad read cannot mis-key a capture, and the display DOES change under a running
+ * worker. A provisioning run sets the mode, and a driver install is what changes what the adapter can
+ * do; a `bootConstant` would report the mode the worker booted with for the rest of its life, which is
+ * exactly the state #1953 is about being unable to see. So this follows `browserProfile`'s precedent --
+ * not memoised, because noticing the change is the whole point -- and pays one PowerShell round trip per
+ * environment refresh, which `ENVIRONMENT_CACHE_MS` already bounds to one per 5 s.
+ *
+ * ## Why an unreadable display reads "unknown" rather than being left absent
+ *
+ * `fleetConsistency` skips an absent field, so returning nothing would put this field back in the state
+ * the row is about: a property nobody compares, reported as agreement. `"unknown"` is comparable, so a
+ * guest whose display cannot be read is visibly NOT known-interchangeable with one reading 1024x768.
+ * `"0x0"` is passed through for the same reason: a desktop with no size is a real answer and a real
+ * mismatch, not a failed read.
+ *
+ * Not to be confused with #1561's pinned WINDOW width, which is a different value with a different fate:
+ * that one is what Edge's window holds and joins the cache key, this one is what the screen holds and
+ * does not.
+ */
+function displayMode() {
+  const value = powershellValue(
+    "Add-Type -AssemblyName System.Windows.Forms; " +
+    "$s = [System.Windows.Forms.SystemInformation]::PrimaryMonitorSize; \"$($s.Width)x$($s.Height)\"");
+  // Shape-checked rather than trusted: an assembly-load warning on stdout would otherwise become this
+  // guest's display mode and mismatch against every other guest for a reason that is not the display.
+  return /^\d+x\d+$/.test(value) ? value : "unknown";
 }
 
 /** @type {any} */
