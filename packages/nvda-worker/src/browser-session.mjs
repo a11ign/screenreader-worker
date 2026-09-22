@@ -1665,6 +1665,70 @@ export async function collectFocusEventLog() {
 }
 
 /**
+ * #1918: did pressing this button SUBMIT A FORM? Counted from the browser's own `submit` event, not from
+ * the button's name.
+ *
+ * `probeKindFor` can only read what NVDA announced, so `kind` is the button's NAME: a
+ * `<button type="submit">` called "Apply for a berth" misses `SUBMIT_RE`, is pressed as a task button, and
+ * every consumer asking "was a form submitted?" reads `kind === "submit"` and answers no. Measured
+ * 2026-09-22: 3 of the 14 held-out 3.3.1 positives in each acceptance repeat, all read 0 by
+ * `validation_error_missing`. Widening the consumers to trust `taskButton` is not the fix, because that kind
+ * exists for filter buttons that submit nothing. Accepting it would have made 26 silent 4.1.3 filter
+ * positives in the training corpus read as silent validation errors, so the evidence has to say which is
+ * which.
+ *
+ * A CAPTURE-PHASE LISTENER ON `window`, so it runs before any handler the page attached to the form, and
+ * a page that calls `preventDefault()` (every synthetic page in this corpus) is still counted: the event
+ * was dispatched, which is the fact this records. It does NOT count a submit the browser's own constraint
+ * validation blocked before dispatch (`required` with no `novalidate`). That case is undetermined, not
+ * "no submit", and it reads the same as before this field existed.
+ *
+ * Installed immediately before one activation and read immediately after it, for the same scoping reason
+ * as `installFocusEventLog`. A submit that NAVIGATED replaces the document, and with it the counter, so
+ * the read answers "not installed". That is `submits: null`, never 0: we could not ask.
+ */
+const INSTALL_SUBMIT_EVENT_LOG_EXPRESSION = `(() => {
+  if (window.__a11ySubmitListener) window.removeEventListener("submit", window.__a11ySubmitListener, true);
+  window.__a11ySubmitCount = 0;
+  window.__a11ySubmitListener = () => { window.__a11ySubmitCount++; };
+  window.addEventListener("submit", window.__a11ySubmitListener, true);
+  return { installed: true };
+})()`;
+
+/** @returns {Promise<{ installed: boolean, error?: string }>} */
+export async function installSubmitEventLog() {
+  try {
+    const { value } = await evaluateOnPageTarget(INSTALL_SUBMIT_EVENT_LOG_EXPRESSION);
+    return { installed: !!value?.installed };
+  } catch (error) {
+    // A diagnostic probe must never fail a capture; `submittedVerdict` reads this as "cannot say".
+    return { installed: false, error: /** @type {Error} */ (error).message };
+  }
+}
+
+/**
+ * Read the count AND remove the listener, in one round trip, for the reason `collectFocusEventLog` gives.
+ *
+ * @returns {Promise<{ submits: number | null, targetMatch: UsablePageTarget["targetMatch"] | null,
+ *                      candidates: number | undefined, error?: string }>}
+ */
+export async function collectSubmitEventLog() {
+  try {
+    const { value, targetMatch, candidates } = await evaluateOnPageTarget(`(() => {
+      if (!window.__a11ySubmitListener) return { submits: null, error: "not installed" };
+      const submits = window.__a11ySubmitCount;
+      window.removeEventListener("submit", window.__a11ySubmitListener, true);
+      delete window.__a11ySubmitListener; delete window.__a11ySubmitCount;
+      return { submits };
+    })()`);
+    return { submits: typeof value?.submits === "number" ? value.submits : null, targetMatch, candidates,
+      error: value?.error };
+  } catch (error) {
+    return { submits: null, targetMatch: null, candidates: undefined, error: /** @type {Error} */ (error).message };
+  }
+}
+
+/**
  * Take DOM FOCUS off whatever a PREVIOUS probe left it on, so the next Tab press starts from the FIRST
  * tabbable element rather than from wherever focus happens to be — architecture-audit.md §43.
  *

@@ -1708,6 +1708,25 @@ export function focusTargetIsSuspect({ targetMatch, candidates }) {
 }
 
 /**
+ * #1918: `formChanges[].submitted` from `installSubmitEventLog`/`collectSubmitEventLog`: `true` when the
+ * activation dispatched a `submit` event, `false` when a listener on the right document saw none, and
+ * `undefined` (the entry carries no field) when nothing can be said. An absent field must keep meaning
+ * "not asked", because every capture before protocol 21 lacks it.
+ *
+ * "Cannot say" covers a listener that never installed, a count that could not be read (a submit that
+ * navigated replaced the document), and a read from a CDP target this capture did not confirm, which is
+ * `focusTargetIsSuspect`'s question asked a third time rather than decided afresh.
+ *
+ * @param {{ installed: boolean, submits: number | null, targetMatch?: string | null, candidates?: number }} log
+ * @returns {boolean | undefined}
+ */
+export function submittedVerdict({ installed, submits, targetMatch, candidates }) {
+  if (!installed || typeof submits !== "number") return undefined;
+  if (focusTargetIsSuspect({ targetMatch, candidates })) return undefined;
+  return submits > 0;
+}
+
+/**
  * Which title `probeFocusContext`/`probeTypedFeedback`/`probeRouteChange` should COMPARE — PURE, so it is
  * testable without NVDA. known-gaps.md §44: NVDA's spoken report of the title is the LAST THING NVDA SAID,
  * which on a page whose focus lands in a live region (a search autocomplete, say) is that region's

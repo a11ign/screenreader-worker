@@ -135,4 +135,19 @@
  * orchestrator's to run post-merge and post-deploy, confirming the rate against the pre-fix 11/32 (34.4%)
  * baseline measured on v19.
  */
-export const CAPTURE_PROTOCOL_VERSION = 20;
+/**
+ * 20 -> 21 on 2026-09-22, #1918: `formChanges[].submitted`, whether the activation dispatched a `submit`
+ * event. `kind` is the button's announced NAME (`probeKindFor`), so a real submit named for its task
+ * ("Apply for a berth") is recorded `taskButton`, and every consumer asking "was a form submitted?" said no.
+ * 3.3.1 read 0 on 3 of 14 held-out positives in each acceptance repeat. The consumers now also accept a
+ * measured `submitted: true` (`isSubmitActivation`, `packages/evidence`; `_is_submit`,
+ * `screenreader_features.py`).
+ *
+ * #170's shape, and the reason this is a bump and not a quiet addition: a v20 capture lacks the field, and
+ * a reader treats that as "not asked", which is correct. But the cache would keep serving v20 acceptance
+ * captures, so the three cases stay blind while any case captured later reads it. That is a probe reaching
+ * only the pages nobody had captured before.
+ * The training corpus has no task-named submit (143 of 143 3.3.1 positives are `kind: "submit"`), so the
+ * feature's values on it do not change whichever protocol it was captured under.
+ */
+export const CAPTURE_PROTOCOL_VERSION = 21;

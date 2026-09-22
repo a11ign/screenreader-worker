@@ -24,13 +24,14 @@ import {
   focusInFrameOf, focusRestoreDecision, focusRestoredRecord, heldInFrame,
   focusRevealVerdict, focusEventVerdict, censusGrowth, focusResetOutcome, titleSourceVerdict,
   activationDeadline, activationBudgetMark, activationLeftTheSite, markLeftSite, notRunAfterLeaving,
-  onlyControlState, pageSpeechAfter, isUnresolvedDocumentTitle,
+  onlyControlState, pageSpeechAfter, isUnresolvedDocumentTitle, submittedVerdict,
   readFocusAfterTab, routeChangeNavigated,
 } from "./capture-pure.mjs";
 import {
   currentPageUrl, mediaCensus, formInputCensus, structuralCensus, domCensus, truncatedAnnouncements,
   restoreTopDocumentFocus,
   installFocusEventLog, collectFocusEventLog, resetFocusToDocumentStart, documentTitle,
+  installSubmitEventLog, collectSubmitEventLog,
 } from "./browser-session.mjs";
 import { matchesFieldName, matchesWithin, fillActionFor } from "./field-match.mjs";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -2509,6 +2510,23 @@ function pageSpeechAfterRetries({ phrase, log, before, kind, interaction }) {
   return { after, afterUnresolved };
 }
 
+/**
+ * Press the control under the cursor, counting the form `submit` events the press dispatches (#1918).
+ * Returns the reader, called once the delta is read, so the count covers exactly this one press.
+ *
+ * `kind` is the button's NAME, so this is the only record of whether a form was submitted: a real submit
+ * named for its task ("Apply for a berth") is a `taskButton`. The answer is `formChanges[].submitted`, absent
+ * when it cannot be said, so it never reads as "not a submit" on a capture that could not ask.
+ *
+ * @param {string} kind
+ * @returns {Promise<() => Promise<boolean | undefined>>}
+ */
+async function pressCountingSubmits(kind) {
+  const log = await installSubmitEventLog();
+  await withTimeout(nvda.act(), ACT_TIMEOUT_MS, kind); // Enter on the control under the cursor
+  return async () => submittedVerdict({ installed: log.installed, ...(await collectSubmitEventLog()) });
+}
+
 /** @param {string} phrase @param {Record<string, any>} interaction @param {string} kind */
 async function activateAndCaptureDelta(phrase, interaction, kind) {
   try {
@@ -2543,7 +2561,7 @@ async function activateAndCaptureDelta(phrase, interaction, kind) {
       );
     }
     const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, kind)) || []).length;
-    await withTimeout(nvda.act(), ACT_TIMEOUT_MS, kind); // Enter on the control under the cursor
+    const submittedAfter = await pressCountingSubmits(kind);
     let log = await waitForAnnouncement(before, kind);
     // A CONTROL THAT ANNOUNCES ITS OWN STATE STARTS THE SETTLE CLOCK, and a polite live region loses the
     // race to it. MEASURED 2026-09-01, six repeats of one unchanged page: the region reached the delta
@@ -2566,6 +2584,7 @@ async function activateAndCaptureDelta(phrase, interaction, kind) {
     log = await waitPastUnresolvedTitle(log, before, { kind, control: phrase, interaction });
     const { after, afterUnresolved } = pageSpeechAfterRetries({ phrase, log, before, kind, interaction });
     const heard = log.slice(before).map(String).join(" | ");
+    const submitted = await submittedAfter();
     interaction.sweepLog.push(`${kind} ${JSON.stringify(phrase.slice(0, 40))} -> ${JSON.stringify(after)}`
       + (heard.trim() === after ? "" : ` heard=${JSON.stringify(heard)}`));
     // `kind` travels with the evidence, because criteria mean different things per activation.
@@ -2583,8 +2602,9 @@ async function activateAndCaptureDelta(phrase, interaction, kind) {
     // "settles at 19.9 s of 20" print the same `true`, and they are the difference between a robust wait
     // and one record from the cliff. The budget was raised once already because it was too short for a
     // browser recycle AND nothing could say so; recording the wait is what stops that recurring silently.
+    // `submitted: submitted`, not shorthand: #1616's wire test reads a spread's fields by `key:`.
     const entry = { control: phrase, kind, after, baselineQuiet: baseline.quiet, baselineWaitedMs: baseline.waitedMs,
-      ...(afterUnresolved ? { afterUnresolved: true } : {}) };
+      ...(afterUnresolved ? { afterUnresolved: true } : {}), ...(submitted === undefined ? {} : { submitted: submitted }) };
     interaction.formChanges.push(entry);
     // RETURNED as well as pushed, so a caller that needs the result does not have to reach into the array
     // and assume its own entry is the last one. `probeRouteChange` needs it; the three existing callers

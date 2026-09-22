@@ -127,3 +127,21 @@ focusEventTest("a truthy non-boolean probeFocus (a stray string from a lax calle
   // assume that has happened, the same defensive shape `focusTargetIsSuspect` uses one function up.
   focusEventAssert.equal(shouldInstallFocusEventListenerEarly({ probeFocus: "yes" as unknown as boolean }), true);
 });
+
+// #1918: `formChanges[].submitted`. The same absent-versus-false rule as the focus log above, and the same
+// target gate, because a count read from the wrong document says nothing about this one.
+import { submittedVerdict } from "./capture-pure.mjs";
+
+focusEventTest("#1918 submittedVerdict: a counted submit is true, a counted zero is false", () => {
+  focusEventAssert.equal(submittedVerdict({ installed: true, submits: 1, targetMatch: "matched" }), true);
+  focusEventAssert.equal(submittedVerdict({ installed: true, submits: 0, targetMatch: "matched" }), false);
+});
+
+focusEventTest("#1918 submittedVerdict: no listener, no count or a suspect target is 'cannot say', never false", () => {
+  focusEventAssert.equal(submittedVerdict({ installed: false, submits: 0, targetMatch: "matched" }), undefined);
+  focusEventAssert.equal(submittedVerdict({ installed: true, submits: null, targetMatch: "matched" }), undefined,
+    "a submit that navigated replaced the document and its counter");
+  focusEventAssert.equal(submittedVerdict({ installed: true, submits: 1, targetMatch: "fallback", candidates: 1 }), undefined);
+  focusEventAssert.equal(submittedVerdict({ installed: true, submits: 0, targetMatch: null, candidates: undefined }), undefined,
+    "a collect that threw carries targetMatch null");
+});
