@@ -31,7 +31,8 @@ Other probes beyond the default set are opt-in over the wire (`probeFocus`) so a
 never pays for evidence nobody asked for. `focusOrder` costs ~8 s on a ~15 s CORPUS capture; on real pages, 72.5 s and 16.3 s.
 ## Captures are cached — and the cache is keyed on more than the page
 
-A full run is 1,061 pairs, so `npm run training:capture` reuses evidence on disk when nothing that
+A full run is 1,715 cases, two captures each (`screenreader-dataset/manifest.json` -> `cases`, read
+2026-09-23T14:26Z on the lab), so `npm run training:capture` reuses evidence on disk when nothing that
 shapes it has changed. The key covers the page directory (every file), the capture options,
 NVDA and Edge versions, **the Windows build and architecture**, the provisioning revision, and
 `CAPTURE_PROTOCOL_VERSION`.
