@@ -179,8 +179,10 @@ export function createDiagnostics(sink) {
 /**
  * THE CSS VIEWPORT A CAPTURE WAS READ AT, as `capture.environment` fields -- #1513, the record half.
  *
- * Captures launch `--start-maximized` with no window size, so the width is each worker's display: caselaw's two
- * captures matched <768px and >=992px layouts and yielded different findings (#1043), and nothing recorded which.
+ * Captures used to launch `--start-maximized` with no window size, so the width was each worker's display:
+ * caselaw's two captures matched <768px and >=992px layouts and yielded different findings (#1043), and nothing
+ * recorded which. The window is pinned now (`CAPTURE_WINDOW`, #1561) and this is still the only MEASURED width --
+ * Edge clamps the request to the display work area, so what was asked for and what the page got are two facts.
  * `capture-core.mjs` reads the page once it settles and marks `viewport`; `server.mjs` merges these fields into
  * that capture's environment only.
  *
@@ -190,8 +192,10 @@ export function createDiagnostics(sink) {
  * width is not the one this result was captured at.
  *
  * ABSENT, NEVER ZERO. No mark, or a read that did not return three positive numbers, returns `{}`, so an older
- * worker, a failed read and a real width can never be confused. Not a cache key and not `MUST_MATCH`: pinning the
- * window, and keying on it, is the separate pin row.
+ * worker, a failed read and a real width can never be confused. STILL not a cache key and not `MUST_MATCH` after
+ * #1561: what is keyed is `windowSize`, the width the worker ASKS for, because a lookup happens before the capture
+ * exists and cannot know what the page was read at. This one is the OUTCOME, and it is recorded so the pin can be
+ * confirmed against it rather than assumed.
  *
  * @param {{ event?: string, [key: string]: unknown }[] | undefined} diagnostics
  * @returns {{ innerWidth?: number, innerHeight?: number, devicePixelRatio?: number }}

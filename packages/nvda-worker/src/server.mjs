@@ -26,7 +26,7 @@ import {
   screenReaderSettings,
   screenReaderReady, shutdownScreenReader, warmUpScreenReader,
 } from "./capture-core.mjs";
-import { configuredBrowser, browserProfileDir, resolveBrowser } from "./browsers.mjs";
+import { CAPTURE_WINDOW_SIZE, configuredBrowser, browserProfileDir, resolveBrowser } from "./browsers.mjs";
 import { CAPTURE_HARD_TIMEOUT_DEFAULT_MS, PROBE_FLAGS, viewportFromMarks } from "./capture-pure.mjs";
 import { isLocallyRecoverable } from "./worker-recovery.mjs";
 import { codeVersion } from "./code-version.mjs";
@@ -450,6 +450,19 @@ function runtimeEnvironment() {
     // THE SIZE OF THE DESKTOP THIS WORKER CAPTURES ON, so the fleet can compare it (#1953). The
     // reasoning, the read, and why it is not memoised are on `displayMode` below.
     displayMode: displayMode(),
+    // THE SIZE OF THE WINDOW THIS WORKER ASKS EDGE FOR (#1561), which is a different fact from the line
+    // above: the desktop is an upper bound and this is the request. What the page was actually laid out
+    // at is a third fact again, measured per capture and merged in further down (#1513) -- deliberately
+    // NOT here, since this object is also /health's answer and a page's width is not the worker's.
+    //
+    // A cache key AND a `MUST_MATCH` field, because deployment is rolling: a guest still on the pre-pin
+    // code launches `--start-maximized` at the same `captureProtocol`, and the protocol cannot tell the
+    // two apart. Absent reads as `"maximized"` (`environmentKey`), which is exactly what such a guest is.
+    //
+    // A CONSTANT, not a read: the window is what this worker's own launch flags say, so the honest source
+    // is the flag list itself. A read of the live window would report whatever Edge was CLAMPED to, which
+    // is the same number `displayMode` already gives and not the one that separates two code versions.
+    windowSize: CAPTURE_WINDOW_SIZE,
   };
 }
 

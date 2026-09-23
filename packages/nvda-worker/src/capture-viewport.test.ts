@@ -2,15 +2,17 @@
  * #1513 (the RECORD half): every capture's `environment` carries the CSS viewport the page was actually read
  * at -- `innerWidth`, `innerHeight`, `devicePixelRatio` -- measured IN THE PAGE, not assumed from launch flags.
  *
- * Why it matters: captures run `--start-maximized` with no window size, so the width is each worker's display.
+ * Why it matters: captures ran `--start-maximized` with no window size, so the width was each worker's display.
  * caselaw's two captures matched <768px and >=992px layouts and yielded different findings (#1043), and the Met
  * Office page hides its h1 below 1280px (#1522). Nothing recorded which width produced which evidence.
  *
  * Imports only `capture-pure.mjs`: `capture-core.mjs` imports `@guidepup/guidepup`, which throws at import where no
  * screen reader exists, so the decision lives in the pure module and the wiring is pinned by source text below.
  *
- * NOT a key: the width joins neither `environmentKey` nor `MUST_MATCH` here (product-manager's ruling, 09:33Z,
- * under ceo's ruling (b)); pinning the window, and keying on it, is #1561.
+ * NOT a key, and STILL not one after #1561 pinned the window: what that row keys is `windowSize`, the width the
+ * worker ASKS Edge for, which a cache lookup can know before the capture exists. These three fields are the
+ * OUTCOME of that request -- Edge clamps it to the display work area -- and they are what CONFIRMS the pin on a
+ * real capture rather than what identifies it.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";

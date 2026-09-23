@@ -121,6 +121,47 @@ export function browserProfileDir(browser) {
 }
 
 /**
+ * THE WINDOW EVERY CAPTURE IS TAKEN IN — `ceo`'s ruling (b) on #1561, 2026-09-14.
+ *
+ * Captures launched `--start-maximized` with no size, so the CSS width of the page under test was
+ * whatever each guest's desktop happened to give. That is an evidence variable: `caselaw` matched a
+ * `<768px` layout on one worker and a `>=992px` layout on another and yielded different findings
+ * (#1043), and weather.metoffice.gov.uk's CSS hides its `h1` below 1280px (#1522). Nothing pinned it and,
+ * until #1513, nothing recorded it either.
+ *
+ * **Three different facts, kept apart on purpose, because they disagree and each is worth reading:**
+ *
+ *   this constant        what we ASK Edge for. A launch flag, reported by `/health` as `windowSize`.
+ *   `displayMode`        what the SCREEN holds (`server.mjs`, #1953). An upper bound on the above.
+ *   `innerWidth`         what the PAGE was actually read at (`viewportFromMarks`, #1513). The outcome.
+ *
+ * A Windows Chromium window is clamped to the display work area (WindowSizer's `AdjustToFit`,
+ * crbug 1416398), so asking for more than the desktop holds yields the desktop. That is why the value is
+ * `1024x768` and not something larger: `ceo` ruled *the window is what a real display holds, so the
+ * display is what we pin*, provisioning sets one display mode on all ten guests (#1567), and all ten read
+ * `displayMode: 1024x768` on 2026-09-23T06:55Z. A wider pin needs `orchestrator` to show the mode holds
+ * on every adapter first — the fallback Basic Display Adapter on workers 7–11 could not hold 1024x768 at
+ * all as recently as 2026-09-22 (#1955).
+ *
+ * **It is REPORTED and KEYED rather than left to the protocol version, because deployment is rolling.**
+ * `captureProtocol` says what the capture code MEANS; it cannot separate a guest already running this pin
+ * from one still maximized, since both are protocol 21. `environmentKey` reads `windowSize`, an absent
+ * value means `"maximized"`, and the two therefore cannot share a cache entry.
+ *
+ * NOT CDP emulation. `Emulation.setDeviceMetricsOverride` has never been measured against what UIA or
+ * IAccessible2 report on this fleet, and NVDA reads the accessibility tree; `ceo` ruled it a research row
+ * (not (c)) rather than something a capture may rely on.
+ */
+export const CAPTURE_WINDOW = { width: 1024, height: 768 };
+
+/**
+ * The same value as one string, in `displayMode`'s own spelling so a reader comparing the two on
+ * `/health` is comparing like with like. This is what `environmentKey` hashes and what `MUST_MATCH`
+ * compares across the fleet.
+ */
+export const CAPTURE_WINDOW_SIZE = `${CAPTURE_WINDOW.width}x${CAPTURE_WINDOW.height}`;
+
+/**
  * The switches every Chromium browser gets, given a resolved profile directory.
  *
  * `--app` opens a single chromeless window (no tab strip, address bar, toolbar or banners) showing ONLY
@@ -142,7 +183,10 @@ export function browserProfileDir(browser) {
  */
 function chromiumArgs(browser, url, profileDir) {
   return [
-    "--no-first-run", "--no-default-browser-check", "--start-maximized",
+    "--no-first-run", "--no-default-browser-check",
+    // #1561: the window is PINNED, not maximized. Edge clamps this to the display work area, so it asks
+    // for the desktop the fleet is provisioned to rather than for more than a guest can hold.
+    `--window-size=${CAPTURE_WINDOW.width},${CAPTURE_WINDOW.height}`,
     "--disable-session-crashed-bubble",
     `--disable-features=${browser.suppressedFeatures.join(",")}`,
     // Belt and braces alongside the feature flags: these are long-standing switches rather than feature

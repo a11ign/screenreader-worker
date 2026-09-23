@@ -9,7 +9,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  ALL_BROWSER_IMAGES, BROWSERS, DEFAULT_BROWSER, MAGNIFY_FEATURE, SHARED_SUPPRESSED_FEATURES,
+  ALL_BROWSER_IMAGES, BROWSERS, CAPTURE_WINDOW, CAPTURE_WINDOW_SIZE, DEFAULT_BROWSER, MAGNIFY_FEATURE,
+  SHARED_SUPPRESSED_FEATURES,
   browserArgs, browserFor, browserProfileDir, configuredBrowser, resolveBrowser,
 } from "./browsers.mjs";
 
@@ -40,7 +41,7 @@ test("Edge's command line is EXACTLY what the corpus was captured with", () => {
   // every cached capture describe a browser configured differently from the one that produced it.
   withEnv({ LOCALAPPDATA: "C:\\Users\\w\\AppData\\Local", A11Y_EDGE_PROFILE: undefined, A11Y_BROWSER_PROFILE: undefined }, () => {
     assert.deepEqual(argsFor("edge"), [
-      "--no-first-run", "--no-default-browser-check", "--start-maximized",
+      "--no-first-run", "--no-default-browser-check", "--window-size=1024,768",
       "--disable-session-crashed-bubble",
       "--disable-features=msEdgeWelcomePage,AutofillServerCommunication,"
       + "AutofillAddressProfileSavePrompt,AutofillEnableAccountWalletStorage,msEdgeImageMagnifyUI",
@@ -49,6 +50,44 @@ test("Edge's command line is EXACTLY what the corpus was captured with", () => {
       "--app=http://pages/case/good",
     ]);
   });
+});
+
+test("#1561: the window is PINNED, and `--start-maximized` is gone from every browser", () => {
+  // The literal above already pins Edge's whole command line, and it is asserted again here on purpose:
+  // that test's subject is "Edge is unchanged", so reading the pin out of it would make the one line this
+  // row exists for indistinguishable from the forty it must not disturb. This one says what changed and
+  // why, for every browser rather than just Edge.
+  //
+  // `--start-maximized` took each guest's desktop, so the CSS width the page was read at was a property
+  // of the box rather than of the capture. `caselaw` matched a `<768px` layout on one worker and a
+  // `>=992px` layout on another and yielded different findings (#1043); weather.metoffice.gov.uk's CSS
+  // hides its `h1` below 1280px (#1522). Nothing pinned it and, until #1513, nothing recorded it.
+  //
+  // REPLACED rather than joined. Chromium's resolution of `--window-size` against `--start-maximized`
+  // under `--app` is undocumented and was never measured on this fleet, so keeping both would make the
+  // window depend on an unsettled precedence -- which is the variable this row removes.
+  for (const id of Object.keys(BROWSERS) as (keyof typeof BROWSERS)[]) {
+    assert.ok(argsFor(id).includes(`--window-size=${CAPTURE_WINDOW.width},${CAPTURE_WINDOW.height}`), id);
+    assert.ok(!argsFor(id).includes("--start-maximized"), `${id} still maximizes, so nothing is pinned`);
+    assert.equal(argsFor(id).filter((a) => a.startsWith("--window-size=")).length, 1,
+      `${id}: Chromium takes the LAST --window-size, so a second one decides the width in silence`);
+  }
+});
+
+test("#1561: the pinned size is 1024x768, and it is the string /health reports and the cache keys on", () => {
+  // THE VALUE IS `ceo`'s RULING (b), not a preference: the window is what a real display holds, so the
+  // display is what we pin. Provisioning sets one display mode on all ten guests (#1567) and all ten read
+  // `displayMode: 1024x768` (2026-09-23T06:55Z, #2063). A wider pin needs `orchestrator` to show the mode
+  // holds on every adapter first -- the fallback Basic Display Adapter on workers 7-11 could not hold
+  // 1024x768 at all as recently as 2026-09-22 (#1955).
+  assert.deepEqual(CAPTURE_WINDOW, { width: 1024, height: 768 });
+
+  // ONE FACT, ONE SPELLING. `CAPTURE_WINDOW_SIZE` is what `server.mjs` puts on /health and what
+  // `environmentKey` hashes; if it could drift from the flag, every capture would be keyed by a width it
+  // was not taken at. Derived rather than written out, and asserted to be derived.
+  assert.equal(CAPTURE_WINDOW_SIZE, `${CAPTURE_WINDOW.width}x${CAPTURE_WINDOW.height}`);
+  assert.equal(CAPTURE_WINDOW_SIZE, "1024x768",
+    "`displayMode`'s own spelling, so a reader comparing the two on /health compares like with like");
 });
 
 test("autofill is suppressed in EVERY browser, because probeForms teaches the profile", () => {
