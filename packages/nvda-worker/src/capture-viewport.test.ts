@@ -17,6 +17,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { stripComments } from "@a11ign/evidence/source-text";
 import { viewportFromMarks } from "./capture-pure.mjs";
 
 const mark = (fields: Record<string, unknown>): Record<string, unknown> =>
@@ -79,12 +80,73 @@ test("#1513: capture-core reads the viewport after the page settles and BEFORE a
   assert.ok(settled < read && read < marked && marked < phases, "settle -> read -> mark -> probes, in that order");
 });
 
+const PAGE_WIDTH_TOKEN = /innerWidth|viewport/;
+
+/** `runtimeEnvironment`'s body, sliced out of `text` by the two function markers around it. */
+function runtimeEnvironmentBody(text: string): string {
+  const [start, end] = positions(text, ["function runtimeEnvironment() {", "function provisionRevision() {"]);
+  return text.slice(start, end);
+}
+
+/**
+ * THE RULE, as a function of source TEXT rather than of a file, so the two controls below can hand it
+ * fixtures instead of the live `server.mjs` (#2145): a control anchored to a real file stops being a
+ * control the day somebody edits that file.
+ *
+ * COMMENTS ARE STRIPPED BEFORE MATCHING, and that is the whole of #2145. What must not enter the cached
+ * object is a page's width; a comment SAYING so is prose, and the raw-text match this replaced charged it
+ * as code — so the guard's only advice to an author writing down its own rationale was to delete it.
+ * Measured on a comment-only edit that added no code: 7 passed / 1 failed, 8 / 0 with the comment removed.
+ *
+ * `stripComments` from `@a11ign/evidence` rather than a regex written here, because it is the stripper
+ * this repository already owns and tests — and because #2131's work on it then reaches this guard for free.
+ * A stripper that desynchronises cannot make this guard silently pass: `positions` asserts both markers are
+ * still found, so damage to the slice reads as a missing anchor rather than as an empty body.
+ */
+function assertNoPageWidthInRuntimeEnvironment(text: string): void {
+  assert.doesNotMatch(runtimeEnvironmentBody(stripComments(text)), PAGE_WIDTH_TOKEN,
+    "the cached object is also /health's answer, and a page's width is not the worker's");
+}
+
+/** A minimal `server.mjs` carrying both markers, so a fixture body can be read by the real slicer. */
+const serverFixture = (body: string): string => [
+  "function runtimeEnvironment() {",
+  "  return {",
+  body,
+  "  };",
+  "}",
+  "",
+  "function provisionRevision() {",
+].join("\n");
+
 test("#1513: server merges the read into THAT capture's environment, never into the cached runtime environment", () => {
   const server = source("server.mjs");
   positions(server, ["environment: { ...environment, ...viewportFromMarks(result.diagnostics) }"]);
-  const [start, end] = positions(server, ["function runtimeEnvironment() {", "function provisionRevision() {"]);
-  assert.doesNotMatch(server.slice(start, end), /innerWidth|viewport/,
-    "the cached object is also /health's answer, and a page's width is not the worker's");
+  // The stripper ran on the LIVE slice and did not eat it: shorter than the raw slice means comments went,
+  // and the returned object still being there means code did not. Without this pair the assertion below
+  // could pass having examined an empty string.
+  assert.ok(runtimeEnvironmentBody(stripComments(server)).length < runtimeEnvironmentBody(server).length,
+    "comments were stripped from the live slice");
+  assert.match(runtimeEnvironmentBody(stripComments(server)), /return \{/, "the stripped slice is still the body");
+  assertNoPageWidthInRuntimeEnvironment(server);
+});
+
+test("#2145 POSITIVE CONTROL: the guard still REFUSES a body that reads the page's width as code", () => {
+  // Without this, stripping the body away entirely would satisfy the assertion above having examined
+  // nothing — the emptiness trap `.claude/rules/agent-practices.md` requires a named control for. This is
+  // that control, and it is deliberately the same token the live guard forbids.
+  for (const body of ["    innerWidth: readViewport().innerWidth,", '    viewport: page.evaluate("innerWidth"),']) {
+    assert.throws(() => assertNoPageWidthInRuntimeEnvironment(serverFixture(body)), assert.AssertionError, body);
+  }
+});
+
+test("#2145 NEGATIVE CONTROL: a comment NAMING the token is prose, and the guard accepts it", () => {
+  // The defect, stated as a test. Both comment forms, because the stripper handles them separately.
+  const line = "    // NOT innerWidth: that is the page's width, read in the page, and it cannot be known here.";
+  const block = "    /* The viewport belongs to the capture, not to this cached object. */";
+  for (const comment of [line, block]) {
+    assertNoPageWidthInRuntimeEnvironment(serverFixture(`${comment}\n    windowSize: CAPTURE_WINDOW_SIZE,`));
+  }
 });
 
 test("#1513: browser-session exports the page read, and the PAGE evaluates all three values", () => {
