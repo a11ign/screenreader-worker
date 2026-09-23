@@ -463,6 +463,16 @@ function runtimeEnvironment() {
     // is the flag list itself. A read of the live window would report whatever Edge was CLAMPED to, which
     // is the same number `displayMode` already gives and not the one that separates two code versions.
     windowSize: CAPTURE_WINDOW_SIZE,
+    // WHICH ADAPTER IS DRIVING THAT DESKTOP (#2063), which is a third fact again: `displayMode` is what
+    // the screen currently holds, and this is what could hold it. Workers 7-11 sat at 640x480 because the
+    // Intel driver install failed rc 1014 and Windows fell back to its Basic Display Adapter, under a
+    // `provisionRevision` identical to their peers' -- a stamp records which provisioning ran, never what
+    // it achieved, so the adapter is the only field that can tell those two boxes apart.
+    //
+    // REPORTED, NEVER GATED. It is in `fleet-consistency`'s `REPORTED_ONLY` rather than `MUST_MATCH`, so
+    // the fleet reading it as `unknown` on every guest -- which it will until this code is deployed --
+    // names a gap instead of refusing every capture. `ceo`'s ruling on #2063.
+    displayAdapter: displayAdapter(),
   };
 }
 
@@ -480,6 +490,43 @@ function provisionRevision() {
     // caused by re-provisioning is explainable after the fact.
     return "unstamped";
   }
+}
+
+/**
+ * WHICH GRAPHICS ADAPTER THIS GUEST IS RUNNING ON -- the second half of the seam #1953 found (#2063).
+ *
+ * Measured on this fleet: workers 2-6 on the Intel adapter at 1024x768, workers 7-11 on `Microsoft Basic
+ * Display Adapter` after the driver install failed rc 1014, and every other reported field identical
+ * across all ten -- including `provisionRevision`, because that stamp is written by the provisioning
+ * script and so records which run happened rather than what it achieved.
+ *
+ * ## `Win32_VideoController`, every controller, SORTED
+ *
+ * A box can have more than one, and `Select-Object -First 1` would make this value depend on CIM's
+ * enumeration order -- two identical boxes reporting different adapters is the failure mode a consistency
+ * field is least able to survive. All of them, sorted, joined: one comparable string per box whatever the
+ * order the objects arrive in.
+ *
+ * ## Not memoised, and `"unknown"` rather than absent
+ *
+ * Both for `displayMode`'s reasons, one paragraph down from here: a driver install is exactly what
+ * changes this value under a running worker, so a `bootConstant` would report the adapter the worker
+ * booted with for the rest of its life -- which is the state this field exists to make visible. And
+ * `fleetConsistency` skips an absent value, so a guest whose adapter cannot be read would silently rejoin
+ * the "nobody disagrees" population; `"unknown"` is comparable, and visibly not the Intel adapter.
+ *
+ * NOT the driver VERSION, which is a different field: `ceo` ruled on #1567 that workers 2-6 on
+ * 31.0.101.2115 against 7-11 on 31.0.101.2141 does not split the fleet. This is the adapter's NAME, and
+ * `Microsoft Basic Display Adapter` against an Intel part is not a version difference.
+ */
+function displayAdapter() {
+  const value = powershellValue(
+    "(Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name | Sort-Object) "
+    + "-join ' + '");
+  // Shape-checked rather than trusted, exactly as `displayMode` is: a PowerShell warning on stdout would
+  // otherwise become this guest's adapter and read as a fleet split for a reason that is not the adapter.
+  // Printable single-line ASCII is what an adapter name is -- `Intel(R) UHD Graphics 630`.
+  return /^[\x20-\x7e]+$/.test(value) ? value : "unknown";
 }
 
 /**
