@@ -6,11 +6,19 @@
  * (unconditional, not gated on an opt-in flag) left focused — and `probeFocusOrder` is the channel 2.1.1,
  * 2.1.2, 2.4.1 and 2.4.3 all read.
  *
- * Neither probe can be driven without real NVDA — `capture-core.mjs` imports guidepup, which throws at
- * module load with no screen reader present (see `pure-graph.test.ts`) — so nothing here can import and
- * call them. This is the SAME documented exception `focus-reveal.test.ts`'s own sequencing test already
- * uses for the identical reason: read the source and assert the call is where it has to be, never merely
- * present somewhere in the file.
+ * THIS FILE READS THE SOURCE BECAUSE OF WHAT IT ASSERTS, NOT BECAUSE IMPORTING IS IMPOSSIBLE — corrected
+ * 2026-09-23 (#2121). The paragraph here used to read "Neither probe can be driven without real NVDA —
+ * `capture-core.mjs` imports guidepup, which throws at module load with no screen reader present — so
+ * nothing here can import and call them." That was true when it was written and is now false: **#1772 made
+ * the guidepup binding lazy**, `capture-probes.mjs` takes `nvda`/`ensureGuidepup` from `capture-setup.mjs`,
+ * and the file imports clean on a Linux host with no screen reader. `focus-reveal-walk-depth.test.ts` next
+ * door imports it and CALLS `walkToReveal`, which is the demonstration.
+ *
+ * What survives the correction is the reason this particular guard still reads text: every assertion below
+ * is about WHERE A CALL SITS — that `resetFocusToDocumentStart` runs BEFORE a walk begins, in every probe
+ * that walks. An import cannot observe an ordering inside a function body; only the source can. The stale
+ * sentence made that look like a limitation to route around rather than the right tool for this claim, and
+ * a test file arguing the opposite sat beside it.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -32,13 +40,40 @@ const SOURCE = readFileSync(resolve(import.meta.dirname, "./capture-probes.mjs")
 const stripComments = (source: string): string =>
   source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
-/** The body of one `async function <name>(...) {...}`, up to the next top-level function declaration. */
+/**
+ * Every TOP-LEVEL declaration in the file, in source order — the boundaries a body runs between.
+ *
+ * NOT JUST FUNCTIONS, AND #2121 IS WHY. This scan used to end a function's body at the next `function`,
+ * so anything else declared between two functions was charged to the EARLIER one. That is silent while
+ * nothing sits there and wrong the moment something does: `LIVE_WALK_IO`, the object `walkToReveal` takes
+ * its Tab press from, sits between `probeDialogEscape` and `walkToReveal`, and the old boundary read its
+ * `nvda.press("Tab")` as `probeDialogEscape`'s — reporting a probe that does not walk the tab order as an
+ * unaccounted Tab walker. A misattributed body fails in both directions, so the fix is the boundary rather
+ * than an exemption for the one case that exposed it.
+ *
+ * `export` is matched too: `walkToReveal` is exported since #2121 so a test can drive it, and a scan blind
+ * to that spelling loses the declaration entirely.
+ */
+const DECLARATION = /\n(?:export )?(?:async )?(?:function|const|let|class) ([A-Za-z0-9_]+)/g;
+
+function topLevelDeclarations(): { name: string; at: number; isFunction: boolean }[] {
+  return [...SOURCE.matchAll(DECLARATION)]
+    .map((m) => ({ name: m[1], at: m.index ?? 0, isFunction: m[0].includes("function") }));
+}
+
+/** Source from `at` up to the next top-level declaration, comments stripped. */
+function bodyFrom(declarations: { at: number }[], index: number): string {
+  const start = declarations[index].at;
+  const end = index + 1 < declarations.length ? declarations[index + 1].at : SOURCE.length;
+  return stripComments(SOURCE.slice(start, end));
+}
+
+/** The body of one top-level `function <name>(...) {...}`, up to the next top-level declaration. */
 function functionBody(name: string): string {
-  const start = SOURCE.indexOf(`async function ${name}(`);
-  assert.ok(start >= 0, `${name} not found in capture-probes.mjs -- this test examines nothing until it is`);
-  const rest = SOURCE.slice(start + 1);
-  const nextFn = rest.search(/\n(?:async )?function /);
-  return stripComments(rest.slice(0, nextFn >= 0 ? nextFn : rest.length));
+  const declarations = topLevelDeclarations();
+  const index = declarations.findIndex((d) => d.isFunction && d.name === name);
+  assert.ok(index >= 0, `${name} not found in capture-probes.mjs -- this test examines nothing until it is`);
+  return bodyFrom(declarations, index);
 }
 
 test("probeFocusOrder resets DOM focus before its Tab walk, not just its own caret", () => {
@@ -95,16 +130,25 @@ test("both probes record startedFrom and focusReset on their own mark, not just 
  * fire on correct code — the mistake this repo has paid for most often.
  */
 
+/**
+ * What "this function walks the tab order" looks like in source.
+ *
+ * TWO SPELLINGS SINCE #2121, and the second is not a loophole. `walkToReveal` no longer names
+ * `nvda.press("Tab")` in its own body: its press comes from the `io` seam that lets a test drive the walk
+ * to stop 7 without a screen reader. The press did not go away — it moved one line, into `LIVE_WALK_IO` —
+ * and a guard that only knew the old spelling would have quietly stopped covering the one probe §43 is
+ * actually ABOUT. Matching `io.press()` keeps the population derived rather than shrinking it to whatever
+ * the current syntax happens to be.
+ */
+const PRESSES_TAB = /nvda\.press\("Tab"\)|\bio\.press\(\)/;
+
 /** Every function in `capture-probes.mjs` whose own body presses Tab, with that body. */
 function tabWalkers(): { name: string; body: string }[] {
-  const declarations = [...SOURCE.matchAll(/\n(?:async )?function ([A-Za-z0-9_]+)\(/g)]
-    .map((m) => ({ name: m[1], at: m.index ?? 0 }));
+  const declarations = topLevelDeclarations();
   return declarations
-    .map((d, i) => ({
-      name: d.name,
-      body: stripComments(SOURCE.slice(d.at, i + 1 < declarations.length ? declarations[i + 1].at : SOURCE.length)),
-    }))
-    .filter((f) => /nvda\.press\("Tab"\)/.test(f.body));
+    .map((d, i) => ({ name: d.name, isFunction: d.isFunction, body: bodyFrom(declarations, i) }))
+    .filter((d) => d.isFunction && PRESSES_TAB.test(d.body))
+    .map(({ name, body }) => ({ name, body }));
 }
 
 /**

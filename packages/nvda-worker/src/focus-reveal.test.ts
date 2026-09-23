@@ -359,8 +359,11 @@ focusRevealTest("#1506: the walk reads the census BEFORE each Tab and credits on
   const end = source.indexOf("\n}\n", start);
   focusRevealAssert.ok(start !== -1 && end > start, "the positive control: walkToReveal is found");
   const walk = source.slice(start, end);
-  const control = walk.indexOf("control = await structuralCensus()");
-  const tab = walk.indexOf('nvda.press("Tab")');
+  // #2121: both reads now come through the `io` seam that lets `focus-reveal-walk-depth.test.ts` drive the
+  // walk without a screen reader. The ORDER is the claim and it is unchanged; only the spelling moved, and
+  // that file asserts the same ordering behaviourally, by recording the calls the walk actually makes.
+  const control = walk.indexOf("control = await io.census()");
+  const tab = walk.indexOf("await io.press()");
   focusRevealAssert.ok(control !== -1 && tab !== -1 && control < tab, "the control read comes before the Tab it controls for");
   focusRevealAssert.ok(walk.includes("censusGrowth(control, onFocus)"), "growth is measured from the control read");
   focusRevealAssert.ok(!walk.includes("censusGrowth(before, onFocus)"), "not from the walk's single baseline");

@@ -3381,6 +3381,31 @@ async function probeDialogEscape({ interaction, deadline, diag }) {
 }
 
 /**
+ * @typedef {{ press: () => Promise<unknown>, census: () => Promise<unknown>,
+ *             reportFocus: (interaction: Record<string, any>) => Promise<unknown>,
+ *             now: () => number }} WalkIo
+ *   The four page-touching things `walkToReveal` does, behind one object so the walk's ARITHMETIC can be
+ *   read without a screen reader.
+ */
+
+/**
+ * The live reads — what `walkToReveal` has always done, unchanged, now named (#2121).
+ *
+ * ARROW WRAPPERS RATHER THAN BARE REFERENCES, and this is not style. `nvda` is a live `export let` in
+ * `capture-setup.mjs` that `ensureGuidepup()` fills in at run time (#1772); `press: nvda.press` evaluated
+ * here, at module load, would capture `undefined` on every host and unbind `this` on the host where it is
+ * set. Each arrow defers the read to the moment of the call, which is when the binding exists.
+ *
+ * @type {WalkIo}
+ */
+const LIVE_WALK_IO = {
+  press: () => withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, "focusReveal").catch(() => undefined),
+  census: () => structuralCensus(),
+  reportFocus: (interaction) => reportFocusedControlWithRetry(interaction),
+  now: () => Date.now(),
+};
+
+/**
  * Tab through the first few stops and stop at the one that reveals something.
  *
  * A PHASE, not a name restating its code. "Walk until the page changes" is the whole of what
@@ -3392,10 +3417,19 @@ async function probeDialogEscape({ interaction, deadline, diag }) {
  * #1506: it no longer compares against the probe's `before` read. Each stop takes its own control read immediately
  * before its Tab, and credits only what grew since then, so `before` is not a parameter.
  *
- * @param {{ interaction: Record<string, any>, deadline: number }} ctx
+ * EXPORTED, AND ITS READS COME FROM `io` (#2121). Every capture this project has ever taken returned from
+ * stop 0 or stop 1, so stops 2-7 of this loop — the `FOCUS_REVEAL_STOPS` bound itself, the bail-out on a
+ * later pass, and the deadline break on a later pass — had never executed anywhere, and could not be made
+ * to: the corpus puts the panel trigger two Tabs from document start on all fifteen of its cases, and a
+ * fleet capture is the only thing that had ever run this loop. `io` defaults to `LIVE_WALK_IO`, so the
+ * fleet path is the same four calls in the same order; what it buys is that a fake page can reach stop 7
+ * in milliseconds. It does NOT make the walk's fleet behaviour testable — a fake page proves this
+ * function's arithmetic, never NVDA's (#1865 still owns that verdict).
+ *
+ * @param {{ interaction: Record<string, any>, deadline: number, io?: WalkIo }} ctx
  * @returns {Promise<{onFocus: unknown, control: unknown, revealedAt: number, tabs: number}>}
  */
-async function walkToReveal({ interaction, deadline }) {
+export async function walkToReveal({ interaction, deadline, io = LIVE_WALK_IO }) {
     // WALK THE TAB ORDER, do not press Tab once — `probeFocusContext` twenty lines up learned this the
   // same way: "the first version pressed once and every one of its 28 corpus cases came back BLIND ...
   // the FIRST focusable thing on a page is almost never the control you mean." `page()` gives every
@@ -3406,12 +3440,12 @@ async function walkToReveal({ interaction, deadline }) {
   let revealedAt = -1;
   let tabs = 0;
   for (let stop = 0; stop < FOCUS_REVEAL_STOPS; stop += 1) {
-    if (Date.now() > deadline) break;
+    if (io.now() > deadline) break;
     // #1506: THE CONTROL READ, immediately before the Tab it controls for. Content that appears between `before`
     // and here arrived with no focus change at this stop, so only what grows AFTER this read is credited to focus.
     // One CDP read per stop, no keystrokes.
-    control = await structuralCensus();
-    await withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, "focusReveal").catch(() => undefined);
+    control = await io.census();
+    await io.press();
     tabs += 1;
     // WITH RETRY, like every other focus read that decides something. `reportFocusedControl` throws on
     // a timeout at a measured 1 in 20, and this call is inside a loop of up to eight, so the compound
@@ -3419,8 +3453,8 @@ async function walkToReveal({ interaction, deadline }) {
     // lose one stop, it propagates to the outer catch and abandons the WHOLE probe as `{error}` on a
     // page where a later stop might have revealed the panel. The next line already uses the retry
     // wrapper; two reads in one loop disagreeing about it is the defect, not the choice.
-    if (!await reportFocusedControlWithRetry(interaction)) break;
-    onFocus = await structuralCensus();
+    if (!await io.reportFocus(interaction)) break;
+    onFocus = await io.census();
     const grew = censusGrowth(control, onFocus);
     // Stop at the FIRST control that reveals something: the evidence has to name which one did it, and
     // walking on would report the last control rather than the one that mattered.
