@@ -442,9 +442,29 @@ async function bindControl(driver, query, where, boundMs) {
     + "screen-reader user cannot address either; that is a 4.1.2 finding about the page.");
 }
 
+/** How long the page may take to settle enough to be asked where it is. A bound on a wait for a condition. */
+const ORIGIN_SETTLE_MS = 5_000;
+
+/**
+ * Where the page is NOW. A click that starts a navigation destroys the document under the question, and the browser
+ * answers that with an error rather than a value; that is "not yet", so it is asked again until it answers or the bound
+ * passes. The last error is then the reason, not a guess.
+ *
+ * @param {AuthDriver} driver @returns {Promise<string>}
+ */
+async function currentOrigin(driver) {
+  /** @type {unknown} */
+  let last;
+  const found = await until(async () => {
+    try { return await driver.origin(); } catch (error) { last = error; return undefined; }
+  }, ORIGIN_SETTLE_MS);
+  if (found === undefined) throw new Error("the page would not say where it is", { cause: last });
+  return found;
+}
+
 /** @param {AuthDriver} driver @param {string} origin @param {string} where */
 async function assertStillOnOrigin(driver, origin, where) {
-  const now = await driver.origin();
+  const now = await currentOrigin(driver);
   if (now !== origin) {
     throw loginFailed("left-origin", where, `the page is on ${now}, not ${origin}. A redirect to an identity provider is SSO, `
       + "which v1 does not do: use a dedicated test account without MFA or SSO.");
@@ -498,6 +518,8 @@ async function expectStepMet(expected, run, where) {
   if (!met) {
     throw loginFailed("expect-not-met", where, `no ${expected.kind} "${expected.name}" appeared within ${expected.timeoutSeconds} s`);
   }
+  // A heading on another site is not this site's dashboard: the condition is met only on the pinned origin.
+  await assertStillOnOrigin(run.driver, run.origin, where);
 }
 
 /**

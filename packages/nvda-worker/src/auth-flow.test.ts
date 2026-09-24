@@ -145,10 +145,12 @@ test("a variable the plan reads that is missing is found BEFORE anything runs, n
 type Ax = { id: string; role: string; name: string; parentId?: string; backendId?: number; ignored: boolean };
 
 /** A tiny site: a login form, a dashboard, an off-origin identity provider, and a form with a password-type PIN. */
-function fakeBrowser(options: { password?: string; redirectOnSignIn?: string } = {}) {
+function fakeBrowser(options: { password?: string; redirectOnSignIn?: string; driftAfterClick?: boolean } = {}) {
   const password = options.password ?? FAKE_SECRET;
   let page = "about:blank";
   let origin = "null";
+  /** After the Sign-in click the page moves off-origin on its own, but only AFTER the next origin check: a late redirect. */
+  let drifting = false;
   const typed: Array<{ field: string; text: string }> = [];
   const clicks: string[] = [];
   const values = new Map<number, string>();
@@ -170,6 +172,7 @@ function fakeBrowser(options: { password?: string; redirectOnSignIn?: string } =
       return [group, other, node("textbox", "Address", { parentId: group.id }), node("textbox", "Address", { parentId: other.id })];
     }
     if (page.endsWith("/pin")) return [node("textbox", "PIN")];
+    if (page.endsWith("/authorize")) return [node("heading", "Dashboard")]; // the identity provider has a heading of the same name
     if (page.endsWith("/prefs")) return [node("checkbox", "Remember me"), node("combobox", "Country")];
     return [];
   };
@@ -181,7 +184,11 @@ function fakeBrowser(options: { password?: string; redirectOnSignIn?: string } =
         page = url; origin = new URL(url).origin;
         return { ok: !url.endsWith("/down") };
       },
-      origin: async () => origin,
+      origin: async () => {
+        const answer = origin;
+        if (drifting) { drifting = false; page = "https://idp.example.test/authorize"; origin = "https://idp.example.test"; }
+        return answer;
+      },
       axNodes: async () => nodes(),
       inputType: async (handle: number) => (idOf(handle).name === "PIN" || idOf(handle).name === "Password" ? "password" : "text"),
       fill: async (handle: number, text: string) => { typed.push({ field: idOf(handle).name, text }); values.set(handle, text); },
@@ -192,6 +199,7 @@ function fakeBrowser(options: { password?: string; redirectOnSignIn?: string } =
         clicks.push(target.name);
         if (target.name !== "Sign in") return;
         const typedPassword = typed.filter((t) => t.field === "Password").pop()?.text;
+        if (options.driftAfterClick) { drifting = true; return; }
         if (options.redirectOnSignIn) { page = `${options.redirectOnSignIn}/authorize`; origin = options.redirectOnSignIn; return; }
         if (typedPassword === password) page = `${ORIGIN}/dashboard`;
       },
@@ -271,6 +279,22 @@ test("two controls with one name are unbindable until within: or nth: says which
 test("a redirect off the origin after a press is left-origin, and SSO is named", async () => {
   await failsWith(run(fakeBrowser({ redirectOnSignIn: "https://idp.example.test" }), { login: LOGIN }).outcome,
     "left-origin", /idp\.example\.test.*SSO.*dedicated test account/s);
+});
+
+test("a heading on ANOTHER SITE does not satisfy an expect: a late off-origin redirect is left-origin", async () => {
+  // The redirect lands after the post-press origin check, so only `expect`'s own check can see it. Without it the
+  // identity provider's "Dashboard" heading satisfies the expect and the run is reported signed in.
+  await failsWith(run(fakeBrowser({ driftAfterClick: true }), { login: LOGIN }).outcome, "left-origin");
+});
+
+test("a navigation in flight when the origin is asked is waited out, not mistaken for a failure", async () => {
+  const browser = fakeBrowser();
+  let asked = 0;
+  const realOrigin = browser.driver.origin;
+  // The first two answers are the error a real browser gives while a click's navigation destroys the document.
+  browser.driver.origin = async () => { asked += 1; if (asked <= 2) throw new Error("Execution context was destroyed"); return realOrigin(); };
+  await run(browser, { login: LOGIN }).outcome;
+  assert.ok(asked > 2, "it asked again until the browser answered");
 });
 
 test("a goto that cannot load ends the run, and so does a requested page that cannot", async () => {
