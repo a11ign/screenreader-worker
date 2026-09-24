@@ -151,3 +151,15 @@ A cheap pre-check decides whether to bother running the real one; it is never li
 - The worker keeps NVDA alive between captures (recycled every 25). `A11Y_REUSE_NVDA=0` reverts to a fresh NVDA per capture — the first thing to try if captures drift as a run progresses.
 - The guest is provisioned as an **appliance**: Windows Update may install but not reboot, and Edge's background mode, startup boost and auto-updater are off. It used to reboot itself mid-run and leak Edge processes.
 Capture timing has TWO populations. On the ~12 s CORPUS capture the largest phase is `windowsActivate`, ~10 s / ~37%, and keeping Edge alive is the only real fix. On a REAL page it is ~0.3 s — one tenth of one percent — and `sweep` leads. [Both measurements →](docs/nvda-worker-runbook.md#capture-timing-and-the-windowsactivate-cost-analysis-from-environment-facts)
+## The capture path — `capture-probes.mjs`, `capture-pure.mjs`, `browser-session.mjs`
+
+**These rules govern `packages/nvda-worker/src/capture-probes.mjs`, `packages/nvda-worker/src/capture-pure.mjs` and `packages/nvda-worker/src/browser-session.mjs`** (moved here from a retired role brief, #2406, so they load for whoever edits those files).
+
+- **`capture-probes.mjs`** holds the ~30 probes and the order they run in. It is the most consequential file on the path, because **a probe's evidence is decided by where it sits in the sequence**.
+- **`capture-pure.mjs`** holds the pure verdicts a probe's evidence is turned into: the half that can be tested without NVDA, and therefore the half that must be.
+- **`browser-session.mjs`** is the CDP side: censuses, the focus-event log, anything evaluated in the page.
+- **A probe field has three states where two would be tempting.** *Confirmed false* and *could not determine* never share a value, and a skip names its reason.
+
+**A merge under `packages/nvda-worker/src/` makes the fleet STALE**: `worker:code` reads it, and the documented response is `fleet:deploy`, which reboots every guest and is the fleet driver's command, not an engineer's. So a change here is committed and held for a recapture window, not merged into a running capture; say so on the row and hand it to the agent that drives the fleet, as a row write.
+
+**Say which half of a claim you proved.** This code can prove a pure function and prove an ordering; it cannot prove that a blur leaves NVDA's tab ring where it expects, which needs a real capture. Name the two every time — *certain: the asymmetry and the missing containment; unknown: the rate* is the shape — and route the unknown half to the fleet's driver instead of settling it by argument.
