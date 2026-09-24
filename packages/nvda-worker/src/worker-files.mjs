@@ -54,6 +54,12 @@ export const WORKER_FILES = [
   "browser-session.mjs",
   "browsers.mjs",
   "pointer.mjs",
+  // ADR 0038's login interpreter and CDP driver. `capture-core.mjs` and `server.mjs` import it, so a guest without
+  // it cannot start — the same reason as every file above.
+  "auth-flow.mjs",
+  // The seam between `capture-core.mjs` and `auth-flow.mjs`: it reaches the browser session and the capture's marks,
+  // which the interpreter deliberately does not. `capture-core.mjs` imports it, so it is deployed like the rest.
+  "capture-auth.mjs",
   "worker-files.mjs",
   "code-version.mjs",
 ];

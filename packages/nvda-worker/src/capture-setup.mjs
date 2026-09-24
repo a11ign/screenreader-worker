@@ -312,6 +312,16 @@ function runningApp() {
 let navigatedExistingWindow = false;
 
 /**
+ * An authenticated capture signs in and then re-points the window it launched (ADR 0038): that IS an already-open
+ * window whose NVDA buffer may hold the page before the navigation, so `refreshBrowseBuffer` must ask NVDA to
+ * re-read. `openPage` resets the flag at the start of every capture; this is the one thing that sets it besides
+ * the reuse path.
+ */
+export function markWindowNavigatedByLogin() {
+  navigatedExistingWindow = true;
+}
+
+/**
  * Close and forget the reusable browser, recording why.
  *
  * Three call sites reach this — the capture cap, a navigation that failed, and a request that asked for a

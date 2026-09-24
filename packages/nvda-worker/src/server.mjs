@@ -35,6 +35,7 @@ import { dialogCache, foregroundCache, sampleDesktopDialogs, prepareDesktop,
   startForegroundWatch } from "./desktop-prepare.mjs";
 import { faultCode, captureFault, FAULT } from "./capture-faults.mjs";
 import { createResultStore, isValidCaptureId, storedResultResponse } from "./capture-results.mjs";
+import { authAcknowledgement, authGate, authOptionsFor, retentionFor } from "./auth-flow.mjs";
 import { edgePolicy, guestDiagnostics, processCounts, screenReaderState, screenReaderDefaults, treeSize } from "./diagnostics.mjs";
 import { killStrayBrowsers, pruneEdgeProfile, reportBrowserPolicyDrift,
   readOrStampProfileIdentity } from "./browser-profile.mjs";
@@ -662,6 +663,8 @@ function captureOptions(/** @type {any} */ parsed) {
     reuseScreenReader: typeof parsed.reuseScreenReader === "boolean"
       ? parsed.reuseScreenReader
       : REUSE_NVDA,
+    // LAST, so an authenticated request's `reuseBrowser: false` wins over whatever the request said (ADR 0038).
+    ...authOptionsFor({ parsed, env: process.env }),
   };
 }
 
@@ -1203,13 +1206,22 @@ function acceptCaptureRequest(/** @type {any} */ req, /** @type {any} */ res) {
     try { parsed = JSON.parse(body || "{}"); }
     catch { busy = false; return send(res, 400, { error: "invalid JSON body" }); }
     if (!parsed.url) { busy = false; return send(res, 400, { error: "url is required" }); }
+    // An authentication request from a peer that is not on this machine is refused before anything is read from
+    // it (ADR 0038, clause 1). An older worker ignores `auth` entirely, which is why the CLI also insists on
+    // `authApplied: true` in the answer.
+    const refusal = authGate({ auth: parsed.auth, peer: req.socket.remoteAddress });
+    if (refusal) { busy = false; return send(res, refusal.status, refusal.body); }
     // `captureOptions` VALIDATES, so it can throw — an unknown browser name does. Left unhandled that
     // rejection escapes an async listener with `busy` still set, and a worker that answers /health, reports
     // ready and 429s every capture forever is this project's most-misdiagnosed fault. A rejected option is
     // a 400, not a wedge.
     let options;
     try { options = captureOptions(parsed); }
-    catch (error) { busy = false; return send(res, 400, { error: /** @type {any} */ (error).message }); }
+    catch (error) {
+      busy = false;
+      // `fault` when the refusal has one (a missing variable is `auth-credential-missing`): additive, as on every response.
+      return send(res, 400, { error: /** @type {any} */ (error).message, ...(faultCode(error) ? { fault: faultCode(error) } : {}) });
+    }
     // Optional and validated here, so an older host that sends nothing behaves exactly as before and a
     // malformed id is a 400 rather than a strange Map key that later appears in a URL.
     const captureId = parsed.captureId;
@@ -1358,8 +1370,12 @@ async function prepareDesktopBounded(marks) {
  * exists for -- a socket that died before the host read it.
  */
 async function runCapture(/** @type {any} */ res, /** @type {any} */ { url, opts, captureId }) {
+  const { deliverOnce } = retentionFor(opts);
   const answer = (/** @type {any} */ status, /** @type {any} */ body) => {
-    if (captureId) results.finish(captureId, { status, body });
+    // An authenticated response is kept for ONE delivery only (`capture-results.mjs`), and never on the synchronous
+    // route once written: what was delivered to its own socket is not held.
+    if (captureId) results.finish(captureId, { status, body }, { deliverOnce });
+    if (deliverOnce && res && captureId) res.once("close", () => results.evict(captureId));
     // `res` IS NULL IN ASYNC MODE, where the socket was answered 202 long ago and the STORE is how the
     // result reaches the caller. Writing to it again would be a second response on a finished socket.
     // The store call above happens either way, which is what makes the two modes deliver the same bytes.
@@ -1388,6 +1404,8 @@ async function runCapture(/** @type {any} */ res, /** @type {any} */ { url, opts
     worked.captures += 1;
     answer(200, {
       ...result,
+      // The positive acknowledgement the CLI insists on (ADR 0038, clause 1): only after the sign-in ran to its end.
+      ...authAcknowledgement({ auth: opts.auth, marks }),
       screenReader: environment.screenReader,
       task: opts.task,
       // #1513: the viewport THIS capture was read at, merged into a copy. `environment` itself is the memoised

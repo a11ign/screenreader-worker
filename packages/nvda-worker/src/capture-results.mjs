@@ -49,6 +49,14 @@
  */
 export const RESULT_HISTORY = 8;
 
+/**
+ * How long an AUTHENTICATED capture's response may wait to be collected (ADR 0038). It is kept only so a lost
+ * socket can be recovered, it is deleted the moment it is delivered once, and this is the bound on the case
+ * where nobody ever comes for it: a transcript from behind a login must not sit in memory as long as the next
+ * eight captures take to push it out.
+ */
+export const AUTHENTICATED_RESULT_TTL_MS = 5 * 60 * 1000;
+
 /** Ids reach us over the wire and go into a URL path, so the shape is checked at the boundary. */
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -104,6 +112,19 @@ export function storedResultResponse(entry, id) {
 }
 
 /**
+ * Drop authenticated responses nobody collected in time. Called wherever the store is touched, so an expired one is
+ * never served and never outlives the next capture's arrival.
+ *
+ * @param {Map<string, { state: string, expiresAt?: number }>} entries
+ * @param {number} [now]
+ */
+function sweepExpired(entries, now = Date.now()) {
+  for (const [id, entry] of entries) {
+    if (entry.state === "done" && entry.expiresAt !== undefined && entry.expiresAt <= now) entries.delete(id);
+  }
+}
+
+/**
  * @param {{ limit?: number }} [options]
  */
 export function createResultStore({ limit = RESULT_HISTORY } = {}) {
@@ -116,9 +137,14 @@ export function createResultStore({ limit = RESULT_HISTORY } = {}) {
    * not express that, so it could not protect it. `recall` already DOCUMENTED the union below; the map
    * simply disagreed, which nothing could see while this file was outside `tsc`.
    *
-   * @type {Map<string, { state: "running" } | { state: "done", status: number, body: unknown }>}
+   * `deliverOnce` marks an AUTHENTICATED capture's response: recalled once, then gone, and gone at `expiresAt`
+   * whether or not anyone asked. Every other entry is exactly what it was.
+   *
+   * @type {Map<string, { state: "running" } | { state: "done", status: number, body: unknown,
+   *   deliverOnce?: boolean, expiresAt?: number }>}
    */
   const entries = new Map();
+
 
   /**
    * Note that a capture with this id has started, so a caller asking early is told "running", not "unknown".
@@ -126,6 +152,7 @@ export function createResultStore({ limit = RESULT_HISTORY } = {}) {
    */
   function begin(id) {
     if (!isValidCaptureId(id)) return;
+    sweepExpired(entries);
     // Insertion order is eviction order, and a retry reusing an id should be treated as the newest thing
     // here rather than the oldest.
     entries.delete(id);
@@ -137,11 +164,24 @@ export function createResultStore({ limit = RESULT_HISTORY } = {}) {
    * Record the response the caller is about to be sent -- status included, so a replay is identical.
    * @param {unknown} id
    * @param {{ status: number, body: unknown }} response
+   * @param {{ deliverOnce?: boolean }} [options] an authenticated capture's response: kept for one delivery only
    */
-  function finish(id, { status, body }) {
+  function finish(id, { status, body }, { deliverOnce = false } = {}) {
     if (!isValidCaptureId(id)) return;
-    entries.set(id, { state: "done", status, body });
+    sweepExpired(entries);
+    entries.set(id, deliverOnce
+      ? { state: "done", status, body, deliverOnce, expiresAt: Date.now() + AUTHENTICATED_RESULT_TTL_MS }
+      : { state: "done", status, body });
     evictOldestDone();
+  }
+
+  /**
+   * Forget a capture's response NOW: the synchronous route calls it once the response has been written (or the
+   * socket has closed), because a response written to its own socket has been delivered.
+   * @param {unknown} id
+   */
+  function evict(id) {
+    if (isValidCaptureId(id)) entries.delete(id);
   }
 
   /**
@@ -157,7 +197,11 @@ export function createResultStore({ limit = RESULT_HISTORY } = {}) {
     // boundary quietly becomes an unvalidated one. `isValidCaptureId` is a type predicate, so it also
     // says out loud that only a checked string ever indexes this map.
     if (!isValidCaptureId(id)) return undefined;
-    return entries.get(id);
+    sweepExpired(entries);
+    const entry = entries.get(id);
+    // Delivered once, and then it is not held: the recall that returns an authenticated response removes it.
+    if (entry?.state === "done" && entry.deliverOnce) entries.delete(id);
+    return entry;
   }
 
   function evictOldestDone() {
@@ -170,5 +214,5 @@ export function createResultStore({ limit = RESULT_HISTORY } = {}) {
     }
   }
 
-  return { begin, finish, recall, size: () => entries.size };
+  return { begin, finish, recall, evict, size: () => entries.size };
 }

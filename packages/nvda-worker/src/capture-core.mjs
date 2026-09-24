@@ -60,6 +60,7 @@ import {
   shutdownScreenReader,
 } from "./capture-setup.mjs";
 import { navigateByStructureThenAudit } from "./capture-probes.mjs";
+import { beginAuthentication } from "./capture-auth.mjs";
 
 /**
  * @typedef {import("./capture-pure.mjs").CaptureDiagnostics} Diag
@@ -140,6 +141,7 @@ const NVDA_READY_BUDGET_MS = 3_000;   // how long a cold NVDA gets to answer at 
  *   probeForms?: boolean, probeTables?: boolean, probeFocus?: boolean,
  *   probeNavigation?: boolean, probeElementsList?: boolean, probeOrder?: string,
  *   reuseBrowser?: boolean, reuseScreenReader?: boolean,
+ *   auth?: import("./auth-flow.mjs").AuthPlan,
  *   browserWaitMs?: number, diagnosticsSink?: object[],
  *   browser?: string,
  * }} [opts]
@@ -163,13 +165,25 @@ export async function captureWithNvda(url, opts = {}) {
   const app = browserFor(opts);
   diag.mark("browserSelected", { id: app.id, name: app.name });
   const browser = await openPage(url, diag, { reuse: reuseBrowser, app });
-  await assertLandedOnRequestedPage(url, diag);
-  await assertPageWasServed(url, diag);
-  await waitForPageToSettle(diag);
-  // #1513: the CSS viewport this capture is read at, once the page has settled and before any probe can move or
-  // resize anything. `server.mjs` merges it into this capture's environment (`viewportFromMarks`).
-  const viewport = await viewportMeasure();
-  diag.mark("viewport", viewport);
+  // ADR 0038: an authenticated capture signs in HERE, in the window just launched and before anything reads the
+  // page, so the transcript cannot begin during the login. `null` for every capture that asked for none, which
+  // leaves everything below byte-for-byte what it was.
+  const authentication = await signInIfAsked({ opts, url, diag, browser, reuseBrowser });
+  let viewport;
+  try {
+    await assertLandedOnRequestedPage(url, diag);
+    await assertPageWasServed(url, diag);
+    await waitForPageToSettle(diag);
+    // #1513: the CSS viewport this capture is read at, once the page has settled and before any probe can move or
+    // resize anything. `server.mjs` merges it into this capture's environment (`viewportFromMarks`).
+    viewport = await viewportMeasure();
+    diag.mark("viewport", viewport);
+  } catch (error) {
+    // A signed-in session must not outlive a capture that failed before it began, and the browser holding it
+    // must close. An unauthenticated capture rethrows exactly as before.
+    if (authentication) await abandonAuthenticated({ authentication, diag, browser, reuseBrowser });
+    throw error;
+  }
   let succeeded = false;
   try {
     const result = await runCapturePhases(url, opts, diag);
@@ -196,6 +210,9 @@ export async function captureWithNvda(url, opts = {}) {
     // capture that never navigates. Everything the paragraph above says about a stale expectation was
     // true of the value beside it, with nothing clearing it at this boundary.
     endCaptureUrls();
+    // The session is destroyed BEFORE the browser is closed (ADR 0038): the purge needs the protocol connection,
+    // and a profile that persists on disk would otherwise carry the login into the next capture.
+    if (authentication) await authentication.end();
     // Cleanup MUST be unconditional, and it was not.
     //
     // Edge is launched before NVDA is started, and every phase in between can throw. When
@@ -213,6 +230,36 @@ export async function captureWithNvda(url, opts = {}) {
     })
       .catch((e) => diag.mark("cleanupFailed", { error: errMsg(e) }));
   }
+}
+
+/**
+ * Sign in when the request carries `auth`; otherwise nothing. A login that fails closes the browser it opened:
+ * nothing else can, because the capture never reached its own cleanup.
+ *
+ * @param {{ opts: any, url: string, diag: Diag, browser: any, reuseBrowser: boolean }} ctx
+ * @returns {Promise<{ end: () => Promise<void> } | null>}
+ */
+async function signInIfAsked({ opts, url, diag, browser, reuseBrowser }) {
+  if (!opts.auth) return null;
+  try {
+    return await beginAuthentication({ plan: opts.auth, url, diag });
+  } catch (error) {
+    endCaptureUrls();
+    await stopAndCleanup(diag, browser, { keepScreenReader: false, reuseBrowser })
+      .catch((e) => diag.mark("cleanupFailed", { error: errMsg(e) }));
+    throw error;
+  }
+}
+
+/**
+ * The session's end for a capture that failed after signing in but before its own try/finally: purge, then close.
+ * @param {{ authentication: { end: () => Promise<void> }, diag: Diag, browser: any, reuseBrowser: boolean }} ctx
+ */
+async function abandonAuthenticated({ authentication, diag, browser, reuseBrowser }) {
+  await authentication.end();
+  endCaptureUrls();
+  await stopAndCleanup(diag, browser, { keepScreenReader: false, reuseBrowser })
+    .catch((e) => diag.mark("cleanupFailed", { error: errMsg(e) }));
 }
 
 // The capture proper. Split out so captureWithNvda is nothing but "launch, run, always clean

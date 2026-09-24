@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  createResultStore, isValidCaptureId, RESULT_HISTORY, storedResultResponse,
+  AUTHENTICATED_RESULT_TTL_MS, createResultStore, isValidCaptureId, RESULT_HISTORY, storedResultResponse,
 } from "./capture-results.mjs";
 
 test("a finished capture is replayed with its original status and body", () => {
@@ -190,4 +190,73 @@ test("begin() on an id with a RETAINED result discards it unconditionally -- no 
     "https://example.com/completely-different-page",
     "the second request's result silently replaced the first's -- reusing an id is the caller's contract "
     + "to keep, not something this store can enforce");
+});
+
+// ---- ADR 0038: an authenticated capture's response is held for ONE delivery, and no longer than its TTL ------------
+//
+// "`RESULT_HISTORY` never holds an authenticated transcript after it was delivered once" (the row's clause 9). The
+// controls are the ordinary entries beside it: they must still be recalled as often as asked, or this would be a change
+// to every capture's recovery and not to the authenticated one's.
+
+test("AUTHENTICATED: a response recalled once is GONE; an ordinary one is recalled as many times as asked", () => {
+  const store = createResultStore();
+  store.begin("auth-1");
+  store.finish("auth-1", { status: 200, body: { transcript: ["Dashboard"] } }, { deliverOnce: true });
+  store.begin("plain-1");
+  store.finish("plain-1", { status: 200, body: { transcript: ["Home"] } });
+
+  const first = store.recall("auth-1");
+  assert.equal(first?.state, "done");
+  assert.deepEqual(first?.state === "done" ? first.body : null, { transcript: ["Dashboard"] }, "delivered once, in full");
+  assert.equal(store.recall("auth-1"), undefined, "and then it is not held");
+  assert.equal(store.size(), 1);
+  assert.equal(store.recall("plain-1")?.state, "done");
+  assert.equal(store.recall("plain-1")?.state, "done", "an ordinary response is still replayable");
+});
+
+test("AUTHENTICATED: a response nobody collects is dropped at its TTL, and never served after it", () => {
+  const store = createResultStore();
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    store.begin("auth-2");
+    store.finish("auth-2", { status: 200, body: { transcript: ["Orders"] } }, { deliverOnce: true });
+    now += AUTHENTICATED_RESULT_TTL_MS - 1;
+    assert.equal(store.size(), 1, "still within its TTL");
+    now += 2;
+    assert.equal(store.recall("auth-2"), undefined, "expired: not served");
+    assert.equal(store.size(), 0, "and not held");
+    // Another capture arriving is also enough to sweep an expired one out.
+    store.finish("auth-3", { status: 200, body: {} }, { deliverOnce: true });
+    now += AUTHENTICATED_RESULT_TTL_MS + 1;
+    store.begin("plain-2");
+    assert.equal(store.size(), 1, "only the new entry remains");
+  } finally { Date.now = realNow; }
+});
+
+test("AUTHENTICATED: evict removes a response the synchronous route has delivered; ordinary entries do not expire", () => {
+  const store = createResultStore();
+  store.begin("auth-4");
+  store.finish("auth-4", { status: 200, body: {} }, { deliverOnce: true });
+  store.evict("auth-4");
+  assert.equal(store.recall("auth-4"), undefined);
+  store.evict("not a valid id!"); // a malformed id reaches nothing
+  const realNow = Date.now;
+  const later = realNow() + AUTHENTICATED_RESULT_TTL_MS * 10;
+  store.begin("plain-3");
+  store.finish("plain-3", { status: 200, body: { kept: true } });
+  Date.now = () => later;
+  try { assert.equal(store.recall("plain-3")?.state, "done", "no TTL on an ordinary entry"); } finally { Date.now = realNow; }
+});
+
+test("AUTHENTICATED: a failed authenticated capture is held for one delivery too, fault code and all", () => {
+  const store = createResultStore();
+  store.begin("auth-5");
+  store.finish("auth-5", { status: 500, body: { error: "the login did not complete", fault: "auth-login-failed" } }, { deliverOnce: true });
+  const entry = store.recall("auth-5");
+  if (entry?.state !== "done") throw new Error("expected a finished capture");
+  assert.equal(entry.status, 500);
+  assert.equal((entry.body as { fault: string }).fault, "auth-login-failed");
+  assert.equal(store.recall("auth-5"), undefined);
 });
