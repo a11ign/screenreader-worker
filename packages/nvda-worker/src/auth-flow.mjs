@@ -552,8 +552,8 @@ export async function signIn({ plan, url, driver, env, mark, bindTimeoutMs = BIN
 export function assertLiteralIsNotSecret(step, control) {
   if (step.fill.value === undefined || control.inputType.toLowerCase() !== "password") return;
   throw captureFault(FAULT.AUTH_LITERAL_SECRET,
-    `fill on "${step.fill.field}" types a literal into a password field. A password is never written in a flows file; `
-    + "name the environment variable with from-env instead.");
+    `fill: on "${step.fill.field}" types a literal into a password field. A password is never written in a flows file; `
+    + "name the environment variable with from-env: instead.");
 }
 
 /**
