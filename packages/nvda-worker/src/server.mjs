@@ -465,14 +465,15 @@ function runtimeEnvironment() {
     // is the same number `displayMode` already gives and not the one that separates two code versions.
     windowSize: CAPTURE_WINDOW_SIZE,
     // WHICH ADAPTER IS DRIVING THAT DESKTOP (#2063), which is a third fact again: `displayMode` is what
-    // the screen currently holds, and this is what could hold it. Workers 7-11 sat at 640x480 because the
-    // Intel driver install failed rc 1014 and Windows fell back to its Basic Display Adapter, under a
-    // `provisionRevision` identical to their peers' -- a stamp records which provisioning ran, never what
-    // it achieved, so the adapter is the only field that can tell those two boxes apart.
+    // the screen currently holds, and this is what could hold it. On 2026-09-22 workers 7-11 sat at
+    // 640x480 because the Intel driver install failed rc 1014 and Windows fell back to its Basic Display
+    // Adapter, under a `provisionRevision` identical to their peers' -- a stamp records which provisioning
+    // ran, never what it achieved, so the adapter is the only field that can tell those two boxes apart.
     //
     // REPORTED, NEVER GATED. It is in `fleet-consistency`'s `REPORTED_ONLY` rather than `MUST_MATCH`, so
-    // the fleet reading it as `unknown` on every guest -- which it will until this code is deployed --
-    // names a gap instead of refusing every capture. `ceo`'s ruling on #2063.
+    // a guest that does not send it reads as `unreported` and names a gap instead of refusing every
+    // capture. Deployed 2026-09-23T18:02Z; the fleet then split on hardware (`UHD` against `HD`), which
+    // is a second reason not to gate it. `ceo`'s ruling on #2063.
     displayAdapter: displayAdapter(),
   };
 }
