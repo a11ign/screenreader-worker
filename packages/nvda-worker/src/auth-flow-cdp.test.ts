@@ -47,7 +47,49 @@ async function chromiumPath(): Promise<string | null> {
 }
 
 const CHROMIUM = await chromiumPath();
-const SKIP = CHROMIUM ? undefined : "no Chromium is installed here (run `npx playwright install chromium`); the CDP driver was NOT exercised";
+
+/**
+ * Can this Chromium ACTUALLY START here? A binary that exists is not one that runs: a host without the shared libraries a
+ * headless Chromium loads (`libatk`, `libasound`) finds the file and dies on launch, and a suite that then FAILS with
+ * "did not open its debugging port" reads as a defect in the code under test. Launched once at load, with the reason
+ * printed on the skip, so the answer is "not exercised, and here is why" and never a red that is not about this change.
+ */
+async function launchProblem(executable: string): Promise<string | null> {
+  const probePort = await freePort();
+  const profile = mkdtempSync(join(tmpdir(), "auth-flow-probe-"));
+  const flags = executable.endsWith("chrome-headless-shell") ? [] : ["--headless=new"];
+  const child = spawn(executable, [...flags, "--no-sandbox", "--disable-gpu", `--remote-debugging-port=${probePort}`, `--user-data-dir=${profile}`, "about:blank"], { stdio: "ignore" });
+  let died: string | null = null;
+  child.once("error", (error) => { died = error.message; });
+  child.once("exit", (code) => { died = `it exited with code ${code} before opening its debugging port`; });
+  const answers = async () => (await fetch(`http://127.0.0.1:${probePort}/json/version`).catch(() => null))?.ok === true;
+  try {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline && died === null) {
+      if (await answers()) return null;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return died ?? "it did not open its debugging port within 15 s";
+  } finally {
+    const exited = new Promise<void>((resolve) => { if (child.exitCode !== null) resolve(); else child.once("exit", () => resolve()); });
+    child.kill("SIGKILL");
+    await exited;
+    rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+}
+
+async function freePort(): Promise<number> {
+  const probe = createServer();
+  await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+  const port = (probe.address() as AddressInfo).port;
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
+  return port;
+}
+
+const PROBLEM = CHROMIUM ? await launchProblem(CHROMIUM) : null;
+const SKIP = !CHROMIUM
+  ? "no Chromium is installed here (run `npx playwright install chromium`); the CDP driver was NOT exercised"
+  : PROBLEM ? `Chromium is installed but cannot start here (${PROBLEM}); the CDP driver was NOT exercised` : undefined;
 
 const page = (title: string, body: string) => `<!doctype html><html><head><title>${title}</title></head><body>${body}</body></html>`;
 
@@ -111,14 +153,6 @@ async function site(elsewhere = "http://127.0.0.1:1") {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return { origin, posted, pings, close: () => new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); }) };
-}
-
-async function freePort(): Promise<number> {
-  const probe = createServer();
-  await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
-  const port = (probe.address() as AddressInfo).port;
-  await new Promise<void>((resolve) => probe.close(() => resolve()));
-  return port;
 }
 
 /** Launch Chromium with a debugging port on loopback and NO `--remote-debugging-address`, as the worker does. */
