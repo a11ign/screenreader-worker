@@ -636,6 +636,9 @@ function probeFlags(parsed) {
 }
 
 function captureOptions(/** @type {any} */ parsed) {
+  // A binding, not `env: process.env` inline: `wire-request-describes-the-wire.test.ts` reads the `name:` pairs of the
+  // object below as the request's fields, and `env` is not one — it is this process's own environment.
+  const env = process.env;
   return {
     steps: parsed.steps,
     nav: parsed.nav,
@@ -664,7 +667,7 @@ function captureOptions(/** @type {any} */ parsed) {
       ? parsed.reuseScreenReader
       : REUSE_NVDA,
     // LAST, so an authenticated request's `reuseBrowser: false` wins over whatever the request said (ADR 0038).
-    ...authOptionsFor({ parsed, env: process.env }),
+    ...authOptionsFor({ parsed, env }),
   };
 }
 
