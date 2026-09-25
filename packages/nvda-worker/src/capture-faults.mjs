@@ -59,7 +59,7 @@ export const FAULT = {
    * the hard timeout from local recovery.
    */
   HARD_TIMEOUT: "hard-timeout",
-  // ADR 0038's authenticated capture (`auth-flow.mjs`). The four faults THIS worker can raise; the CLI raises the
+  // ADR 0038's authenticated capture (`auth-flow.mjs`). The five faults THIS worker can raise; the CLI raises the
   // other six (`packages/cli/src/auth/auth-faults.ts`), and both lists share `FAULT_REMEDIATION`'s entries. NONE is
   // in `RECOVERABLE`: a wrong password, a missing variable or a refused peer is not cured by a fresh NVDA, and
   // retrying a login is exactly what trips an account lockout.
@@ -71,6 +71,8 @@ export const FAULT = {
   AUTH_CREDENTIAL_MISSING: "auth-credential-missing",
   /** A literal typed into a password-type input. */
   AUTH_LITERAL_SECRET: "auth-literal-secret",
+  /** The login succeeded and the requested page then showed the login form: the session did not hold (#2563). */
+  AUTH_SESSION_LOST: "auth-session-lost",
 };
 
 /**

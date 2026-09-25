@@ -463,6 +463,36 @@ async function currentOrigin(driver) {
   return found;
 }
 
+/**
+ * Is the page the login wall? ALL of the controls the login FILLS are on it, found by accessible name. The flow's final
+ * `expect:` is the wrong signal: it holds on the dashboard and on no other page, so re-checking it on `/settings` would
+ * end healthy runs. A page with ONE control named like ONE login field (a "Password" box on a change-password page) is
+ * not the wall, and a login that fills nothing has no form to recognise, so it never is (`[].every` would say yes).
+ * The CLI's own copy is `landedOnLoginForm` in `interpreter.ts`.
+ *
+ * @param {AxNode[]} nodes @param {AuthPlan["login"]} login
+ */
+export function landedOnLoginForm(nodes, login) {
+  const fields = login.flatMap((step) => ("fill" in step ? [step.fill] : []));
+  return fields.length > 0 && fields.every(({ field, within }) => controlsNamed(nodes, { roles: FILL_ROLES, name: field, within }).length > 0);
+}
+
+/**
+ * A successful login followed by the login form on the page the run asked for: the session did not hold, or the page
+ * bounced or rendered the wall in place. Nothing else names it — a same-origin redirect ends as `wrong-page`, and a wall
+ * rendered in place is captured as the page. Reads the main frame's accessibility tree only, so a form in an iframe is
+ * not seen (ADR 0038's fault list).
+ *
+ * @param {AuthDriver} driver @param {AuthPlan["login"]} login
+ */
+async function assertNotShownLoginWall(driver, login) {
+  if (!landedOnLoginForm(await driver.axNodes(), login)) return;
+  const names = login.flatMap((step) => ("fill" in step ? [`"${step.fill.field}"`] : []));
+  throw captureFault(FAULT.AUTH_SESSION_LOST, "the login succeeded, and then the requested page showed the login form: every field the "
+    + `login fills (${[...new Set(names)].join(", ")}) is on the page the run landed on. The session did not hold, so this page was `
+    + "not examined as the product.");
+}
+
 /** @param {AuthDriver} driver @param {string} origin @param {string} where */
 async function assertStillOnOrigin(driver, origin, where) {
   const now = await currentOrigin(driver);
@@ -562,6 +592,7 @@ export async function signIn({ plan, url, driver, env, mark, bindTimeoutMs = BIN
   const landed = await (land ?? ((target) => driver.navigate(target)))(url);
   if (!landed.ok) throw loginFailed("expect-not-met", "the requested page", `${url} could not be loaded after the login (${landed.error ?? "no reason given"})`);
   await assertStillOnOrigin(driver, origin, "the requested page");
+  await assertNotShownLoginWall(driver, plan.login);
   mark("authApplied", { steps: plan.login.length + plan.flow.slice(0, plan.upTo).length });
 }
 

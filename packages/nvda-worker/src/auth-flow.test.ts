@@ -145,8 +145,10 @@ test("a variable the plan reads that is missing is found BEFORE anything runs, n
 type Ax = { id: string; role: string; name: string; parentId?: string; backendId?: number; ignored: boolean };
 
 /** A tiny site: a login form, a dashboard, an off-origin identity provider, and a form with a password-type PIN. */
-function fakeBrowser(options: { password?: string; redirectOnSignIn?: string; driftAfterClick?: boolean } = {}) {
+function fakeBrowser(options: { password?: string; redirectOnSignIn?: string; driftAfterClick?: boolean; requestedPageShows?: "login-form" | "login-redirect" | "change-password" } = {}) {
   const password = options.password ?? FAKE_SECRET;
+  /** A same-origin redirect: the requested page sends a session that did not hold to `/login`. */
+  const redirected = (url: string) => (url === URL_UNDER_TEST && options.requestedPageShows === "login-redirect" ? `${ORIGIN}/login` : url);
   let page = "about:blank";
   let origin = "null";
   /** After the Sign-in click the page moves off-origin on its own, but only AFTER the next origin check: a late redirect. */
@@ -162,6 +164,12 @@ function fakeBrowser(options: { password?: string; redirectOnSignIn?: string; dr
     };
     if (page.endsWith("/login")) {
       return [node("textbox", "Email address"), node("textbox", "Password"), node("button", "Sign in"), node("heading", "Sign in")];
+    }
+    if (page.endsWith("/orders") && options.requestedPageShows === "login-form") {
+      return [node("textbox", "Email address"), node("textbox", "Password"), node("button", "Sign in"), node("heading", "Sign in")];
+    }
+    if (page.endsWith("/orders") && options.requestedPageShows === "change-password") {
+      return [node("heading", "Change password"), node("textbox", "Password"), node("button", "Save")];
     }
     if (page.endsWith("/dashboard") || page.endsWith("/orders")) {
       return [node("heading", "Dashboard"), node("link", "Sign out")];
@@ -181,7 +189,7 @@ function fakeBrowser(options: { password?: string; redirectOnSignIn?: string; dr
     typed, clicks,
     driver: {
       navigate: async (url: string) => {
-        page = url; origin = new URL(url).origin;
+        page = redirected(url); origin = new URL(url).origin;
         return { ok: !url.endsWith("/down") };
       },
       origin: async () => {
@@ -256,6 +264,38 @@ test("a wrong password is auth-login-failed expect-not-met, names the step, and 
   const { outcome, marks } = run(fakeBrowser({ password: "something else" }), { login: LOGIN });
   await failsWith(outcome, "expect-not-met", /login step 5 \(expect\).*no heading "Dashboard"/);
   assert.ok(!marks.some((m) => m.event === "authApplied"));
+});
+
+const sessionLost = async (outcome: Promise<unknown>) => {
+  await assert.rejects(outcome, (e: Error & { reason?: string }) => {
+    assert.equal(faultCode(e), FAULT.AUTH_SESSION_LOST, e.message);
+    assert.equal(e.reason, undefined, "a fault of its own, not a reason under auth-login-failed");
+    return true;
+  });
+};
+
+test("after a successful login the requested URL serves the login form (in place, or by redirect): auth-session-lost, and authApplied is not marked", async () => {
+  for (const requestedPageShows of ["login-form", "login-redirect"] as const) {
+    const { outcome, marks } = run(fakeBrowser({ requestedPageShows }), { login: LOGIN });
+    await sessionLost(outcome);
+    assert.ok(!marks.some((m) => m.event === "authApplied"), requestedPageShows);
+  }
+});
+
+test("after a successful login the requested URL serves the app page: no fault, authApplied is marked", async () => {
+  const { outcome, marks } = run(fakeBrowser(), { login: LOGIN });
+  await outcome;
+  assert.ok(marks.some((m) => m.event === "authApplied"));
+});
+
+test("ONE control named like ONE login field (a Password box on a change-password page) is not the login wall: no fault", async () => {
+  const { outcome } = run(fakeBrowser({ requestedPageShows: "change-password" }), { login: LOGIN });
+  await outcome;
+});
+
+test("a login that fills nothing has no form to recognise: the wall check never fires", async () => {
+  const { outcome } = run(fakeBrowser({ requestedPageShows: "login-form" }), { login: [{ goto: "/dashboard" }, expectDashboard] });
+  await outcome;
 });
 
 test("a control that cannot be addressed by accessible name is unbindable-field, and says it is a 4.1.2 finding", async () => {
