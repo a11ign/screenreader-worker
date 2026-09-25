@@ -29,6 +29,7 @@
  * have validated (a request reaches this port from anywhere). `auth-flow.test.ts` pins the shared constants and a
  * table of refusals equal to the CLI's.
  */
+import { CDP_READY_TIMEOUT_MS } from "./browser-session.mjs";
 import { captureFault, FAULT } from "./capture-faults.mjs";
 
 /** The closed vocabulary. Same seven as `flows.ts`, in the same order; pinned equal by a test. */
@@ -649,14 +650,41 @@ function openSession(webSocketUrl) {
 }
 
 /**
+ * `/json/list`, asked again for as long as the connection is REFUSED.
+ *
+ * `openPage` returns the moment Edge is spawned, and Edge opens its DevTools port about half a second later (a bare
+ * fetch loop read refused at +45 ms and +312 ms and 200 at +657 ms), so a single ask never reaches it: on a real worker
+ * every authenticated capture failed with `ECONNREFUSED` before the login began (#2475). Only a refusal means "not
+ * listening yet". Any other failure, and any HTTP status, is a real answer and surfaces at once. The bound is the
+ * one the reusable launch gives the same port (`CDP_READY_TIMEOUT_MS`): a browser that has not listened in a minute is
+ * broken, not busy.
+ *
+ * @param {number} port @param {number} readyTimeoutMs @returns {Promise<Response>}
+ */
+async function listTargetsOnceListening(port, readyTimeoutMs) {
+  const deadline = Date.now() + readyTimeoutMs;
+  for (;;) {
+    try {
+      return await fetch(`http://${CDP_HOST}:${port}/json/list`, { signal: AbortSignal.timeout(CDP_CALL_TIMEOUT_MS) });
+    } catch (error) {
+      if (/** @type {any} */ (error)?.cause?.code !== "ECONNREFUSED") throw error;
+      if (Date.now() >= deadline) {
+        throw new Error(`CDP: the DevTools port ${port} did not open within ${readyTimeoutMs} ms (connection refused)`, { cause: error });
+      }
+      await sleep(POLL_MS);
+    }
+  }
+}
+
+/**
  * The page target on the worker's own DevTools port. The port is LOOPBACK BY CONSTRUCTION here — `CDP_HOST` is a
  * constant this module never takes from a request — and `browser-args.test.ts` asserts the launch arguments carry
  * no `--remote-debugging-address` at all (amendment 4), so nothing listens beyond it.
  *
- * @param {number} port @returns {Promise<string>}
+ * @param {number} port @param {number} readyTimeoutMs @returns {Promise<string>}
  */
-async function pageSocketUrl(port) {
-  const response = await fetch(`http://${CDP_HOST}:${port}/json/list`, { signal: AbortSignal.timeout(CDP_CALL_TIMEOUT_MS) });
+async function pageSocketUrl(port, readyTimeoutMs) {
+  const response = await listTargetsOnceListening(port, readyTimeoutMs);
   if (!response.ok) throw new Error(`CDP /json/list returned HTTP ${response.status}`);
   const targets = /** @type {{ type?: string, url?: string, webSocketDebuggerUrl?: string }[]} */ (await response.json());
   const page = targets.find((target) => target.type === "page" && !String(target.url).startsWith("devtools://"));
@@ -678,11 +706,13 @@ function axNodeOf(node) {
  * declaration handed its arguments as data (`Runtime.callFunctionOn`'s `arguments`), so nothing a flow says is ever
  * spliced into script text.
  *
- * @param {{ port: number }} where
+ * `readyTimeoutMs` is how long the port gets to open; a test shortens it, and nothing on the wire can.
+ *
+ * @param {{ port: number, readyTimeoutMs?: number }} where
  * @returns {Promise<AuthDriver>}
  */
-export async function openCdpDriver({ port }) {
-  const session = await openSession(await pageSocketUrl(port));
+export async function openCdpDriver({ port, readyTimeoutMs = CDP_READY_TIMEOUT_MS }) {
+  const session = await openSession(await pageSocketUrl(port, readyTimeoutMs));
   await session.send("Page.enable");
   await session.send("DOM.enable");
   const objectOf = async (/** @type {number} */ backendNodeId) =>

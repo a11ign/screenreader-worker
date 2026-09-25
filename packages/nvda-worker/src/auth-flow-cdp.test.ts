@@ -10,9 +10,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createServer as createTcpServer, type AddressInfo, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -285,4 +286,109 @@ test("a literal typed into a real password field is auth-literal-secret, and is 
     assert.ok(url.length > 0);
     await driver.close();
   } finally { await browser.stop(); await web.close(); }
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// THE PORT OPENS LATE (#2475). These tests need no Chromium, so they are never skipped: the defect is in what the driver
+// does BEFORE it can talk to a browser, and every test above hands it one that is already listening. Edge opens its
+// DevTools port about half a second after `openPage` spawns it, and `pageSocketUrl` asked once, so on a real worker every
+// authenticated capture died with `connect ECONNREFUSED 127.0.0.1:9222` before the login began.
+
+const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+/**
+ * A browser stand-in that speaks just enough of the protocol for `openCdpDriver` to finish: `/json/list` naming one page,
+ * and a WebSocket that answers every command with an empty result. It starts NOT listening; `listen()` opens the port.
+ */
+async function lateBrowser(listResponse: { status: number } = { status: 200 }) {
+  const port = await freePort();
+  const sockets = new Set<Socket>();
+  const asked: string[] = [];
+  const server: Server = createServer((req, res) => {
+    asked.push(req.url ?? "");
+    if (listResponse.status !== 200) { res.writeHead(listResponse.status); res.end(); return; }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify([{ type: "page", url: "about:blank", webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/page/1` }]));
+  });
+  server.on("upgrade", (req, socket: Socket) => {
+    sockets.add(socket);
+    const accept = createHash("sha1").update(`${req.headers["sec-websocket-key"]}${WEBSOCKET_GUID}`).digest("base64");
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+    socket.on("data", (frame: Buffer) => {
+      // A client frame is masked and, for these commands, shorter than 126 bytes.
+      const length = frame[1] & 0x7f;
+      const mask = frame.subarray(2, 6);
+      const text = Buffer.from(frame.subarray(6, 6 + length).map((byte, index) => byte ^ mask[index % 4])).toString();
+      const reply = Buffer.from(JSON.stringify({ id: JSON.parse(text).id, result: {} }));
+      socket.write(Buffer.concat([Buffer.from([0x81, reply.length]), reply]));
+    });
+    socket.on("error", () => undefined);
+  });
+  return {
+    port, asked,
+    listen: () => new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve)),
+    close: () => new Promise<void>((resolve) => {
+      for (const socket of sockets) socket.destroy();
+      if (!server.listening) return resolve();
+      server.close(() => resolve());
+      server.closeAllConnections();
+    }),
+  };
+}
+
+test("a browser that starts listening 500 ms AFTER the driver is asked for still gets driven", { timeout: 30_000 }, async () => {
+  const browser = await lateBrowser();
+  const LISTENS_AFTER_MS = 500;
+  const opening = openCdpDriver({ port: browser.port });
+  const late = new Promise<void>((resolve) => setTimeout(() => { void browser.listen().then(resolve); }, LISTENS_AFTER_MS));
+  try {
+    const driver = await opening;
+    await late;
+    // The control that the wait was a retry and not luck: nothing answered before the port opened.
+    assert.deepEqual(browser.asked, ["/json/list"]);
+    await driver.close();
+  } finally { await late; await browser.close(); }
+});
+
+test("a browser that never listens fails with the named error, inside the bound, and does not hang", { timeout: 30_000 }, async () => {
+  const browser = await lateBrowser();
+  const BOUND_MS = 600;
+  const started = Date.now();
+  try {
+    await assert.rejects(openCdpDriver({ port: browser.port, readyTimeoutMs: BOUND_MS }), (error: Error) => {
+      assert.match(error.message, new RegExp(`^CDP: the DevTools port ${browser.port} did not open within ${BOUND_MS} ms`));
+      assert.equal((error.cause as { cause?: { code?: string } })?.cause?.code, "ECONNREFUSED", "the refusal that ran the bound out is kept as the cause");
+      return true;
+    });
+    const waited = Date.now() - started;
+    assert.ok(waited >= BOUND_MS, `it waited the bound out (${waited} ms), not less`);
+    assert.ok(waited < BOUND_MS + 5_000, `and stopped at it (${waited} ms)`);
+  } finally { await browser.close(); }
+});
+
+test("only a REFUSED connection is retried: an HTTP error status from a listening browser surfaces at once", { timeout: 30_000 }, async () => {
+  const browser = await lateBrowser({ status: 503 });
+  await browser.listen();
+  const started = Date.now();
+  try {
+    await assert.rejects(openCdpDriver({ port: browser.port, readyTimeoutMs: 20_000 }), /CDP \/json\/list returned HTTP 503/);
+    assert.ok(Date.now() - started < 2_000, "it did not wait for a bound");
+    assert.deepEqual(browser.asked, ["/json/list"], "and asked exactly once");
+  } finally { await browser.close(); }
+});
+
+test("only a REFUSED connection is retried: a listener that drops the connection is a real answer and surfaces at once", { timeout: 30_000 }, async () => {
+  const dropped: number[] = [];
+  const server = createTcpServer((socket) => { dropped.push(Date.now()); socket.on("error", () => undefined); socket.destroy(); });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const started = Date.now();
+  try {
+    await assert.rejects(openCdpDriver({ port: (server.address() as AddressInfo).port, readyTimeoutMs: 20_000 }), (error: Error) => {
+      assert.equal(error.message, "fetch failed");
+      assert.doesNotMatch(error.message, /did not open/, "not reported as the port never opening");
+      return true;
+    });
+    assert.ok(Date.now() - started < 2_000, "it did not wait for a bound");
+    assert.equal(dropped.length, 1, "and asked exactly once");
+  } finally { await new Promise<void>((resolve) => { server.close(() => resolve()); }); }
 });

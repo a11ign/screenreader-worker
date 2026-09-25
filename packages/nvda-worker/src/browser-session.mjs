@@ -60,7 +60,7 @@ const CDP_HOST = "127.0.0.1";
  * 280 s capture budget. Raised deliberately, and it is still a bound: an Edge that has not answered in a
  * minute is broken, not busy.
  */
-const CDP_READY_TIMEOUT_MS = 60_000;
+export const CDP_READY_TIMEOUT_MS = 60_000;
 const CDP_POLL_MS = 200;
 const NAVIGATE_TIMEOUT_MS = 30_000;
 
