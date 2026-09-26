@@ -1579,7 +1579,7 @@ const FOCUS_EVENT_NAME_OF = `(el) => {
  * be matched by IDENTITY rather than by name — two controls sharing a name must not be confused, and a
  * name is display-only here, never the join key.
  */
-const INSTALL_FOCUS_EVENT_LOG_EXPRESSION = `(() => {
+export const INSTALL_FOCUS_EVENT_LOG_EXPRESSION = `(() => {
   if (window.__a11yFocusLog) return { already: true };
   window.__a11yFocusLog = [];
   window.__a11yFocusIds = new WeakMap();
@@ -1598,6 +1598,17 @@ const INSTALL_FOCUS_EVENT_LOG_EXPRESSION = `(() => {
   window.__a11yFocusOut = record("focusout");
   document.addEventListener("focusin", window.__a11yFocusIn, true);
   document.addEventListener("focusout", window.__a11yFocusOut, true);
+  // WHAT ALREADY HELD FOCUS when the listener attached (#2587, protocol 22). The log otherwise opens on
+  // whatever the page does NEXT, so a control that held focus first (a consent widget, on 8 of 100
+  // protocol-21 real pages) surfaces as a bare focusout no rule can tell from F55. Recorded as the log's
+  // first entry, from the SAME id map and nameOf, and marked initial: true because its atMs is the
+  // INSTALL moment, not the moment focus arrived: no consumer may read a hold time off it. Nothing is
+  // pushed while focus rests on the body, so that log is byte-identical to protocol 21's.
+  const held = document.activeElement;
+  if (held && held !== document.body && held !== document.documentElement) {
+    window.__a11yFocusLog.push({ type: "focusin", id: idOf(held), name: nameOf(held),
+      atMs: Math.round(performance.now() - start), initial: true });
+  }
   return { installed: true };
 })()`;
 
@@ -1638,7 +1649,7 @@ export async function installFocusEventLog() {
  * `focusEventVerdict` reads both to refuse a verdict from a log installed on the wrong document, the same
  * way `censusTargetIsSuspect` already refuses a census from one.
  *
- * @returns {Promise<{ events: Array<{type: string, id: number, name: string, atMs: number}> | null,
+ * @returns {Promise<{ events: Array<{type: string, id: number, name: string, atMs: number, initial?: true}> | null,
  *                      targetMatch: UsablePageTarget["targetMatch"] | null, targetUrl: string | undefined,
  *                      expectedUrl: string | null, candidates: number | undefined, error?: string }>}
  */
