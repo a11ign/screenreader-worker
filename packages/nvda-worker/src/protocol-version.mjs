@@ -150,4 +150,12 @@
  * The training corpus has no task-named submit (143 of 143 3.3.1 positives are `kind: "submit"`), so the
  * feature's values on it do not change whichever protocol it was captured under.
  */
-export const CAPTURE_PROTOCOL_VERSION = 21;
+/**
+ * 21 -> 22 on 2026-09-26, #2587 (#2550 half 2, `known-gaps.md` §42): the focus-event log's install records
+ * `document.activeElement` as its own first entry (`type: "focusin"`, `initial: true`) when focus is not on
+ * the body. A v21 log opens on a bare `focusout` on 8 of 100 real pages, which 2.4.7's rule can only call
+ * `unpairable`; a v22 log of the same page opens on the control that held focus. Two captures of one page
+ * must never disagree about whether the first event was witnessed, so this is a bump and not an additive
+ * field. Why, and the cost: docs/capture-protocol-version-history.md.
+ */
+export const CAPTURE_PROTOCOL_VERSION = 22;
