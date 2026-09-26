@@ -144,8 +144,28 @@ test("a variable the plan reads that is missing is found BEFORE anything runs, n
 
 type Ax = { id: string; role: string; name: string; parentId?: string; backendId?: number; ignored: boolean };
 
+type FakeOptions = {
+  password?: string; redirectOnSignIn?: string; driftAfterClick?: boolean; requestedPageShows?: "login-form" | "login-redirect" | "change-password";
+  /** The right password is accepted and a verification-code prompt is shown instead of the app (an MFA challenge). */
+  codePromptAfterPassword?: boolean;
+  /** The `src` of every iframe each page RENDERS; a page not named has none. */
+  frames?: { login?: string[]; dashboard?: string[] };
+  /** A challenge interstitial stands where the login form should be: nothing on it can be bound. */
+  interstitialAtLogin?: boolean;
+  /** The login page's text mentions a CAPTCHA but renders no widget. */
+  loginPageSays?: "captcha-in-text";
+};
+
+/** The login page: the form, or a challenge interstitial in its place, or the form with a cookie-policy table that only SAYS captcha. */
+function loginPage(options: FakeOptions, node: (role: string, name: string) => Ax): Ax[] {
+  if (options.interstitialAtLogin) return [node("heading", "Just a moment...")];
+  const form = [node("textbox", "Email address"), node("textbox", "Password"), node("button", "Sign in"), node("heading", "Sign in")];
+  if (options.loginPageSays !== "captcha-in-text") return form;
+  return [...form, node("StaticText", "Google re CAPTCHA"), node("StaticText", "Description of GRECAPTCHA set by Google")];
+}
+
 /** A tiny site: a login form, a dashboard, an off-origin identity provider, a verification-code prompt, and a form with a password-type PIN. */
-function fakeBrowser(options: { password?: string; redirectOnSignIn?: string; driftAfterClick?: boolean; codePromptAfterPassword?: boolean; requestedPageShows?: "login-form" | "login-redirect" | "change-password" } = {}) {
+function fakeBrowser(options: FakeOptions = {}) {
   const password = options.password ?? FAKE_SECRET;
   /** A same-origin redirect: the requested page sends a session that did not hold to `/login`. */
   const redirected = (url: string) => (url === URL_UNDER_TEST && options.requestedPageShows === "login-redirect" ? `${ORIGIN}/login` : url);
@@ -162,9 +182,7 @@ function fakeBrowser(options: { password?: string; redirectOnSignIn?: string; dr
       next += 1;
       return { id: String(next), role, name, backendId: next, ignored: false, ...extra };
     };
-    if (page.endsWith("/login")) {
-      return [node("textbox", "Email address"), node("textbox", "Password"), node("button", "Sign in"), node("heading", "Sign in")];
-    }
+    if (page.endsWith("/login")) return loginPage(options, node);
     if (page.endsWith("/orders") && options.requestedPageShows === "login-form") {
       return [node("textbox", "Email address"), node("textbox", "Password"), node("button", "Sign in"), node("heading", "Sign in")];
     }
@@ -199,6 +217,7 @@ function fakeBrowser(options: { password?: string; redirectOnSignIn?: string; dr
         return answer;
       },
       axNodes: async () => nodes(),
+      frameSources: async () => (page.endsWith("/login") ? options.frames?.login : page.endsWith("/dashboard") ? options.frames?.dashboard : undefined) ?? [],
       inputType: async (handle: number) => (idOf(handle).name === "PIN" || idOf(handle).name === "Password" ? "password" : "text"),
       fill: async (handle: number, text: string) => { typed.push({ field: idOf(handle).name, text }); values.set(handle, text); },
       choose: async (_handle: number, option: string) => option === "United Kingdom",
@@ -281,6 +300,55 @@ test("a code prompt after the right password is auth-login-failed expect-not-met
   await failsWith(run(prompted, { login: LOGIN }).outcome, "expect-not-met", /login step 5 \(expect\).*no heading "Dashboard"/);
   assert.equal(await message(fakeBrowser({ codePromptAfterPassword: true })), await message(fakeBrowser({ password: "something else" })),
     "the message tells a code prompt from a wrong password, and known-gaps §51 says the tool cannot");
+});
+
+/**
+ * VENDOR-SHAPED iframe sources, not a widget served from the vendor's origin: no request is made to any of these hosts.
+ * The hosts are the ones each vendor's Content-Security-Policy page documents (`challengeVendor`'s comment cites them).
+ */
+const WIDGETS = [
+  ["reCAPTCHA", "https://www.google.com/recaptcha/api2/anchor?ar=1&k=6LcSITEKEY&size=normal"],
+  ["hCaptcha", "https://newassets.hcaptcha.com/captcha/v1/0a1b2c3/static/hcaptcha.html#frame=checkbox"],
+  ["Cloudflare Turnstile", "https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/g/turnstile/if/ov2/av0/rcv/0abc/0x4AAAAAAA/light/fbE/new/normal/auto/"],
+] as const;
+
+const challengeDetected = async (outcome: Promise<unknown>, vendor: string) => {
+  await assert.rejects(outcome, (e: Error & { reason?: string }) => {
+    assert.equal(faultCode(e), FAULT.AUTH_CHALLENGE_DETECTED, e.message);
+    assert.equal(e.reason, undefined, "a fault of its own, not a fourth reason under auth-login-failed");
+    assert.match(e.message, new RegExp(`${vendor}.*never answers one`, "s"));
+    return true;
+  });
+};
+
+test("a login that stops at a widget is auth-challenge-detected, naming the vendor, and is not authApplied, for each vendor", async () => {
+  for (const [vendor, source] of WIDGETS) {
+    const { outcome, marks } = run(fakeBrowser({ password: "not accepted while the widget is unsolved", frames: { login: [source] } }), { login: LOGIN });
+    await challengeDetected(outcome, vendor);
+    assert.ok(!marks.some((m) => m.event === "authApplied"), vendor);
+  }
+});
+
+test("a challenge standing where the login form should be is auth-challenge-detected, not unbindable-field", async () => {
+  const { outcome } = run(fakeBrowser({ interstitialAtLogin: true, frames: { login: [WIDGETS[2][1]] } }), { login: LOGIN });
+  await challengeDetected(outcome, "Cloudflare Turnstile");
+});
+
+test("POSITIVE CONTROLS: no widget, or a page that only SAYS captcha, keeps the shipped auth-login-failed expect-not-met", async () => {
+  await failsWith(run(fakeBrowser({ password: "something else" }), { login: LOGIN }).outcome, "expect-not-met");
+  await failsWith(run(fakeBrowser({ password: "something else", loginPageSays: "captcha-in-text" }), { login: LOGIN }).outcome, "expect-not-met");
+});
+
+test("POSITIVE CONTROL: a widget on a page whose expect: IS met does not trip, and authApplied is marked", async () => {
+  const { outcome, marks } = run(fakeBrowser({ frames: { login: [WIDGETS[0][1]], dashboard: [WIDGETS[0][1], WIDGETS[2][1]] } }), { login: LOGIN });
+  await outcome;
+  assert.ok(marks.some((m) => m.event === "authApplied"));
+});
+
+test("a frame the check cannot match falls through to expect-not-met: a vendor it does not know, or a frame with no src", async () => {
+  for (const source of ["https://www.recaptcha.net/recaptcha/api2/anchor?k=x", "https://client-api.arkoselabs.com/fc/gc/", ""]) {
+    await failsWith(run(fakeBrowser({ password: "something else", frames: { login: [source] } }), { login: LOGIN }).outcome, "expect-not-met");
+  }
 });
 
 const sessionLost = async (outcome: Promise<unknown>) => {

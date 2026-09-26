@@ -382,6 +382,7 @@ export function expectationMet(nodes, { kind, name }) {
  *   inputType(handle: number): Promise<string>,
  *   fill(handle: number, text: string): Promise<void>,
  *   choose(handle: number, option: string): Promise<boolean>,
+ *   frameSources(): Promise<string[]>,
  *   isChecked(handle: number): Promise<boolean>,
  *   click(handle: number): Promise<void>,
  *   purge(origin: string): Promise<void>,
@@ -396,6 +397,65 @@ export function expectationMet(nodes, { kind, name }) {
 function loginFailed(reason, where, detail) {
   return Object.assign(captureFault(FAULT.AUTH_LOGIN_FAILED, `the login did not complete (${reason}) at ${where}: ${detail}`),
     { reason });
+}
+
+/**
+ * The ONE page-side read a challenge check needs: a fixed string for `Runtime.evaluate`, never built from anything a flow
+ * says. The `src` of the iframes the main document RENDERS: `display: none` and `visibility: hidden` are dropped, because a
+ * frame nobody can see is not a challenge in front of the user and reCAPTCHA parks a hidden one on every page carrying a
+ * widget. The accessibility tree cannot answer it (an `Iframe` node carries the `title`, which no vendor documents, and no
+ * `src`). The CLI's own copy is `FRAME_SOURCES_EXPRESSION` in `interpreter.ts`.
+ */
+export const FRAME_SOURCES_EXPRESSION = "Array.from(document.querySelectorAll('iframe'))"
+  + ".filter((f) => f.getClientRects().length > 0 && getComputedStyle(f).visibility !== 'hidden').map((f) => f.src)";
+
+/**
+ * The CAPTCHA vendor whose widget one of these iframe sources is, or undefined. **The hosts are the vendors' own, from the
+ * Content-Security-Policy pages they publish for the `frame-src` a widget needs, read 2026-09-26 (none of the three pages
+ * shows a date):** reCAPTCHA (https://developers.google.com/recaptcha/docs/faq) `https://www.google.com/recaptcha/` and
+ * `https://recaptcha.google.com/recaptcha/`; hCaptcha (https://docs.hcaptcha.com/) `https://hcaptcha.com` and
+ * `https://*.hcaptcha.com`; Cloudflare Turnstile (https://developers.cloudflare.com/turnstile/reference/content-security-policy/)
+ * `https://challenges.cloudflare.com`. Not matched: `recaptcha.net`, Arkose, GeeTest, Friendly Captcha, and a challenge a
+ * site serves from its own origin. What is documented is where the frame comes from, not what it is titled, so the title
+ * is not read. The CLI's own copy is `challengeVendor` in `interpreter.ts`.
+ *
+ * @param {readonly string[]} sources @returns {string | undefined}
+ */
+export function challengeVendor(sources) {
+  for (const source of sources) {
+    let url;
+    try { url = new URL(source); } catch { continue; } // an iframe with no src is "" and has nothing to match
+    if (url.protocol !== "https:") continue;
+    const host = url.hostname.toLowerCase();
+    if ((host === "www.google.com" || host === "recaptcha.google.com") && url.pathname.startsWith("/recaptcha/")) return "reCAPTCHA";
+    if (host === "hcaptcha.com" || host.endsWith(".hcaptcha.com")) return "hCaptcha";
+    if (host === "challenges.cloudflare.com") return "Cloudflare Turnstile";
+  }
+  return undefined;
+}
+
+/**
+ * A step that FAILED, explained (#2564): a CAPTCHA widget rendered on the page that failed it is `auth-challenge-detected`,
+ * and anything else is the login failure it was going to be. **This runs only where a step has already failed, never on a
+ * success**, so a dashboard carrying a reCAPTCHA v3 badge still passes its `expect:`; the price is that a step which failed
+ * for an unrelated reason on a page that also carries a widget is reported as the challenge, said in the sentence. It NAMES
+ * the challenge and does nothing to it. A read that fails (the page navigating under it) leaves the original failure
+ * standing, with the reason it could not look in its detail. The CLI's own copy is `explainFailure` in `interpreter.ts`.
+ *
+ * @param {AuthDriver} driver
+ * @param {"expect-not-met" | "unbindable-field"} reason @param {string} where @param {string} detail
+ */
+async function explainFailure(driver, reason, where, detail) {
+  let vendor;
+  try {
+    vendor = challengeVendor(await driver.frameSources());
+  } catch (error) {
+    return loginFailed(reason, where, `${detail} (the page's frames could not be read to check for a CAPTCHA: ${error instanceof Error ? error.message : String(error)})`);
+  }
+  if (vendor === undefined) return loginFailed(reason, where, detail);
+  return captureFault(FAULT.AUTH_CHALLENGE_DETECTED, `the login stopped at ${where}, and a widget from ${vendor} is on the page. This run names a CAPTCHA `
+    + "and never answers one: it is there to stop automated sign-ins, and nothing here will click it, wait it out or work around it. "
+    + `The step failed as ${reason}: ${detail}`);
 }
 
 const sleep = (/** @type {number} */ ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -436,11 +496,12 @@ async function bindControl(driver, query, where, boundMs) {
     return pick?.backendId === undefined ? undefined : pick.backendId;
   }, boundMs);
   if (found !== undefined) return found;
-  const why = seen.length === 0
-    ? `no control is named "${query.name}"`
-    : `${seen.length} controls are named "${query.name}"; say which with within or nth`;
-  throw loginFailed("unbindable-field", where, `${why}. A control the script cannot address by accessible name is one a `
-    + "screen-reader user cannot address either; that is a 4.1.2 finding about the page.");
+  if (seen.length === 0) {
+    throw await explainFailure(driver, "unbindable-field", where, `no control is named "${query.name}". A control the script cannot `
+      + "address by accessible name is one a screen-reader user cannot address either; that is a 4.1.2 finding about the page.");
+  }
+  throw loginFailed("unbindable-field", where, `${seen.length} controls are named "${query.name}"; say which with within or nth. `
+    + "A control the script cannot address by accessible name is one a screen-reader user cannot address either; that is a 4.1.2 finding about the page.");
 }
 
 /** How long the page may take to settle enough to be asked where it is. A bound on a wait for a condition. */
@@ -547,7 +608,7 @@ async function expectStepMet(expected, run, where) {
   const met = await until(async () => (expectationMet(await run.driver.axNodes(), expected) ? true : undefined),
     expected.timeoutSeconds * MS_PER_SECOND);
   if (!met) {
-    throw loginFailed("expect-not-met", where, `no ${expected.kind} "${expected.name}" appeared within ${expected.timeoutSeconds} s`);
+    throw await explainFailure(run.driver, "expect-not-met", where, `no ${expected.kind} "${expected.name}" appeared within ${expected.timeoutSeconds} s`);
   }
   // A heading on another site is not this site's dashboard: the condition is met only on the pinned origin.
   await assertStillOnOrigin(run.driver, run.origin, where);
@@ -768,6 +829,11 @@ export async function openCdpDriver({ port, readyTimeoutMs = CDP_READY_TIMEOUT_M
     async axNodes() {
       const { nodes } = await session.send("Accessibility.getFullAXTree");
       return nodes.map(axNodeOf);
+    },
+    async frameSources() {
+      const { result } = await session.send("Runtime.evaluate", { expression: FRAME_SOURCES_EXPRESSION, returnByValue: true });
+      if (!Array.isArray(result?.value)) throw new Error("the browser did not return a list of frames"); // explainFailure records this
+      return result.value;
     },
     inputType: (handle) => callOn(handle, "function () { return this.type === undefined ? '' : String(this.type); }"),
     async fill(handle, text) {
