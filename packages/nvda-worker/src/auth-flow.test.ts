@@ -6,6 +6,9 @@
 // the real CDP driver against a real Chromium.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   AuthRequestError,
@@ -85,6 +88,69 @@ test("the closed vocabulary, the origin pin and the login rules are enforced AGA
   }
   // A non-login flow may carry a literal (the same file, parsed above), and may capture.
   validateAuthRequest({ login: LOGIN, flow: [{ fill: { field: "Postcode", value: "AB1 2CD" } }, { capture: "here" }] }, URL_UNDER_TEST);
+});
+
+// ---- the wire: a saved state is a PATH (ADR 0038, amendment 7, choice 5) ------------------------------------------------
+
+const STATE_PATH = join(tmpdir(), "a11y-witness-state-that-does-not-exist.json");
+const STATE_COOKIE_VALUE = "sessioncookievalue-9f31c2ab";
+const STATE_FILE = JSON.stringify({
+  cookies: [{ name: "sid", value: STATE_COOKIE_VALUE, domain: "app.example.test", path: "/", secure: true }],
+  origins: [{ origin: ORIGIN, localStorage: [{ name: "token", value: "tokenvalue-7be2d915" }] }],
+});
+
+/** A state file on disk for the length of `run`, removed after it. */
+async function withStateFile<T>(text: string, run: (path: string) => T | Promise<T>): Promise<T> {
+  const dir = mkdtempSync(join(tmpdir(), "a11y-witness-state-"));
+  const path = join(dir, "state.json");
+  writeFileSync(path, text);
+  try { return await run(path); } finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+test("WIRE: auth.state is a path and nothing else: accepted absolute, refused when relative, not a string, not a mapping, or carrying another key", () => {
+  assert.deepEqual(validateAuthRequest({ login: LOGIN, state: { path: STATE_PATH } }, URL_UNDER_TEST).state, { path: STATE_PATH });
+  assert.equal(validateAuthRequest({ login: LOGIN }, URL_UNDER_TEST).state, undefined, "no state, no field");
+  refused({ login: LOGIN, state: { path: "state.json" } }, /must be an absolute path/);
+  refused({ login: LOGIN, state: { path: 7 } }, /must be an absolute path/);
+  refused({ login: LOGIN, state: STATE_PATH }, /must be a mapping with a path/);
+  refused({ login: LOGIN, state: { path: STATE_PATH, cookies: [{ name: "sid", value: STATE_COOKIE_VALUE }] } }, /cookies/);
+  // A refusal never echoes what was sent in the field, because a request that put a value there may have put a secret there.
+  assert.throws(() => validateAuthRequest({ login: LOGIN, state: { path: STATE_COOKIE_VALUE } }, URL_UNDER_TEST), (e: Error) => !e.message.includes(STATE_COOKIE_VALUE));
+  // A state still needs the login flow beside it: its final expect: is what decides the state is good.
+  refused({ state: { path: STATE_PATH } }, /must be a list/);
+});
+
+test("WIRE: the worker reads the file ITSELF: a state run reads none of the login's variables, and loads what belongs to the requested origin", async () => {
+  await withStateFile(STATE_FILE, (path) => {
+    const options = authOptionsFor({ parsed: { url: URL_UNDER_TEST, auth: { login: LOGIN, state: { path } } }, env: {} });
+    assert.equal(options.reuseBrowser, false);
+    assert.deepEqual(options.auth?.state?.entries?.cookies.map((cookie: { name: string }) => cookie.name), ["sid"]);
+    assert.deepEqual(options.auth?.state?.entries?.localStorage.map((item: { name: string }) => item.name), ["token"]);
+    // CONTROL: the same request as a form login needs the variables and refuses without them.
+    assert.throws(() => authOptionsFor({ parsed: { url: URL_UNDER_TEST, auth: { login: LOGIN } }, env: {} }), (e: Error) => faultCode(e) === FAULT.AUTH_CREDENTIAL_MISSING);
+  });
+});
+
+test("WIRE: a state file that is not JSON, is the wrong shape or is missing is refused naming the path and the reason, and NEVER quoting the file", async () => {
+  const cases: Array<[string, string, RegExp]> = [
+    ["not JSON", `sid=${STATE_COOKIE_VALUE}; theme=dark`, /is not valid JSON/],
+    ["a cookie with no value", JSON.stringify({ cookies: [{ name: STATE_COOKIE_VALUE, domain: "app.example.test" }], origins: [] }), /cookies\[1\] has no string "value"/],
+    ["JSON with a stray token", `{"cookies": [{"name": "sid", "value": "${STATE_COOKIE_VALUE}" "domain": "x"}]}`, /is not valid JSON/],
+  ];
+  for (const [label, text, reason] of cases) {
+    await withStateFile(text, (path) => {
+      assert.throws(() => authOptionsFor({ parsed: { url: URL_UNDER_TEST, auth: { login: LOGIN, state: { path } } }, env: {} }), (e: Error) => {
+        assert.ok(e instanceof AuthRequestError, `${label}: ${e.name}`);
+        assert.match(e.message, reason, label);
+        assert.ok(e.message.includes(path), `${label}: names the path`);
+        // A parser's message quotes a FRAGMENT of what it choked on ("sid=sessio..."), so a fragment is what is looked for too.
+        assert.ok(!e.message.includes(STATE_COOKIE_VALUE) && !e.message.includes("sid=") && !e.message.includes('"sid"'), `${label}: the refusal quoted the file`);
+        return true;
+      });
+    });
+  }
+  assert.throws(() => authOptionsFor({ parsed: { url: URL_UNDER_TEST, auth: { login: LOGIN, state: { path: STATE_PATH } } }, env: {} }),
+    (e: Error) => e instanceof AuthRequestError && /could not be read/.test(e.message) && e.message.includes(STATE_PATH));
 });
 
 // The constants the worker shares with the CLI's `flows.ts` are pinned equal, from both sides, in
@@ -217,6 +283,7 @@ function fakeBrowser(options: FakeOptions = {}) {
         if (options.redirectOnSignIn) { page = `${options.redirectOnSignIn}/authorize`; origin = options.redirectOnSignIn; return; }
         if (typedPassword === password) page = `${ORIGIN}/${options.codePromptAfterPassword ? "verify" : "dashboard"}`;
       },
+      setCookies: async () => undefined, setLocalStorage: async () => undefined, // state loading is driven by interpreter.test.ts
       purge: async () => { typed.length = 0; },
       close: async () => undefined,
     },

@@ -17,7 +17,7 @@ import { createServer as createTcpServer, type AddressInfo, type Socket } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { openCdpDriver, purgeSession, runSteps, signIn, validateAuthRequest } from "./auth-flow.mjs";
+import { openCdpDriver, purgeSession, runSteps, signIn, validateAuthRequest, withLoadedState } from "./auth-flow.mjs";
 import { faultCode, FAULT } from "./capture-faults.mjs";
 
 const FAKE_USER = "canaryuser6d3f2a";
@@ -141,7 +141,8 @@ async function site(elsewhere = "http://127.0.0.1:1") {
         <label>Password <input name="password" type="password"></label>
         <button type="submit">Sign in</button></form>`));
     } else if (req.url === "/dashboard" || req.url === "/orders") {
-      if (signedIn) send(200, page("Orders", "<h1>Dashboard</h1><a href='/dashboard'>Orders</a>"));
+      // The stored line is what a page does with a `localStorage` entry a saved state carried in.
+      if (signedIn) send(200, page("Orders", "<h1>Dashboard</h1><a href='/dashboard'>Orders</a><p id='t'></p><script>document.getElementById('t').textContent = 'stored:' + (localStorage.getItem('token') || 'none')</script>"));
       else send(302, "", { location: "/login" });
     } else if (req.url === "/prefs") {
       send(200, page("Prefs", `<label><input type="checkbox" id="c" onchange="fetch('/ping?remember='+this.checked)"> Remember me</label>
@@ -227,6 +228,68 @@ test("THE PURGE ENDS THE SESSION: after purgeSession the same protected page sen
     const after = await driver.axNodes();
     assert.ok(after.some((n) => n.role === "heading" && n.name === "Sign in"), "after the purge the browser is logged out");
     assert.ok(!after.some((n) => n.role === "heading" && n.name === "Dashboard"));
+    await driver.close();
+  } finally { await browser.stop(); await web.close(); }
+});
+
+/** A saved state for the fake site: the cookie it accepts (`session=ok`) or one it does not, and a `localStorage` entry its dashboard prints. */
+const savedState = (origin: string, session: string) => JSON.stringify({
+  cookies: [
+    { name: "session", value: session, domain: new URL(origin).hostname, path: "/", httpOnly: true, sameSite: "Lax", expires: -1 },
+    { name: "elsewhere", value: "othersitesession-5555aa", domain: "other.example.org", path: "/" },
+  ],
+  origins: [
+    { origin, localStorage: [{ name: "token", value: "tokenvalue-7be2d915" }] },
+    { origin: "https://other.example.org", localStorage: [{ name: "token", value: "othersitestorage-3344bb" }] },
+  ],
+});
+const stateRequest = (origin: string, session: string, expect = { kind: "heading", name: "Dashboard", timeoutSeconds: 10 }) => {
+  const url = `${origin}/orders`;
+  const plan = withLoadedState(validateAuthRequest({ login: [...LOGIN().slice(0, 4), { expect }], state: { path: "/state/saved.json" } }, url), url, () => savedState(origin, session));
+  return { url, plan };
+};
+
+test("A REAL SAVED STATE over CDP: the cookie and the localStorage entry reach the signed-in page, and no form login is performed", { skip: SKIP, timeout: 60_000 }, async () => {
+  const web = await site();
+  const browser = await launch();
+  try {
+    const driver = await openCdpDriver({ port: browser.port });
+    const marks: Array<{ event: string; detail: Record<string, unknown> }> = [];
+    const { url, plan } = stateRequest(web.origin, "ok");
+    // No variables: a state run reads none of the login's.
+    await signIn({ plan, url, driver, env: {}, mark: (event, detail) => marks.push({ event, detail }) });
+    assert.deepEqual(web.posted, [], "no form login was performed");
+    const nodes = await driver.axNodes();
+    assert.ok(nodes.some((node) => node.role === "heading" && node.name === "Dashboard"), "the requested page is the signed-in one");
+    assert.ok(nodes.some((node) => node.name === "stored:tokenvalue-7be2d915"), "the page READ the localStorage entry, which needs it set before the reload");
+    assert.ok(marks.some((m) => m.event === "authApplied"));
+    assert.deepEqual(marks.find((m) => m.event === "authStateLoaded")?.detail, { cookies: 1, localStorage: 1 }, "only this origin's entries were loaded");
+    assert.ok(!JSON.stringify(marks).includes("tokenvalue-7be2d915") && !JSON.stringify(marks).includes("session=ok"));
+    // The session a state made ends with the capture like any other: the purge is what ends it.
+    await purgeSession(driver, url);
+    await driver.navigate(url);
+    assert.ok((await driver.axNodes()).some((n) => n.role === "heading" && n.name === "Sign in"), "after the purge the browser is logged out");
+    await driver.close();
+  } finally { await browser.stop(); await web.close(); }
+});
+
+test("A REAL EXPIRED STATE over CDP ends auth-state-expired, and the form login it replaced was never tried", { skip: SKIP, timeout: 60_000 }, async () => {
+  const web = await site();
+  const browser = await launch();
+  try {
+    const driver = await openCdpDriver({ port: browser.port });
+    const { url, plan } = stateRequest(web.origin, "ended", { kind: "heading", name: "Dashboard", timeoutSeconds: 1 });
+    await assert.rejects(signIn({ plan, url, driver, env: {}, mark: () => undefined }), (e: Error) => {
+      assert.equal(faultCode(e), FAULT.AUTH_STATE_EXPIRED, e.message);
+      assert.ok(!e.message.includes("ended"), "the cookie's value is not in the sentence");
+      return true;
+    });
+    assert.deepEqual(web.posted, [], "no form login was performed");
+    // CONTROL: the same site on a FORM login with a wrong password keeps its own reading.
+    await assert.rejects(signIn({
+      plan: validateAuthRequest({ login: [...LOGIN().slice(0, 4), { expect: { kind: "heading", name: "Dashboard", timeoutSeconds: 1 } }] }, url), url, driver,
+      env: { ...ENV, APP_PASSWORD: "not the password" }, mark: () => undefined,
+    }), (e: Error & { reason?: string }) => faultCode(e) === FAULT.AUTH_LOGIN_FAILED && e.reason === "expect-not-met");
     await driver.close();
   } finally { await browser.stop(); await web.close(); }
 });

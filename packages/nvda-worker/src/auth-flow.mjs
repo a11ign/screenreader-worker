@@ -2,11 +2,15 @@
 /**
  * The worker's half of an authenticated capture — ADR 0038, clauses 1, 3 and 4, and amendment 4.
  *
- * A capture request may carry `auth: { login, flow?, upTo? }`: named steps whose secrets are environment-variable
+ * A capture request may carry `auth: { login, flow?, upTo?, state? }`: named steps whose secrets are environment-variable
  * NAMES (`fromEnv`), never values. **This worker reads those variables from its own process environment**, logs in
  * to the page through the browser protocol, replays the requested flow to the capture point, and only then does
  * the capture proper begin. Nothing about a login crosses the wire but the steps and the names, and nothing
  * derived from a session ever leaves this process: the session is destroyed after the capture (`purgeSession`).
+ *
+ * **`state: { path }` (ADR 0038, amendment 7) loads a storage state the PERSON saved instead of performing the login.** The
+ * request carries a path and nothing else; THIS process reads the file and validates it (`loadStateEntries`), so a request
+ * cannot make it load a value the CLI did not show it. The file is a credential: no error here quotes any part of it.
  *
  * Why it is written over a DRIVER (`AuthDriver`) and not over CDP calls directly: the same interpreter is meant
  * to run in the CLI over Playwright for the rule layer (PR 5), and the leak the ADR is about is the interpreter's
@@ -29,8 +33,11 @@
  * have validated (a request reaches this port from anywhere). `auth-flow.test.ts` pins the shared constants and a
  * table of refusals equal to the CLI's.
  */
+import { readFileSync } from "node:fs";
+import { isAbsolute } from "node:path";
+
 import { CDP_READY_TIMEOUT_MS } from "./browser-session.mjs";
-import { captureFault, FAULT } from "./capture-faults.mjs";
+import { captureFault, FAULT, faultCode } from "./capture-faults.mjs";
 
 /** The closed vocabulary. Same seven as `flows.ts`, in the same order; pinned equal by a test. */
 export const FLOW_VERBS = ["goto", "fill", "choose", "check", "press", "expect", "capture"];
@@ -57,7 +64,9 @@ const CDP_HOST = "127.0.0.1";
  *   | { press: { control: string, within?: string, nth?: number } }
  *   | { expect: { kind: "heading" | "control" | "text", name: string, timeoutSeconds: number } }
  *   | { capture: string }} Step
- * @typedef {{ login: Step[], flow: Step[], upTo: number }} AuthPlan
+ * @typedef {{ name: string, value: string, domain: string, path?: string, expires?: number, httpOnly?: boolean, secure?: boolean, sameSite?: string }} StateCookie
+ * @typedef {{ cookies: (StateCookie & { place: number })[], localStorage: { place: number, name: string, value: string }[] }} StateEntries
+ * @typedef {{ login: Step[], flow: Step[], upTo: number, state?: { path: string, entries?: StateEntries } }} AuthPlan
  */
 
 /** A request the worker refuses to act on: a 400, not a capture. Carries no value, because none was read yet. */
@@ -207,7 +216,7 @@ function validateSteps(steps, origin, label) {
  */
 export function validateAuthRequest(raw, url) {
   if (!isObject(raw)) throw new AuthRequestError("auth must be a mapping with a login");
-  refuseUnknownKeys(raw, ["login", "flow", "upTo"], "auth");
+  refuseUnknownKeys(raw, ["login", "flow", "upTo", "state"], "auth");
   let origin;
   try { origin = new URL(url).origin; } catch { throw new AuthRequestError("auth needs a capture url to pin its origin to"); }
   const login = validateSteps(raw.login, origin, "login");
@@ -225,14 +234,27 @@ export function validateAuthRequest(raw, url) {
   if (typeof upTo !== "number" || !Number.isInteger(upTo) || upTo < 0 || upTo > flow.length) {
     throw new AuthRequestError("auth.upTo must be a step index within auth.flow");
   }
-  return { login, flow, upTo };
+  return raw.state === undefined ? { login, flow, upTo } : { login, flow, upTo, state: stateRef(raw.state) };
+}
+
+/**
+ * `auth.state`: an absolute path and nothing else (amendment 7, choice 5). The value is never echoed in a refusal, since a
+ * request that put something other than a path here may have put a value here.
+ * @param {unknown} raw @returns {{ path: string }}
+ */
+function stateRef(raw) {
+  if (!isObject(raw)) throw new AuthRequestError("auth.state must be a mapping with a path");
+  refuseUnknownKeys(raw, ["path"], "auth.state");
+  if (typeof raw.path !== "string" || !isAbsolute(raw.path)) throw new AuthRequestError("auth.state.path must be an absolute path");
+  return { path: raw.path };
 }
 
 /** Every environment-variable NAME a plan reads, so a missing one is found before any browser opens. */
 /** @param {AuthPlan} plan @returns {string[]} */
 export function requiredEnvNames(plan) {
-  const names = [...plan.login, ...plan.flow.slice(0, plan.upTo)]
-    .flatMap((step) => ("fill" in step && step.fill.fromEnv !== undefined ? [step.fill.fromEnv] : []));
+  // A state run never executes the login's steps (only its final `expect:`), so it reads none of the login's variables.
+  const steps = plan.state === undefined ? [...plan.login, ...plan.flow.slice(0, plan.upTo)] : plan.flow.slice(0, plan.upTo);
+  const names = steps.flatMap((step) => ("fill" in step && step.fill.fromEnv !== undefined ? [step.fill.fromEnv] : []));
   return [...new Set(names)];
 }
 
@@ -256,12 +278,130 @@ export function assertCredentialsPresent(plan, env) {
   for (const name of requiredEnvNames(plan)) readCredential(name, env);
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// A saved storage state (ADR 0038, amendment 7). DUPLICATED from `packages/cli/src/auth/state-file.ts` and `scrub.ts`
+// (`stateEntriesFor`), because this file cannot import them; `interpreter.test.ts` runs one table through both.
+// ---------------------------------------------------------------------------------------------------------------
+
+const SAME_SITE = ["Strict", "Lax", "None"];
+
+/** @param {unknown} cookie @param {string} at @returns {string | undefined} why one cookie is not a cookie: names a field, never a value */
+function cookieProblem(cookie, at) {
+  if (!isObject(cookie)) return `${at} is not an object`;
+  for (const field of ["name", "value", "domain"]) {
+    if (typeof cookie[field] !== "string") return `${at} has no string "${field}"`;
+  }
+  if (cookie.domain === "") return `${at} has an empty "domain"`;
+  if (cookie.path !== undefined && typeof cookie.path !== "string") return `${at} has a "path" that is not a string`;
+  if (cookie.expires !== undefined && typeof cookie.expires !== "number") return `${at} has an "expires" that is not a number`;
+  for (const field of ["httpOnly", "secure"]) {
+    if (cookie[field] !== undefined && typeof cookie[field] !== "boolean") return `${at} has a "${field}" that is not true or false`;
+  }
+  if (cookie.sameSite !== undefined && !SAME_SITE.includes(/** @type {string} */ (cookie.sameSite))) return `${at} has a "sameSite" that is not Strict, Lax or None`;
+  return undefined;
+}
+
+/** @param {unknown} entry @param {string} at @returns {string | undefined} */
+function originProblem(entry, at) {
+  if (!isObject(entry)) return `${at} is not an object`;
+  if (typeof entry.origin !== "string") return `${at} has no string "origin"`;
+  if (!Array.isArray(entry.localStorage)) return `${at} has no "localStorage" list`;
+  for (const [index, item] of entry.localStorage.entries()) {
+    if (!isObject(item) || typeof item.name !== "string" || typeof item.value !== "string") {
+      return `${at}.localStorage[${index + 1}] is not an object with a string "name" and a string "value"`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Why a parsed value is not a storage state, or undefined when it is. Places are 1-based and match the `state cookie 3` names
+ * the CLI's scrub set uses. Never a name or a value.
+ * @param {unknown} raw @returns {string | undefined}
+ */
+export function stateShapeProblem(raw) {
+  if (!isObject(raw)) return "is not a storage state: the top level must be an object";
+  if (!Array.isArray(raw.cookies)) return "is not a storage state: it has no \"cookies\" list";
+  if (!Array.isArray(raw.origins)) return "is not a storage state: it has no \"origins\" list";
+  for (const [index, cookie] of raw.cookies.entries()) {
+    const problem = cookieProblem(cookie, `cookies[${index + 1}]`);
+    if (problem) return `is not a storage state: ${problem}`;
+  }
+  for (const [index, entry] of raw.origins.entries()) {
+    const problem = originProblem(entry, `origins[${index + 1}]`);
+    if (problem) return `is not a storage state: ${problem}`;
+  }
+  return undefined;
+}
+
+/**
+ * A cookie is sent to `host` when it is host-only and equal, or a domain cookie (leading dot) and `host` is that domain or a
+ * subdomain of it (RFC 6265 section 5.1.3).
+ * @param {string} domain @param {string} host
+ */
+function cookieCoversHost(domain, host) {
+  const wanted = domain.toLowerCase();
+  const here = host.toLowerCase();
+  if (!wanted.startsWith(".")) return wanted === here;
+  return here === wanted.slice(1) || here.endsWith(wanted);
+}
+
+/**
+ * The entries of a state that belong to `origin`: the cookies whose domain covers its host, and its own `localStorage`. Cookies
+ * for other hosts and `localStorage` for other origins are neither loaded nor read. The CLI's own copy is `stateEntriesFor` in
+ * `scrub.ts`, and the two are pinned equal by a table.
+ * @param {{ cookies: readonly StateCookie[], origins: readonly { origin: string, localStorage: readonly { name: string, value: string }[] }[] }} state @param {string} origin
+ * @returns {StateEntries}
+ */
+export function stateEntriesFor(state, origin) {
+  const host = new URL(origin).hostname;
+  return {
+    cookies: state.cookies.flatMap((cookie, index) => (cookieCoversHost(cookie.domain, host) ? [{ ...cookie, place: index + 1 }] : [])),
+    localStorage: state.origins.filter((entry) => entry.origin === origin)
+      .flatMap((entry) => entry.localStorage.map((item, index) => ({ place: index + 1, name: item.name, value: item.value }))),
+  };
+}
+
+/**
+ * Read and validate the state file, and select what belongs to `url`'s origin. **A file that cannot be read, is not JSON or is
+ * the wrong shape is refused naming the PATH and the REASON and never a fragment of the file**: `JSON.parse`'s own message
+ * quotes the text it choked on, so it is not repeated.
+ * @param {string} path @param {string} url @param {(path: string) => string} readText @returns {StateEntries}
+ */
+export function loadStateEntries(path, url, readText) {
+  let text;
+  try {
+    text = readText(path);
+  } catch (error) {
+    throw new AuthRequestError(`the state file ${path} could not be read (${error instanceof Error ? error.message : String(error)})`);
+  }
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    throw new AuthRequestError(`the state file ${path} is not valid JSON`);
+  }
+  const problem = stateShapeProblem(raw);
+  if (problem) throw new AuthRequestError(`the state file ${path} ${problem}`);
+  return stateEntriesFor(raw, new URL(url).origin);
+}
+
+/**
+ * The plan with its saved state's entries loaded, or the plan unchanged when it names none.
+ * @param {AuthPlan} plan @param {string} url @param {(path: string) => string} [readText]
+ * @returns {AuthPlan}
+ */
+export function withLoadedState(plan, url, readText = (path) => readFileSync(path, "utf8")) {
+  if (plan.state === undefined) return plan;
+  return { ...plan, state: { path: plan.state.path, entries: loadStateEntries(plan.state.path, url, readText) } };
+}
+
 /**
  * The capture options an `auth` request decides — everything about authentication that `captureOptions` (in
  * `server.mjs`, which needs a screen reader to import and so has no test) would otherwise decide inline.
  *
- * With `auth`: the plan, validated AGAIN here (it arrives over HTTP from anywhere), every variable it reads
- * checked present in THIS process's environment before anything is launched, and `reuseBrowser` FORCED OFF whatever
+ * With `auth`: the plan, validated AGAIN here (it arrives over HTTP from anywhere), its saved state (if it names one) read
+ * and validated by THIS process, every variable it reads checked present in THIS process's environment before anything is launched, and `reuseBrowser` FORCED OFF whatever
  * the request or the fleet default says — a reused browser keeps its renderer, so a session left in it would be the
  * next capture's session. Without `auth`: nothing, which is every request an older host sends.
  *
@@ -270,7 +410,7 @@ export function assertCredentialsPresent(plan, env) {
  */
 export function authOptionsFor({ parsed, env }) {
   if (parsed.auth === undefined) return {};
-  const auth = validateAuthRequest(parsed.auth, parsed.url);
+  const auth = withLoadedState(validateAuthRequest(parsed.auth, parsed.url), parsed.url);
   assertCredentialsPresent(auth, env);
   return { auth, reuseBrowser: false };
 }
@@ -385,18 +525,21 @@ export function expectationMet(nodes, { kind, name }) {
  *   frameSources(): Promise<string[]>,
  *   isChecked(handle: number): Promise<boolean>,
  *   click(handle: number): Promise<void>,
+ *   setCookies(cookies: StateCookie[]): Promise<void>,
+ *   setLocalStorage(entries: { name: string, value: string }[]): Promise<void>,
  *   purge(origin: string): Promise<void>,
  *   close(): Promise<void>,
  * }} AuthDriver
  */
 
 /**
- * `auth-login-failed`, with the reason, the step and the verb — and no value.
- * @param {"expect-not-met" | "unbindable-field" | "left-origin"} reason @param {string} where @param {string} detail
+ * `auth-login-failed`, with the reason, the step and the verb — and no value. `where` and `detail` stay on the error: a
+ * saved-state run states the same fact and gives different advice (`stateExpired`).
+ * @param {"expect-not-met" | "unbindable-field" | "left-origin"} reason @param {string} where @param {string} detail @param {string} [advice]
  */
-function loginFailed(reason, where, detail) {
-  return Object.assign(captureFault(FAULT.AUTH_LOGIN_FAILED, `the login did not complete (${reason}) at ${where}: ${detail}`),
-    { reason });
+function loginFailed(reason, where, detail, advice) {
+  return Object.assign(captureFault(FAULT.AUTH_LOGIN_FAILED, `the login did not complete (${reason}) at ${where}: ${detail}${advice ? `. ${advice}` : ""}`),
+    { reason, where, detail });
 }
 
 /**
@@ -558,8 +701,8 @@ async function assertNotShownLoginWall(driver, login) {
 async function assertStillOnOrigin(driver, origin, where) {
   const now = await currentOrigin(driver);
   if (now !== origin) {
-    throw loginFailed("left-origin", where, `the page is on ${now}, not ${origin}. A redirect to an identity provider is SSO, `
-      + "which v1 does not do: use a dedicated test account without MFA or SSO.");
+    throw loginFailed("left-origin", where, `the page is on ${now}, not ${origin}`,
+      "A redirect to an identity provider is SSO, which v1 does not do: use a dedicated test account without MFA or SSO.");
   }
 }
 
@@ -615,21 +758,92 @@ async function expectStepMet(expected, run, where) {
 }
 
 /**
- * Run steps in order, marking each by verb and accessible name only, and checking the page is still on the origin
- * after every step that can move it (`ceo`'s reviewer asked for exactly this: a `press` can redirect off-origin
- * where the parser can only see declared `goto`s).
+ * One step, numbered as a person counts: marked by verb and accessible name only, with the origin re-checked after any step
+ * that can move the page (`ceo`'s reviewer asked for exactly this: a `press` can redirect off-origin where the parser can
+ * only see declared `goto`s). The CLI's own copy is `runNumbered` in `interpreter.ts`.
  *
- * @param {RunContext} run
+ * @param {Step} step @param {number} index @param {RunContext} run
  */
+async function runNumbered(step, index, run) {
+  const verb = verbOf(step);
+  const where = `${run.phase} step ${index} (${verb})`;
+  if (verb === "capture") return; // a capture point is where the caller stops; it acts on nothing
+  const body = /** @type {any} */ (step)[verb];
+  run.mark("authStep", { phase: run.phase, index, verb, name: typeof body === "string" ? undefined : body.field ?? body.control ?? body.name });
+  await runStep(step, run, where);
+  if (verb !== "expect") await assertStillOnOrigin(run.driver, run.origin, where);
+}
+
+/** @param {RunContext} run */
 export async function runSteps(run) {
-  for (const [index, step] of run.steps.entries()) {
-    const verb = verbOf(step);
-    const where = `${run.phase} step ${index + 1} (${verb})`;
-    if (verb === "capture") continue; // a capture point is where the caller stops; it acts on nothing
-    const body = /** @type {any} */ (step)[verb];
-    run.mark("authStep", { phase: run.phase, index: index + 1, verb, name: typeof body === "string" ? undefined : body.field ?? body.control ?? body.name });
-    await runStep(step, run, where);
-    if (verb !== "expect") await assertStillOnOrigin(run.driver, run.origin, where);
+  for (const [index, step] of run.steps.entries()) await runNumbered(step, index + 1, run);
+}
+
+/**
+ * The fixed function a saved state's `localStorage` is set by (amendment 7, choice 3), handed the entries as DATA
+ * (`Runtime.callFunctionOn`'s `arguments`): nothing in the file is ever spliced into script text. Pinned equal to the CLI's.
+ */
+export const SET_LOCAL_STORAGE_FUNCTION = `function (entries) {
+  for (const entry of entries) localStorage.setItem(entry.name, entry.value);
+}`;
+
+/**
+ * A state cookie as `Network.setCookies` takes it. `path` defaults to `/`; a session cookie's `expires` of `-1` is left off, as
+ * Playwright's own loader does. The CLI's own copy is `cookieParam` in `interpreter.ts`.
+ * @param {StateCookie} cookie @returns {Record<string, unknown>}
+ */
+export function cookieParam(cookie) {
+  return {
+    name: cookie.name, value: cookie.value, domain: cookie.domain, path: cookie.path ?? "/",
+    ...(typeof cookie.expires === "number" && cookie.expires > 0 ? { expires: cookie.expires } : {}),
+    ...(cookie.httpOnly === undefined ? {} : { httpOnly: cookie.httpOnly }),
+    ...(cookie.secure === undefined ? {} : { secure: cookie.secure }),
+    ...(cookie.sameSite === undefined ? {} : { sameSite: cookie.sameSite }),
+  };
+}
+
+/**
+ * The saved state, in the browser: cookies first (the first request carries them), then the requested page, the origin's
+ * `localStorage`, and a reload. The CLI's own copy is `loadState` in `interpreter.ts`.
+ * @param {StateEntries} state @param {{ url: string, driver: AuthDriver, mark: (event: string, detail: Record<string, unknown>) => void }} where
+ */
+async function loadState(state, { url, driver, mark }) {
+  const load = async () => {
+    const loaded = await driver.navigate(url);
+    if (!loaded.ok) throw loginFailed("expect-not-met", "loading the saved state", `${url} could not be loaded (${loaded.error ?? "no reason given"})`);
+  };
+  await driver.setCookies(state.cookies);
+  await load(); // `localStorage` needs a document on the origin to be set on
+  await driver.setLocalStorage(state.localStorage);
+  await load(); // and the page must read it, which it did not at its first load
+  mark("authStateLoaded", { cookies: state.cookies.length, localStorage: state.localStorage.length });
+}
+
+/**
+ * A saved state that did not sign the run in: the same fact the form login reports as `expect-not-met` or `left-origin`, with
+ * different advice, because there was no login to fail. The CLI's own copy is `stateExpired` in `interpreter.ts`.
+ * @param {Error & { where: string, detail: string }} error
+ */
+function stateExpired(error) {
+  return captureFault(FAULT.AUTH_STATE_EXPIRED, `the saved state did not sign the run in (${error.where}): ${error.detail}`);
+}
+
+/**
+ * The state stands in for the sign-in: it is loaded, and then the login's FINAL step (its `expect:`) runs on the page the run
+ * requested. The login's other steps never run. A CAPTCHA widget on the page still ends `auth-challenge-detected`. The CLI's
+ * own copy is `signInFromState` in `interpreter.ts`.
+ * @param {StateEntries} state @param {RunContext} run @param {string} url
+ */
+async function signInFromState(state, run, url) {
+  await loadState(state, { url, driver: run.driver, mark: run.mark });
+  try {
+    await runNumbered(run.steps[run.steps.length - 1], run.steps.length, run);
+  } catch (error) {
+    const reason = /** @type {{ reason?: string }} */ (error).reason;
+    if (faultCode(error) === FAULT.AUTH_LOGIN_FAILED && (reason === "expect-not-met" || reason === "left-origin")) {
+      throw stateExpired(/** @type {any} */ (error));
+    }
+    throw error;
   }
 }
 
@@ -639,6 +853,9 @@ export async function runSteps(run) {
  * `authApplied` is decided by the CALLER, and only after this returns: a worker that never reaches the end of
  * this function must not say it applied a login.
  *
+ * **With `plan.state` the saved state signs in instead of the login's steps** (`signInFromState`); its entries were read from
+ * the file by this process (`withLoadedState`), never received.
+ *
  * @param {{ plan: AuthPlan, url: string, driver: AuthDriver, env: Record<string, string | undefined>,
  *   mark: (event: string, detail: Record<string, unknown>) => void, bindTimeoutMs?: number,
  *   land?: (url: string) => Promise<{ ok: boolean, error?: string }> }} request
@@ -647,14 +864,20 @@ export async function runSteps(run) {
  *   the driver's own navigation is used, which is what the tests do.
  */
 export async function signIn({ plan, url, driver, env, mark, bindTimeoutMs = BIND_TIMEOUT_MS, land }) {
+  const state = plan.state?.entries;
+  if (plan.state !== undefined && state === undefined) throw new Error("a plan that names a saved state needs its entries read from the file first (withLoadedState)");
   const origin = new URL(url).origin;
-  await runSteps({ steps: plan.login, origin, driver, env, mark, phase: "login", bindTimeoutMs });
-  await runSteps({ steps: plan.flow.slice(0, plan.upTo), origin, driver, env, mark, phase: "flow", bindTimeoutMs });
+  const flow = plan.flow.slice(0, plan.upTo);
+  /** @param {Step[]} steps @param {"login" | "flow"} phase @returns {RunContext} */
+  const run = (steps, phase) => ({ steps, origin, driver, env, mark, phase, bindTimeoutMs });
+  if (state === undefined) await runSteps(run(plan.login, "login"));
+  else await signInFromState(state, run(plan.login, "login"), url);
+  await runSteps(run(flow, "flow"));
   const landed = await (land ?? ((target) => driver.navigate(target)))(url);
   if (!landed.ok) throw loginFailed("expect-not-met", "the requested page", `${url} could not be loaded after the login (${landed.error ?? "no reason given"})`);
   await assertStillOnOrigin(driver, origin, "the requested page");
   await assertNotShownLoginWall(driver, plan.login);
-  mark("authApplied", { steps: plan.login.length + plan.flow.slice(0, plan.upTo).length });
+  mark("authApplied", { steps: (state === undefined ? plan.login.length : 1) + flow.length });
 }
 
 /**
@@ -852,6 +1075,13 @@ export async function openCdpDriver({ port, readyTimeoutMs = CDP_READY_TIMEOUT_M
     }`, [option]),
     isChecked: (handle) => callOn(handle, "function () { return Boolean(this.checked) || this.getAttribute('aria-checked') === 'true'; }"),
     click: async (handle) => { await callOn(handle, "function () { this.click(); }"); },
+    setCookies: async (cookies) => { await session.send("Network.setCookies", { cookies: cookies.map(cookieParam) }); },
+    async setLocalStorage(entries) {
+      const { result } = await session.send("Runtime.evaluate", { expression: "globalThis" });
+      await session.send("Runtime.callFunctionOn", {
+        objectId: result.objectId, functionDeclaration: SET_LOCAL_STORAGE_FUNCTION, arguments: [{ value: entries }], returnByValue: true,
+      });
+    },
     async purge(origin) {
       await session.send("Network.enable");
       await session.send("Network.clearBrowserCookies");
