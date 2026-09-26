@@ -33,6 +33,8 @@ import { codeVersion } from "./code-version.mjs";
 import { probeWindowOwner, foregroundBlocker } from "./desktop-dialogs.mjs";
 import { dialogCache, foregroundCache, sampleDesktopDialogs, prepareDesktop,
   startForegroundWatch } from "./desktop-prepare.mjs";
+import { powershell } from "./powershell.mjs";
+import { createDisplaySampler } from "./display-sample.mjs";
 import { faultCode, captureFault, FAULT } from "./capture-faults.mjs";
 import { createResultStore, isValidCaptureId, storedResultResponse } from "./capture-results.mjs";
 import { authAcknowledgement, authGate, authOptionsFor, retentionFor } from "./auth-flow.mjs";
@@ -195,7 +197,7 @@ async function tidyBrowserAtBoot() {
  * | `results` | per-process, by design | A bounded (8-entry) history across MANY captures — that persistence is the feature (`GET /capture/<id>` surviving a lost socket), not a hazard, and `capture-results.mjs`'s own header argues the bound and the eviction policy. |
  * | `worked` (`captures`/`failures`/`recoveries`) | per-process, by design | Cumulative counters across the worker's whole life — `/health.vitals` and the pool's degradation detection need exactly this, not a per-capture reset. |
  * | `consecutiveRecoveries` | per-process, by design | A rolling window ACROSS captures on purpose — it is the circuit breaker's memory, and resetting it per-capture would delete the thing it exists to count (a STREAK). |
- * | `environmentCache` / `environmentMeasuredAt` | per-process | A 5 s TTL cache of facts that do not change per capture (Edge/NVDA/OS versions) and do change slowly in wall-clock time (an update, a reboot) — never per-capture data. |
+ * | `environmentCache` / `environmentMeasuredAt` | per-process | A 5 s TTL cache of facts that do not change per capture (Edge/NVDA/OS versions) and do change slowly in wall-clock time (an update, a reboot) — never per-capture data. The display mode and adapter are NOT in it: `displaySampler` (`display-sample.mjs`) holds them, and `currentEnvironment` merges the last sample in with its age on every call (#2673). |
  * | `bootConstants` (Map) | per-process | Executable version strings; fixed until whatever would restart this process anyway (an Edge/NVDA update). |
  * | `foundFiles` (Map) | per-process | Resolved executable paths; same reasoning as `bootConstants`. |
  * | `fltCache` | per-process | `ForegroundLockTimeout`, applied once per session by `run-server.cmd` before this process starts; cannot change under a running worker. |
@@ -448,9 +450,9 @@ function runtimeEnvironment() {
     // hashed on the host, so it describes what the guest ACTUALLY has -- provisioning changes
     // NVDA's config, Edge's policies and ForegroundLockTimeout, all of which change the evidence.
     provisionRevision: provisionRevision(),
-    // THE SIZE OF THE DESKTOP THIS WORKER CAPTURES ON, so the fleet can compare it (#1953). The
-    // reasoning, the read, and why it is not memoised are on `displayMode` below.
-    displayMode: displayMode(),
+    // `displayMode` (#1953) and `displayAdapter` (#2063) are NOT built here: each is a PowerShell round trip,
+    // and this function runs on `/health`'s path. `displaySampler` reads them on a timer and
+    // `currentEnvironment` merges the last sample in, with its age (#2673).
     // THE SIZE OF THE WINDOW THIS WORKER ASKS EDGE FOR (#1561), which is a different fact from the line
     // above: the desktop is an upper bound and this is the request. What the page was actually laid out
     // at is a third fact again, measured per capture and merged in further down (#1513) -- deliberately
@@ -464,17 +466,6 @@ function runtimeEnvironment() {
     // is the flag list itself. A read of the live window would report whatever Edge was CLAMPED to, which
     // is the same number `displayMode` already gives and not the one that separates two code versions.
     windowSize: CAPTURE_WINDOW_SIZE,
-    // WHICH ADAPTER IS DRIVING THAT DESKTOP (#2063), which is a third fact again: `displayMode` is what
-    // the screen currently holds, and this is what could hold it. On 2026-09-22 workers 7-11 sat at
-    // 640x480 because the Intel driver install failed rc 1014 and Windows fell back to its Basic Display
-    // Adapter, under a `provisionRevision` identical to their peers' -- a stamp records which provisioning
-    // ran, never what it achieved, so the adapter is the only field that can tell those two boxes apart.
-    //
-    // REPORTED, NEVER GATED. It is in `fleet-consistency`'s `REPORTED_ONLY` rather than `MUST_MATCH`, so
-    // a guest that does not send it reads as `unreported` and names a gap instead of refusing every
-    // capture. Deployed 2026-09-23T18:02Z; the fleet then split on hardware (`UHD` against `HD`), which
-    // is a second reason not to gate it. `ceo`'s ruling on #2063.
-    displayAdapter: displayAdapter(),
   };
 }
 
@@ -517,12 +508,27 @@ function provisionRevision() {
  * `fleetConsistency` skips an absent value, so a guest whose adapter cannot be read would silently rejoin
  * the "nobody disagrees" population; `"unknown"` is comparable, and visibly not the Intel adapter.
  *
+ * ## REPORTED, NEVER GATED
+ *
+ * It is in `fleet-consistency`'s `REPORTED_ONLY` rather than `MUST_MATCH`, so a guest that does not send it
+ * reads as `unreported` and names a gap instead of refusing every capture. Deployed 2026-09-23T18:02Z; the
+ * fleet then split on hardware (`UHD` against `HD`), which is a second reason not to gate it. `ceo`'s ruling
+ * on #2063. On 2026-09-22 workers 7-11 sat at 640x480 under a `provisionRevision` identical to their peers':
+ * a stamp records which provisioning ran, never what it achieved, so the adapter is the only field that can
+ * tell those two boxes apart. It is a different fact from `displayMode`: that is what the screen currently
+ * holds, and this is what could hold it.
+ *
+ * ## Sampled on a timer, never on a request (#2673)
+ *
+ * `async`, and read by `displaySampler` beside `displayMode`. See `display-sample.mjs` for why a request must
+ * not run PowerShell and why the sample carries its age.
+ *
  * NOT the driver VERSION, which is a different field: `ceo` ruled on #1567 that workers 2-6 on
  * 31.0.101.2115 against 7-11 on 31.0.101.2141 does not split the fleet. This is the adapter's NAME, and
  * `Microsoft Basic Display Adapter` against an Intel part is not a version difference.
  */
-function displayAdapter() {
-  const value = powershellValue(
+async function displayAdapter() {
+  const value = await sampledValue(
     "(Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name | Sort-Object) "
     + "-join ' + '");
   // Shape-checked rather than trusted, exactly as `displayMode` is: a PowerShell warning on stdout would
@@ -569,9 +575,13 @@ function displayAdapter() {
  * changeset), so a bad read cannot mis-key a capture, and the display DOES change under a running
  * worker. A provisioning run sets the mode, and a driver install is what changes what the adapter can
  * do; a `bootConstant` would report the mode the worker booted with for the rest of its life, which is
- * exactly the state #1953 is about being unable to see. So this follows `browserProfile`'s precedent --
- * not memoised, because noticing the change is the whole point -- and pays one PowerShell round trip per
- * environment refresh, which `ENVIRONMENT_CACHE_MS` already bounds to one per 5 s.
+ * exactly the state #1953 is about being unable to see. So this is re-read rather than memoised, because
+ * noticing the change is the whole point.
+ *
+ * **It used to pay that round trip ON `/health`'s request path**, "one per environment refresh, bounded to
+ * one per 5 s" -- which counted the calls and not the cost: `execFileSync` blocks the event loop for the whole
+ * call, 0.6 s on most boxes and 2.9 s on three, during which the worker answered nothing on any route
+ * (#2673). It is now `async` and re-read by `displaySampler` on a timer; a request reads the last sample.
  *
  * ## Why an unreadable display reads "unknown" rather than being left absent
  *
@@ -585,14 +595,33 @@ function displayAdapter() {
  * that one is what Edge's window holds and joins the cache key, this one is what the screen holds and
  * does not.
  */
-function displayMode() {
-  const value = powershellValue(
+async function displayMode() {
+  const value = await sampledValue(
     "Add-Type -AssemblyName System.Windows.Forms; " +
     "$s = [System.Windows.Forms.SystemInformation]::PrimaryMonitorSize; \"$($s.Width)x$($s.Height)\"");
   // Shape-checked rather than trusted: an assembly-load warning on stdout would otherwise become this
   // guest's display mode and mismatch against every other guest for a reason that is not the display.
   return /^\d+x\d+$/.test(value) ? value : "unknown";
 }
+
+/** The bound `powershellValue` has always had; a slow guest measured 8 s and then 25 s, so it is not generous. */
+const DISPLAY_READ_TIMEOUT_MS = 5_000;
+
+/**
+ * One bounded, ASYNCHRONOUS PowerShell read for the display samplers: the trimmed stdout, or `"unknown"`
+ * for a failed, timed-out or empty read -- what `powershellValue` answers, minus the event-loop block.
+ */
+async function sampledValue(/** @type {string} */ script) {
+  const result = await powershell(script, { timeoutMs: DISPLAY_READ_TIMEOUT_MS });
+  return (result.ok && result.stdout.trim()) || "unknown";
+}
+
+/**
+ * The display facts, re-read on a timer OFF the request path (#2673). Started with the listener, exactly as
+ * `foregroundWatchTimer` is, so a process that merely imports this module runs no timer.
+ */
+const displaySampler = createDisplaySampler({ readMode: displayMode, readAdapter: displayAdapter });
+if (IS_MAIN) displaySampler.start();
 
 /** @type {any} */
 let environmentCache = null;
@@ -603,7 +632,9 @@ function currentEnvironment() {
     environmentCache = runtimeEnvironment();
     environmentMeasuredAt = Date.now();
   }
-  return environmentCache;
+  // Merged on EVERY call and never cached with the rest: the age of a sample is a property of the moment it
+  // is read, so a value frozen into the 5 s cache would overstate how fresh the sample is by up to 5 s.
+  return { ...environmentCache, ...displaySampler.current() };
 }
 
 /**
@@ -1531,6 +1562,7 @@ for (const signal of IS_MAIN ? ["SIGINT", "SIGTERM"] : []) {
   process.on(signal, async () => {
     log(`${signal}: stopping NVDA before exit`);
     if (foregroundWatchTimer) clearInterval(foregroundWatchTimer);
+    displaySampler.stop();
     await shutdownScreenReader();
     process.exit(0);
   });

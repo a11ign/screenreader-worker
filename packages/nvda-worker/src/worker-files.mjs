@@ -45,6 +45,9 @@ export const WORKER_FILES = [
   // guest runs it (`server.mjs` imports it for the real capture path), so it is hashed like every other
   // worker file. Same shape as `file-version.mjs` above, for the identical reason.
   "desktop-prepare.mjs",
+  // The display mode and adapter, sampled on a timer so `/health` never shells out (#2673). `server.mjs` imports
+  // it, so a guest without it cannot start; guidepup-free for the same reason as the two files above.
+  "display-sample.mjs",
   // The forms-config matcher (ADR 0024). capture-core imports it, so a guest without it cannot start —
   // which is exactly what `worker-files.test.ts` caught when this line was missing.
   "field-match.mjs",
