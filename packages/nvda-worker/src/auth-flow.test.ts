@@ -6,15 +6,10 @@
 // the real CDP driver against a real Chromium.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 
 import {
   AuthRequestError,
   BIND_TIMEOUT_MS,
-  ENV_NAME,
-  EXPECT_DEFAULT_SECONDS,
-  EXPECT_MAX_SECONDS,
-  FLOW_VERBS,
   assertCredentialsPresent,
   authAcknowledgement,
   authGate,
@@ -29,7 +24,6 @@ import {
   signIn,
   validateAuthRequest,
 } from "./auth-flow.mjs";
-import { FLOW_VERBS as CLI_FLOW_VERBS, EXPECT_MAX_SECONDS as CLI_EXPECT_MAX, EXPECT_DEFAULT_SECONDS as CLI_EXPECT_DEFAULT } from "../../cli/src/auth/flows.js";
 import { faultCode, FAULT } from "./capture-faults.mjs";
 
 const TOO_MANY = 101; // one over the worker's 100-step bound
@@ -93,16 +87,8 @@ test("the closed vocabulary, the origin pin and the login rules are enforced AGA
   validateAuthRequest({ login: LOGIN, flow: [{ fill: { field: "Postcode", value: "AB1 2CD" } }, { capture: "here" }] }, URL_UNDER_TEST);
 });
 
-test("the constants the worker shares with the CLI's flows.ts are equal, from BOTH sides", () => {
-  assert.deepEqual([...FLOW_VERBS], [...CLI_FLOW_VERBS]);
-  assert.equal(EXPECT_MAX_SECONDS, CLI_EXPECT_MAX);
-  // `ENV_NAME` is not exported by flows.ts, so it is read from its source. The scrape's own guard: it must find one.
-  const source = readFileSync(new URL("../../cli/src/auth/flows.ts", import.meta.url), "utf8");
-  const scraped = /const ENV_NAME = (\/.+\/);/.exec(source);
-  assert.ok(scraped, "flows.ts no longer declares ENV_NAME in the shape this test reads; update it, do not delete it");
-  assert.equal(String(ENV_NAME), scraped[1]);
-  assert.equal(EXPECT_DEFAULT_SECONDS, CLI_EXPECT_DEFAULT);
-});
+// The constants the worker shares with the CLI's `flows.ts` are pinned equal, from both sides, in
+// `packages/lab/src/packaging/auth-flow-parity.test.ts` (#2612): that half reads the CLI's source by path.
 
 // ---- the peer gate -----------------------------------------------------------------------------------------------
 
