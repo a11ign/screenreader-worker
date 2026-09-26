@@ -100,17 +100,6 @@ const SWEEPS = ["headings", "landmarks", "formFields", "graphics", "links", "lis
 const EVERY_SWEEP = (): Record<string, Observation> =>
   Object.fromEntries(SWEEPS.map((sweep) => [sweep, sweepObservation({ stop: "exhausted" }, { stop: "exhausted" })]));
 
-/**
- * `@a11ign/evidence`'s focus step, READ AS TEXT (#1575): this package cannot import `left-site.ts`'s `FOCUS_STEP`, and
- * `@a11ign/evidence` cannot import this one. Comments are stripped first, so a channel named in prose is not read.
- */
-function evidenceFocusStepChannels(): string[] {
-  const leftSite = stripComments(readFileSync(resolve(import.meta.dirname, "../../evidence/src/left-site.ts"), "utf8"));
-  const step = /const FOCUS_STEP: Step = \{[\s\S]*?interaction: \[([\s\S]*?)\]/.exec(leftSite)?.[1];
-  assert.ok(step, "left-site.ts no longer declares FOCUS_STEP's interaction list -- this parity reads nothing");
-  return [...step.matchAll(/"([A-Za-z]+)"/g)].map((match) => match[1]);
-}
-
 test("#1575: a live excursion that skipped the focus pass records focusReveal and focusEvents as NOT RUN", () => {
   // What a real capture's `observed` holds when the sweep left the site: `recordWhatWasAsked` wrote the flags' answers,
   // every sweep recorded itself, and the focus pass never started. Then the real path: `markTheExcursion` calls
@@ -130,15 +119,8 @@ test("#1575: a live excursion that skipped the focus pass records focusReveal an
     "a sweep that ran keeps its record");
 });
 
-test("#1575 PARITY: the worker's skipped-focus channels are exactly @a11ign/evidence's FOCUS_STEP channels", () => {
-  const evidence = evidenceFocusStepChannels();
-  // THE POSITIVE CONTROL on the text read: it found the step's channels, including one each side names.
-  assert.ok(evidence.includes("focusOrder") && evidence.includes("typedFeedback"), `read ${JSON.stringify(evidence)}`);
-  const worker = notRunAfterLeaving({ observed: EVERY_SWEEP(), skipped: ["focus"] });
-  assert.deepEqual([...worker].sort(), [...evidence].sort(),
-    "a channel added to one focus list and not the other: the worker records what never ran from its list, and "
-    + "evidence names what was not examined from FOCUS_STEP -- the two must be the same step");
-});
+// The worker's skipped-focus channels against evidence's FOCUS_STEP are pinned in
+// `packages/lab/src/packaging/off-origin-focus-channels-parity.test.ts` (#2612): that half reads evidence's source by path.
 
 test("#1363: every focus channel `recordWhatWasAsked` writes is among the skipped-focus channels", () => {
   // The old equality, narrowed to what stays true (#1575): the flags' channels are a SUBSET of the step's.

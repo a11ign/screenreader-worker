@@ -12,7 +12,9 @@
     "./protocol-version": "./src/protocol-version.mjs",
     "./capture-faults": "./src/capture-faults.mjs",
     "./package.json": "./package.json",
-    "./error-text": "./src/error-text.mjs"
+    "./error-text": "./src/error-text.mjs",
+    "./auth-flow": "./src/auth-flow.mjs",
+    "./windows-trim": "./src/windows-trim.mjs"
   },
   "bin": {
     "a11ign-nvda-worker": "./src/server.mjs"
