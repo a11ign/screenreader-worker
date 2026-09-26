@@ -14,6 +14,10 @@
  * cache and storage for the origin, closes the protocol connection, and RECORDS whether that worked
  * (`authPurge`, or `authPurgeFailed` with the reason). It does not throw: it runs in a `finally`, and an exception
  * there would replace the capture's own outcome. The caller closes the browser after it.
+ *
+ * A plan that carries a saved state (`plan.state`, ADR 0038 amendment 7) signs in from it instead of from the login's steps,
+ * and needs nothing here: its entries were read from the person's file when the request was validated (`withLoadedState`), the
+ * variables it checks are the flow's only, and the purge below is what ends the session the state made, exactly as for a login.
  */
 import { CDP_PORT, navigateExisting } from "./browser-session.mjs";
 import { markWindowNavigatedByLogin } from "./capture-setup.mjs";
