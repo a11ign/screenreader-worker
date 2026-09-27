@@ -13,7 +13,7 @@
 import { createServer } from "node:http";
 // Kept in their own module so a Linux test can import them without reaching guidepup through
 // this file's `capture-core` import — see file-version.mjs. Re-exported below, unchanged.
-import { fileProductVersion, powershellValue } from "./file-version.mjs";
+import { createVersionSampler, fileProductVersion, powershellValue } from "./file-version.mjs";
 // Re-exported so every existing importer of `server.mjs` is unchanged by the move.
 export { fileProductVersion, powershellValue } from "./file-version.mjs";
 import { existsSync, openSync, readFileSync, readdirSync } from "node:fs";
@@ -197,8 +197,8 @@ async function tidyBrowserAtBoot() {
  * | `results` | per-process, by design | A bounded (8-entry) history across MANY captures — that persistence is the feature (`GET /capture/<id>` surviving a lost socket), not a hazard, and `capture-results.mjs`'s own header argues the bound and the eviction policy. |
  * | `worked` (`captures`/`failures`/`recoveries`) | per-process, by design | Cumulative counters across the worker's whole life — `/health.vitals` and the pool's degradation detection need exactly this, not a per-capture reset. |
  * | `consecutiveRecoveries` | per-process, by design | A rolling window ACROSS captures on purpose — it is the circuit breaker's memory, and resetting it per-capture would delete the thing it exists to count (a STREAK). |
- * | `environmentCache` / `environmentMeasuredAt` | per-process | A 5 s TTL cache of facts that do not change per capture (Edge/NVDA/OS versions) and do change slowly in wall-clock time (an update, a reboot) — never per-capture data. The display mode and adapter are NOT in it: `displaySampler` (`display-sample.mjs`) holds them, and `currentEnvironment` merges the last sample in with its age on every call (#2673). |
- * | `bootConstants` (Map) | per-process | Executable version strings; fixed until whatever would restart this process anyway (an Edge/NVDA update). |
+ * | `environmentCache` / `environmentMeasuredAt` | per-process | A 5 s TTL cache of facts that do not change per capture (guidepup version, digest, profile, protocol) — never per-capture data. Neither the display nor the three PowerShell-read versions are in it: `displaySampler` (`display-sample.mjs`) and `versionSampler` (below) hold them, and `currentEnvironment` merges each one's last sample in with its age on every call (#2673, #2684). |
+ * | `bootConstants` (Map) | per-process | `windowsVersion`'s memo, read by `versionSampler` alone since #2684 — never on `/health`'s request path. Fixed until whatever would restart this process anyway (a reboot). |
  * | `foundFiles` (Map) | per-process | Resolved executable paths; same reasoning as `bootConstants`. |
  * | `fltCache` | per-process | `ForegroundLockTimeout`, applied once per session by `run-server.cmd` before this process starts; cannot change under a running worker. |
  * | `warm` / `warming` / `warmAttempts` / `lastWarmAttempt` | per-process, by design | NVDA's warm-up lifecycle spans the whole process — `warming` is a mutex against two concurrent warm attempts fighting over one screen reader, and the attempt budget/cooldown are explicitly meant to survive across captures (see the comment above `MAX_WARM_ATTEMPTS`). |
@@ -284,60 +284,18 @@ const { app: BROWSER, error: BROWSER_CONFIG_ERROR } = configuredBrowser();
  * answered — which reads as a hung worker rather than a blocked one, and sent this session chasing guest
  * memory, the browser and the screen reader in turn.
  *
- * Bounded is a mitigation, not the fix; the fix is the memo below, which keeps it off the polled path.
+ * Bounded was a mitigation, not the fix: a bounded call still blocks for its whole bound, and `/health`
+ * still called it whenever the memo below had nothing to give -- an "unknown" read, or a file that had just
+ * changed on disk. #2684 is that fix: `windowsVersion`, `screenReaderVersion` and `browserVersion` are all
+ * sampled on a timer now (`versionSampler`, below `displaySampler`), and none of the three is read from
+ * `/health`'s request path any more.
  */
 
-
 /**
- * Memoised for the life of the process, because an executable's version cannot change under a running worker.
- *
- * The environment cache was 5 seconds, so a polled `/health` re-shelled to PowerShell every 5 seconds to
- * re-read two version strings that are fixed at boot. That is the real defect: not that the call was slow, but
- * that a constant was being recomputed on the hottest path the worker has. Edge updating requires a restart
- * of Edge, and NVDA updating requires provisioning — both of which restart this process.
+ * `windowsVersion`'s memo. Fixed for the life of the process -- a reboot is what changes the Windows build,
+ * and a reboot restarts this process. See `versionSampler` for where it is read now, and why asynchronously.
  */
 const bootConstants = new Map();
-
-/**
- * A PowerShell value that cannot change while this process runs, read at most once.
- *
- * Correct for the Windows build, which needs a reboot to change -- and a reboot restarts this process.
- *
- * **It was NOT correct for an executable's version, and this comment used to assert that it was**: "updating
- * Edge or NVDA restarts this process". Nothing makes that true. Edge's updater replaces files on disk; the
- * worker is a separate scheduled task and keeps running. Measured on a11y-worker-2: reporting Edge
- * 151.0.4129.93 with an uptime of 5 days while `msedge.exe` on disk was 151.0.4129.101, written four days
- * INTO that uptime.
- *
- * That is not a stale display value. `browserVersion` is part of the capture cache key, for the documented
- * reason that a fleet can run more than one browser -- so every capture taken after the update was stamped
- * with a version it was not captured under, and shared a key with evidence from a different browser build.
- * That is the exact failure the key exists to prevent, arriving through the memo instead of through the key.
- * See `fileProductVersion`, which now re-reads when the file changes.
- */
-function bootConstant(/** @type {any} */ script) {
-  if (bootConstants.has(script)) return bootConstants.get(script);
-  const value = powershellValue(script);
-  // Only a real answer is memoised. Caching "unknown" forever would make a transient PowerShell failure
-  // permanent for the life of the worker, and the version is reported as evidence.
-  if (value !== "unknown") bootConstants.set(script, value);
-  return value;
-}
-
-/**
- * An executable's version, re-read when the executable changes.
- *
- * Memoised on the file's identity (path, mtime, size) rather than for the life of the process, because Edge
- * and NVDA are both updated UNDER a running worker -- see `bootConstant` for the measurement. The point of
- * the memo was never the version, it was keeping a blocking PowerShell child process off `/health`, which is
- * polled; a `statSync` is one syscall and preserves that. A replaced binary changes mtime, so it costs one
- * read and then memoises again.
- *
- * A version that MOVES under a live worker is worth saying out loud: captures either side of it are keyed
- * differently and are not interchangeable, so a silent change would surface later as unexplained cache
- * churn -- which is how this was nearly dismissed.
- */
-
 
 /**
  * Memoised, because this WALKS THE DISK and `/health` is polled.
@@ -395,20 +353,20 @@ function packageVersion(/** @type {any} */ name) {
 }
 
 function runtimeEnvironment() {
-  const guidepupRoot = process.env.GUIDEPUP_SCREEN_READERS_PATH ||
-    (process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "guidepup") : "");
-  const nvdaPath = findFileMemo(join(guidepupRoot, "nvda"), "nvda.exe");
-  const browserPath = BROWSER.exes().find((path) => existsSync(path));
   return {
     measuredAt: new Date().toISOString(),
     screenReader: "NVDA",
-    screenReaderVersion: nvdaPath ? fileProductVersion(nvdaPath, { log }) : "unknown",
+    // `screenReaderVersion` (#1953-adjacent) and `browserVersion` are NOT built here, for the same reason
+    // `displayMode`/`displayAdapter` are not (#2673): each is a PowerShell round trip that used to re-run
+    // on THIS function's 5 s rebuild whenever the read had not yet succeeded or the binary had changed on
+    // disk. `versionSampler` reads them on a timer and `currentEnvironment` merges the last sample in, with
+    // its age (#2684).
+    //
     // The capture cache keys on this pair, exactly as it keys on `os` and `architecture`, and for the same
     // reason: a fleet can have more than one image, and now more than one BROWSER. It was the literal
     // string "Microsoft Edge" while there was only ever one — a constant standing in for a variable, which
     // is only correct until it is not.
     browser: BROWSER.name,
-    browserVersion: browserPath ? fileProductVersion(browserPath, { log }) : "unknown",
     guidepupVersion: packageVersion("@guidepup/guidepup"),
     // WHICH NVDA SETTINGS THIS GUEST CAPTURES UNDER, as a digest — a cache-key input for the same reason
     // `browserVersion` is one, and the reason is not that defaults are sacred.
@@ -432,13 +390,11 @@ function runtimeEnvironment() {
     // memoised: a profile can be wiped under a running worker, and noticing that is the whole point.
     browserProfile: readOrStampProfileIdentity(browserProfileDir(BROWSER), { log }).identity,
     nodeVersion: process.version,
-    // Memoised, and the reason is the cache key rather than the ~200 ms. This value is half of the key's
-    // `os` field, and `powershellValue` answers "unknown" when PowerShell exceeds its 5 s bound -- which
-    // happens exactly when the guest is loaded, measured at 8 s and then 25 s on this fleet. So a slow
-    // moment silently changed a capture's environment key, and those captures can never be reused: the
-    // guest being busy quietly fragmented the corpus, and the resulting misses read as ordinary churn.
-    // Reading it once means a capture's key cannot depend on how loaded the guest was when it was taken.
-    windowsVersion: bootConstant("$os = Get-CimInstance Win32_OperatingSystem; \"$($os.Caption) $($os.Version)\""),
+    // `windowsVersion` is NOT built here, for the same reason as `screenReaderVersion`/`browserVersion`
+    // above: it is half of the capture cache's `os` field, and reading it here is what silently changed a
+    // capture's environment key on a loaded guest, measured at 8 s and then 25 s on this fleet. `versionSampler`
+    // reads it on a timer instead, so a capture's key still cannot depend on how loaded the guest was, and
+    // now also never blocks a `/health` rebuild while it retries (#2684).
     // The guest's architecture, from the worker process itself -- free, and no PowerShell round trip.
     // Part of the capture cache key: an ARM64 guest and an x64 one are different environments, and
     // without this the cache treats their evidence as interchangeable.
@@ -608,8 +564,10 @@ async function displayMode() {
 const DISPLAY_READ_TIMEOUT_MS = 5_000;
 
 /**
- * One bounded, ASYNCHRONOUS PowerShell read for the display samplers: the trimmed stdout, or `"unknown"`
- * for a failed, timed-out or empty read -- what `powershellValue` answers, minus the event-loop block.
+ * One bounded, ASYNCHRONOUS PowerShell read: the trimmed stdout, or `"unknown"` for a failed, timed-out or
+ * empty read -- what `powershellValue` answers, minus the event-loop block. Shared by `displaySampler`
+ * below and by `bootConstantAsync` (#2684): both are timer-driven readers with the same bound and the same
+ * degrade-to-`"unknown"` contract.
  */
 async function sampledValue(/** @type {string} */ script) {
   const result = await powershell(script, { timeoutMs: DISPLAY_READ_TIMEOUT_MS });
@@ -623,6 +581,59 @@ async function sampledValue(/** @type {string} */ script) {
 const displaySampler = createDisplaySampler({ readMode: displayMode, readAdapter: displayAdapter });
 if (IS_MAIN) displaySampler.start();
 
+/**
+ * The two executables `screenReaderVersion` and `browserVersion` report on -- resolved fresh on every
+ * sample, since a provisioning run or a reinstall can move either. `findFileMemo` and `BROWSER.exes` are
+ * cheap once warm (a Map lookup and an `existsSync`), so doing this on a 5 s timer costs nothing a request
+ * would have noticed either.
+ */
+function discoverExecutables() {
+  const guidepupRoot = process.env.GUIDEPUP_SCREEN_READERS_PATH ||
+    (process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "guidepup") : "");
+  return {
+    nvdaPath: findFileMemo(join(guidepupRoot, "nvda"), "nvda.exe"),
+    browserPath: BROWSER.exes().find((path) => existsSync(path)),
+  };
+}
+
+const WINDOWS_VERSION_SCRIPT =
+  "$os = Get-CimInstance Win32_OperatingSystem; \"$($os.Caption) $($os.Version)\"";
+
+/**
+ * `windowsVersion`'s read, ASYNCHRONOUS (#2684) and called only by `versionSampler`'s timer. Same memo,
+ * same retry-only-on-`"unknown"` rule the old synchronous `bootConstant` had -- see `bootConstants` above.
+ */
+async function bootConstantAsync(/** @type {string} */ script) {
+  if (bootConstants.has(script)) return bootConstants.get(script);
+  const value = await sampledValue(script);
+  // Only a real answer is memoised. Caching "unknown" forever would make a transient PowerShell failure
+  // permanent for the life of the worker, and the version is reported as evidence.
+  if (value !== "unknown") bootConstants.set(script, value);
+  return value;
+}
+
+/**
+ * `windowsVersion`, `screenReaderVersion` and `browserVersion`: the #2673 stall again, for the other three
+ * PowerShell reads (#2684). `runtimeEnvironment`'s 5 s rebuild called `bootConstant`/`fileProductVersion`
+ * straight from `/health`'s request path, and a read that had not yet succeeded -- or a binary that had
+ * changed on disk -- re-ran `powershell.exe` SYNCHRONOUSLY on every such rebuild. `createVersionSampler`
+ * (`file-version.mjs`) is the generic timer; these three closures are the real readers it drives -- kept
+ * here rather than in that guidepup-free module because `bootConstants`, `discoverExecutables` and `log`
+ * are all this process's own state.
+ */
+const versionSampler = createVersionSampler({
+  readWindowsVersion: () => bootConstantAsync(WINDOWS_VERSION_SCRIPT),
+  readScreenReaderVersion: () => {
+    const { nvdaPath } = discoverExecutables();
+    return nvdaPath ? fileProductVersion(nvdaPath, { log }) : Promise.resolve("unknown");
+  },
+  readBrowserVersion: () => {
+    const { browserPath } = discoverExecutables();
+    return browserPath ? fileProductVersion(browserPath, { log }) : Promise.resolve("unknown");
+  },
+});
+if (IS_MAIN) versionSampler.start();
+
 /** @type {any} */
 let environmentCache = null;
 let environmentMeasuredAt = 0;
@@ -634,7 +645,7 @@ function currentEnvironment() {
   }
   // Merged on EVERY call and never cached with the rest: the age of a sample is a property of the moment it
   // is read, so a value frozen into the 5 s cache would overstate how fresh the sample is by up to 5 s.
-  return { ...environmentCache, ...displaySampler.current() };
+  return { ...environmentCache, ...displaySampler.current(), ...versionSampler.current() };
 }
 
 /**
@@ -1563,6 +1574,7 @@ for (const signal of IS_MAIN ? ["SIGINT", "SIGTERM"] : []) {
     log(`${signal}: stopping NVDA before exit`);
     if (foregroundWatchTimer) clearInterval(foregroundWatchTimer);
     displaySampler.stop();
+    versionSampler.stop();
     await shutdownScreenReader();
     process.exit(0);
   });
