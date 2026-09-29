@@ -59,8 +59,8 @@ export const FAULT = {
    * the hard timeout from local recovery.
    */
   HARD_TIMEOUT: "hard-timeout",
-  // ADR 0038's authenticated capture (`auth-flow.mjs`). The six faults THIS worker can raise; the CLI raises the
-  // other six (`packages/cli/src/auth/auth-faults.ts`), and both lists share `FAULT_REMEDIATION`'s entries. NONE is
+  // ADR 0038's authenticated capture (`auth-flow.mjs`). The seven faults THIS worker can raise; the CLI
+  // raises these and its own (`packages/cli/src/auth/auth-faults.ts`), and both lists share `FAULT_REMEDIATION`'s entries. NONE is
   // in `RECOVERABLE`: a wrong password, a missing variable or a refused peer is not cured by a fresh NVDA, and
   // retrying a login is exactly what trips an account lockout.
   /** An auth request from a peer that is not on this machine: refused before anything is read (clause 1). */
@@ -75,6 +75,8 @@ export const FAULT = {
   AUTH_SESSION_LOST: "auth-session-lost",
   /** A login step failed and a CAPTCHA widget is on the page that failed it: named, never solved (#2564). */
   AUTH_CHALLENGE_DETECTED: "auth-challenge-detected",
+  /** A saved storage state was loaded instead of a login and the page it was meant to sign in is not the signed-in page (#2566, amendment 7). */
+  AUTH_STATE_EXPIRED: "auth-state-expired",
 };
 
 /**
