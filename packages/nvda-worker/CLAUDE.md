@@ -1,8 +1,8 @@
 ## If you are an agent, start with these
 
 ```bash
-npm run doctor                  # can I run right now? every check names its own fix
-npm run doctor -- --json        # same, machine-readable, with a next_command field
+pnpm run doctor                  # can I run right now? every check names its own fix
+pnpm run doctor -- --json        # same, machine-readable, with a next_command field
 ```
 
 **Read `next_command` and do that.** `doctor` exits 0 when a run can proceed, which is not the
@@ -32,7 +32,7 @@ never pays for evidence nobody asked for. `focusOrder` costs ~8 s on a ~15 s COR
 ## Captures are cached — and the cache is keyed on more than the page
 
 A full run is 1,715 cases, two captures each (`screenreader-dataset/manifest.json` -> `cases`, read
-2026-09-23T14:26Z on the lab), so `npm run training:capture` reuses evidence on disk when nothing that
+2026-09-23T14:26Z on the lab), so `pnpm run training:capture` reuses evidence on disk when nothing that
 shapes it has changed. The key covers the page directory (every file), the capture options,
 NVDA and Edge versions, **the Windows build and architecture**, the provisioning revision, and
 `CAPTURE_PROTOCOL_VERSION`.
@@ -125,13 +125,13 @@ sensible defaults you will not need to touch unless something is already using p
   reason: more than one concurrent run on one host, or a port collision.
 - `DATASET_BASE_URL` — overrides the computed page-server URL outright. `hostPagesBase()` normally works this out itself; set this when that computation is wrong for your network. [Full detail →](docs/lab-cli.md#dataset_base_url-the-full-computation)
 
-`npm run doctor` reports what it cannot fix: strays on the pages port, a VM running but not
+`pnpm run doctor` reports what it cannot fix: strays on the pages port, a VM running but not
 answering, a run left mid-flight. It is read-only by design — it never kills anything — so the one
 manual step left is acting on what it tells you.
 
-`npm run lab:pipeline` runs the ordered stages of a capture/lab run and stops at the first failing stage. See [Lab Pipeline](docs/lab-pipeline.md#producing-evidence-is-a-pipeline-and-it-is-one-command) for the catalogue and fleet-consistency guards.
+`pnpm run lab:pipeline` runs the ordered stages of a capture/lab run and stops at the first failing stage. See [Lab Pipeline](docs/lab-pipeline.md#producing-evidence-is-a-pipeline-and-it-is-one-command) for the catalogue and fleet-consistency guards.
 
-Every other `npm run <name>` script moved to [npm Scripts](docs/npm-scripts.md#every-other-command-and-when-you-would-reach-for-it). `docs/commands.md` covers the disjoint `scripts/*.mjs`-with-no-entry population.
+Every other `pnpm run <name>` script moved to [npm Scripts](docs/npm-scripts.md#every-other-command-and-when-you-would-reach-for-it). `docs/commands.md` covers the disjoint `scripts/*.mjs`-with-no-entry population.
 
 `lab:status`, `lab:log` and `lab:fetch` exist because reading a job's own output once took eleven hand-written pipelines. Write reports to `runs/` and fetch them. [Detail →](docs/lab-cli.md#make-the-failure-bubble-up-or-you-will-dig-for-it-every-time)
 
