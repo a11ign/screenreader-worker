@@ -1,5 +1,5 @@
 {
-  "name": "@a11ign/nvda-worker",
+  "name": "@a11ign/screenreader-worker",
   "version": "0.0.0",
   "description": "Drives a real NVDA screen reader through real navigation on Windows and returns what it announced. The HTTP contract is the API.",
   "license": "AGPL-3.0-or-later",

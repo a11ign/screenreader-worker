@@ -15,7 +15,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
 const require = createRequire(import.meta.url);
-const manifestPath = require.resolve("@a11ign/nvda-worker/package.json");
+const manifestPath = require.resolve("@a11ign/screenreader-worker/package.json");
 const root = dirname(manifestPath);
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 
@@ -52,7 +52,7 @@ assert.equal(manifest.dependencies["@guidepup/guidepup"], "0.31.0",
 // what it is rather than passed over in silence.
 let entry;
 try {
-  entry = await import("@a11ign/nvda-worker");
+  entry = await import("@a11ign/screenreader-worker");
 } catch (error) {
   if (/No available supported screen readers/.test(String(error))) {
     console.error("cannot verify the entry point here: this machine has no screen reader, so guidepup refuses "
@@ -68,5 +68,5 @@ assert.equal(typeof entry.CAPTURE_PROTOCOL_VERSION, "number");
 // The hash proves every file it names was readable from the installed location, from any cwd.
 assert.match(entry.codeVersion(), /^[0-9a-f]{16}$/);
 
-console.log(`@a11ign/nvda-worker works when installed: ${WORKER_FILES.length} worker files present, `
+console.log(`@a11ign/screenreader-worker works when installed: ${WORKER_FILES.length} worker files present, `
   + `protocol v${entry.CAPTURE_PROTOCOL_VERSION}, code ${entry.codeVersion()}`);
