@@ -15,8 +15,9 @@
 #
 # NO STORED REGISTRY TOKEN, AND NO `NODE_AUTH_TOKEN` ANYWHERE BELOW: npm trusted publishing authenticates the publish
 # with a short-lived OIDC token minted for this workflow run (`id-token: write`). The trusted publisher is configured on
-# npmjs.com for `@a11ign/screenreader-worker` as repository `a11ign/screenreader-worker`, workflow `release.yml`: the
-# chairman's step, asked once on a11ign/a11ign#2701. Setting a token here would make npm use it and never exercise OIDC.
+# npmjs.com for `@a11ign/screenreader-worker` as repository `a11ign/screenreader-worker`, workflow `release.yml`,
+# environment `npm-publish`: the chairman's step, asked once on a11ign/a11ign#2701. Setting a token here would make
+# npm use it and never exercise OIDC.
 name: release
 
 on:
@@ -25,7 +26,9 @@ on:
   push:
     branches: [main]
     paths: [".changeset/**", "packages/*/package.json"]
-  workflow_dispatch:
+  # NO `workflow_dispatch`, ON PURPOSE: a workflow file on a branch is the branch author's, and `publish` holds
+  # `id-token: write`, so a dispatch from an unreviewed branch could reach an irreversible publish without `main`'s
+  # approving review. A failed publish is re-run from the push run (same sha on `main`): the registry is the state.
 
 # ONE RELEASE AT A TIME, AND NEVER CANCELLED IN FLIGHT: a publish cancelled half way cannot be rolled back.
 concurrency:
@@ -85,6 +88,11 @@ jobs:
     needs: plan
     if: needs.plan.outputs.mode == 'publish'
     runs-on: ubuntu-latest
+    # THE ONLY CONTROL THAT HOLDS AGAINST A BRANCH: no `if:` in this file can keep a branch from publishing, because the
+    # branch author writes the file. This environment's deployment branches are limited to `main`, and the npmjs.com
+    # trusted-publisher binding names it (`npm-publish`): a job on any other ref cannot enter the environment, so it is never
+    # minted an OIDC token that carries that name, and npm refuses one that does not.
+    environment: npm-publish
     permissions:
       # `write` for the git tag `changeset publish` creates and the step below pushes: a GitHub Action consumer or a
       # reader pins by tag, and npm has no part in that. NOTHING IN THIS JOB WRITES A BRANCH.
