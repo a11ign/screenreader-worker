@@ -1,0 +1,25 @@
+# Dependency updates come from the platform (a11ign/a11ign ADR 0041, decision 4): a new release of anything this
+# repository consumes opens a pull request here, so nobody polls for one. `@a11ign/evidence` is consumed by VERSION, so
+# its upgrades arrive as pull requests too, and the repository's consumers' own upgrades to THIS package arrive in theirs.
+version: 2
+updates:
+  - package-ecosystem: npm
+    # ONE entry at the root covers the pnpm workspace.
+    directory: /
+    schedule:
+      interval: daily
+    # No `groups:` on purpose: each dependency is its own pull request, which is what keeps a bump small and mergeable alone.
+    commit-message:
+      # The handle the org's gate recognises a dependency pull request by: every title starts `deps:`.
+      prefix: deps
+    # Workspace members are linked by pnpm and `changeset version` owns their versions; left alone, Dependabot would
+    # offer the registry's copy over the workspace's.
+    ignore:
+      - dependency-name: "@a11ign/screenreader-worker"
+      - dependency-name: "@a11ign/nvda-speech"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+    commit-message:
+      prefix: deps
