@@ -29,7 +29,7 @@
     "@guidepup/guidepup": "0.31.0"
   },
   "devDependencies": {
-    "@a11ign/evidence": "0.0.0"
+    "@a11ign/evidence": "0.1.0"
   },
   "engines": {
     "node": ">=20"
@@ -39,10 +39,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/a11ign/a11ign.git",
+    "url": "git+https://github.com/a11ign/screenreader-worker.git",
     "directory": "packages/nvda-worker"
   },
-  "homepage": "https://github.com/a11ign/a11ign",
+  "homepage": "https://github.com/a11ign/screenreader-worker",
   "keywords": [
     "accessibility",
     "a11y",

@@ -1,0 +1,16 @@
+{
+  "name": "screenreader-worker-workspace",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.34.5",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "tsx --test \"packages/*/src/**/*.test.ts\" \"scripts/*.test.ts\"",
+    "release:version": "changeset version && pnpm install --lockfile-only",
+    "release:plan": "node scripts/release-plan.mjs"
+  },
+  "devDependencies": {
+    "@changesets/cli": "2.31.1",
+    "tsx": "4.23.15"
+  }
+}
