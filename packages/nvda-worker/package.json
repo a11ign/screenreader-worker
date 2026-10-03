@@ -26,7 +26,7 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@guidepup/guidepup": "0.31.0"
+    "@guidepup/guidepup": "0.34.0"
   },
   "devDependencies": {
     "@a11ign/evidence": "0.1.0"
