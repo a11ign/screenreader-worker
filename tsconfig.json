@@ -1,0 +1,16 @@
+{
+  // Type-checks the `.ts` tests and, through `allowJs`, whatever they import. The root program is `noEmit`: nothing
+  // here is built by it, and a package's published files are its `src` as written.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"],
+    "allowJs": true
+  },
+  "include": ["packages/*/src/**/*.ts", "scripts/**/*.ts"]
+}

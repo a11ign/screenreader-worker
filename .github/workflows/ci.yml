@@ -1,5 +1,5 @@
-# The merge gate. Every pull request and every merge-queue entry runs the tests, and the single job below is named
-# `gate` because that is the check `main`'s protection and the `merge-queue-main` ruleset require
+# The merge gate. Every pull request and every merge-queue entry runs lint, the typecheck and the tests, and the single job below
+# is named `gate` because that is the check `main`'s protection and the `merge-queue-main` ruleset require
 # (`docs/code-repository-protection.json` in a11ign/a11ign names it). `merge_group` is what lets the queue's
 # temporary branches run it: a required check that never runs on one blocks the queue for ever.
 #
@@ -29,4 +29,8 @@ jobs:
       - uses: actions/setup-node@v7
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      # Lint and typecheck gated every pull request in a11ign/a11ign ("CI gates on both") and were dropped by the move
+      # (#3179). They run before the tests so a style or type failure reads red without waiting for the suite.
+      - run: pnpm run lint
+      - run: pnpm run typecheck
       - run: pnpm test
