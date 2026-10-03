@@ -43,7 +43,7 @@ jobs:
     outputs:
       mode: ${{ steps.mode.outputs.mode }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - id: mode
@@ -68,7 +68,7 @@ jobs:
             echo "::error::A11IGN_BOT_TOKEN is not set on this repository. A version pull request opened with GITHUB_TOKEN gets no ci run and can never merge, so this does not fall back to it."
             exit 1
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { token: "${{ secrets.A11IGN_BOT_TOKEN }}" }
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
@@ -100,7 +100,7 @@ jobs:
       # Required by trusted publishing AND by provenance: npm signs with a short-lived OIDC token from this job.
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
       - uses: pnpm/action-setup@v4
       # `registry-url` writes the `.npmrc` that npm publishes with.
