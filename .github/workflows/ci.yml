@@ -22,7 +22,7 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # pnpm/action-setup reads the version out of `packageManager`, and comes before setup-node because `cache: pnpm`
       # shells out to it.
       - uses: pnpm/action-setup@v6
