@@ -47,6 +47,12 @@ jobs:
     continue-on-error: true
     runs-on: ubuntu-latest
     steps:
+      # The base branch's own copy of `.github/auto-arm.jq`: on `pull_request_target` a checkout WITHOUT `ref:` is `main`,
+      # never the pull request, so this still runs nothing a pull request wrote.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/auto-arm.jq
       - name: Arm every open, non-draft, unheld pull request against main that nothing has armed
         env:
           A11IGN_BOT_TOKEN: ${{ secrets.A11IGN_BOT_TOKEN }}
@@ -60,10 +66,9 @@ jobs:
             export GH_TOKEN="$FALLBACK_TOKEN"
           fi
           # `--limit 200` and not the default 30: a list that silently stops at 30 is a sweep that quietly arms 30.
-          # A `hold:` label is a hold, whoever put it there (a11ign/agent-org's `pr-hold-state.mjs`): a held pull request is skipped.
+          # The selection is `.github/auto-arm.jq`, which `scripts/auto-arm-filter.test.ts` runs in the gate.
           numbers=$(gh pr list --state open --base main --limit 200 \
-            --json number,isDraft,labels,autoMergeRequest \
-            --jq '.[] | select(.isDraft == false and .autoMergeRequest == null and ([.labels[].name | startswith("hold:")] | any | not)) | .number')
+            --json number,isDraft,labels,autoMergeRequest | jq -r -f .github/auto-arm.jq)
           failed=0
           for n in $numbers; do
             if gh pr merge --auto --merge "$n"; then
