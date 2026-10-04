@@ -1,0 +1,82 @@
+# Enable auto-merge on every open, non-draft pull request against `main`, so nobody arms by hand (a11ign/a11ign#3383).
+#
+# `gh pr merge --auto` only ARMS the merge. GitHub still withholds it until `main`'s approving review and the
+# `gate` check are satisfied, and the merge queue (`merge-queue-main`) builds it on top of `main` first, so arming
+# early costs nothing and removes "a session has to notice" as a step in a pull request's life. Before this file
+# existed, a11ign/a11ign#2701's row records five pull requests (#3, #4, #5, #6, #8) armed by hand.
+#
+# This is a deliberately SMALL copy of a11ign/a11ign's `auto-arm.yml`, not a port. That one runs `agent-org arm-pr`, which
+# reads `.agent-org/project.json` and `.agent-org/roles/sessions.json` from the checkout it runs in; this repository
+# declares no org project, so installing the tool here would mean copying that declaration and keeping it in step. What
+# the tool decides that matters here is one rule, and it is stated below: a `hold:` label is a hold.
+#
+# ONE JOB ASKS THE REPOSITORY'S QUESTION, NOT THE EVENT'S PULL REQUEST'S. A pull request that was open before this file
+# merged has no `opened` left to fire, and a Dependabot pull request's own event runs with a read-only token. Listing
+# every open pull request on each event covers both, and arming is idempotent: a pull request already armed is skipped.
+# `workflow_dispatch` is the manual kick for a quiet repository; there is no `schedule`, because GitHub disables
+# scheduled workflows after 60 days without activity and a sweep that stops silently reads as slow reviewers.
+#
+# `pull_request_target` and NOT `pull_request`, for the Dependabot case above: it runs the workflow from `main` with a
+# write token. That trigger is unsafe only when the job checks out or runs the pull request's code, and this job has no
+# checkout and runs nothing from the pull request: it reads labels through the API and calls `gh pr merge`.
+#
+# `A11IGN_BOT_TOKEN` (an org secret, visible to every repository) when set, `GITHUB_TOKEN` when not, with a printed
+# warning. A merge completed with `GITHUB_TOKEN` fires no workflow events (a11ign/a11ign#416), so the PAT is what
+# makes `release.yml`'s `push` trigger fire after a merge this job armed. The secret goes through `env:`, never an argument.
+name: auto-arm
+
+on:
+  pull_request_target:
+    types: [opened, ready_for_review, reopened, synchronize]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  pull-requests: write
+  contents: write
+
+concurrency:
+  group: auto-arm
+  cancel-in-progress: false
+
+jobs:
+  arm:
+    # It acts on pull requests other than the one whose event woke it, and gates nothing (`main` requires `gate` only),
+    # so a failure is an annotation and never a red check charged to a diff that did not earn it.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      # The base branch's own copy of `.github/auto-arm.jq`: on `pull_request_target` a checkout WITHOUT `ref:` is `main`,
+      # never the pull request, so this still runs nothing a pull request wrote.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/auto-arm.jq
+      - name: Arm every open, non-draft, unheld pull request against main that nothing has armed
+        env:
+          A11IGN_BOT_TOKEN: ${{ secrets.A11IGN_BOT_TOKEN }}
+          FALLBACK_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ -n "$A11IGN_BOT_TOKEN" ]; then
+            export GH_TOKEN="$A11IGN_BOT_TOKEN"
+          else
+            echo "::warning::A11IGN_BOT_TOKEN is not set -- arming with GITHUB_TOKEN instead. A merge completed with it fires no workflow events, so release.yml's push trigger will not fire after it (a11ign/a11ign#416)."
+            export GH_TOKEN="$FALLBACK_TOKEN"
+          fi
+          # `--limit 200` and not the default 30: a list that silently stops at 30 is a sweep that quietly arms 30.
+          # The selection is `.github/auto-arm.jq`, which `scripts/auto-arm-filter.test.ts` runs in the gate.
+          numbers=$(gh pr list --state open --base main --limit 200 \
+            --json number,isDraft,labels,autoMergeRequest | jq -r -f .github/auto-arm.jq)
+          failed=0
+          for n in $numbers; do
+            if gh pr merge --auto --merge "$n"; then
+              echo "ARMED #$n"
+            else
+              echo "::error::could not arm #$n"
+              failed=1
+            fi
+          done
+          [ -n "$numbers" ] || echo "nothing to arm: every open, non-draft, unheld pull request is already armed"
+          exit "$failed"
