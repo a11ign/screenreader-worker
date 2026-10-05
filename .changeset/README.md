@@ -2,6 +2,6 @@
 
 A change that should reach npm carries a changeset: `pnpm exec changeset`, naming `@a11ign/screenreader-worker` and the size of the change.
 
-Merging one to `main` makes `release.yml` open (or update) the ONE **Version packages** pull request. **Merging that pull request is the release:** the push it makes carries no pending changeset and a version ahead of the registry, so `release.yml` publishes. Nothing is typed and nothing pushes to `main`. `scripts/release-plan.mjs` is where that decision is made, and `scripts/release-plan.test.ts` pins it.
+**Merging one to `main` is the release.** `release.yml` calls the one reusable per-merge workflow (`release-per-merge.yml` in `a11ign/toolchain`): a push whose tree carries a changeset no tag has consumed is versioned on a detached commit, published, tagged and released. There is no version pull request, and nothing is written to `main`, so its package versions and changelogs lag the last tag.
 
 `@a11ign/nvda-speech` is `private` and never versions or publishes (`privatePackages` in `config.json`).
