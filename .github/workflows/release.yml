@@ -1,132 +1,44 @@
-# The publish path. IT RELEASES ON THE MERGE OF A VERSION PULL REQUEST, WITH NOBODY TYPING AND NOBODY PUSHING TO `main`.
-# This repository releases on its own, not with `a11ign/a11ign` (ADR 0041; row a11ign/a11ign#2701): nothing here waits
-# on or is tied to that repository's release.
+# The publish path. IT RELEASES ON THE MERGE ITSELF: a push to `main` that carries a changeset no tag has consumed is versioned on a
+# detached commit, published, tagged and released, with NOBODY TYPING AND NO VERSION PULL REQUEST (the chairman's CI/CD direction,
+# a11ign/a11ign#928; row a11ign/a11ign#3714). `main` is never written: its versions and changelogs lag the last tag, and nothing reads them.
+# This repository releases on its own, not with `a11ign/a11ign` (ADR 0041; row a11ign/a11ign#2701).
 #
-# `scripts/release-plan.mjs` reads the pushed tree and the registry and picks ONE mode:
+# THIS FILE IS A CALLER, and holds only what is this repository's. The release itself is `release-per-merge.yml`, one reusable workflow for
+# every repository (row a11ign/a11ign#3712), pinned below by FULL SHA and moved by Dependabot's `github-actions` entry in a pull request.
+# Where each thing the version-pull-request `publish` job refused now lives:
+#   the tests passed   `ci`'s `gate` job runs lint, typecheck and `pnpm test`; the called workflow's first job waits for that check to have
+#                      SUCCEEDED on this exact sha and never re-runs it
+#   access is public   the called workflow's `publish` job reads `.changeset/config.json` before it sends anything
+#   npm 11.5.1 or up   the same job installs it and refuses a lower one, because trusted publishing needs it
+# The file name below is the one npm's trusted-publisher entry for `@a11ign/screenreader-worker` names (repository
+# `a11ign/screenreader-worker`, workflow `release.yml`, environment `npm-publish`): the OIDC token names the CALLING file, so renaming this
+# file breaks the publish. The environment itself is on the publishing job of the called file: GitHub refuses `environment:` on a job that
+# calls a reusable workflow.
 #
-#   version-pr  a changeset naming a release is pending  -> `version-pr` opens or updates the ONE "Version packages" pull
-#               request, which waits for `main`'s approving review and the merge queue like any other
-#   publish     none is pending AND a package's version is STRICTLY NEWER than the registry's latest -> the push the
-#               version pull request's merge made; `publish` runs
-#   nothing     neither -> nothing runs after `plan`
-#
-# THE REGISTRY IS THE STATE, NOT A FLAG: a publish that failed is simply re-run and `plan` reads the same answer again.
-# This workflow WRITES NOTHING TO `main`: the version pull request is its only write, and it is a branch.
-#
-# NO STORED REGISTRY TOKEN, AND NO `NODE_AUTH_TOKEN` ANYWHERE BELOW: npm trusted publishing authenticates the publish
-# with a short-lived OIDC token minted for this workflow run (`id-token: write`). The trusted publisher is configured on
-# npmjs.com for `@a11ign/screenreader-worker` as repository `a11ign/screenreader-worker`, workflow `release.yml`,
-# environment `npm-publish`: the chairman's step, asked once on a11ign/a11ign#2701. Setting a token here would make
-# npm use it and never exercise OIDC.
+# NO STORED REGISTRY TOKEN AND NO `A11IGN_BOT_TOKEN`: there is no pull request to open, so nothing here needs the bot. The publish
+# authenticates with the OIDC token the called workflow's `publish` job is minted in the `npm-publish` environment (limited to `main`),
+# which is why this job holds `id-token: write`: a called workflow can keep or reduce a permission and never gain one.
 name: release
 
 on:
-  # `paths` keeps `plan` off every merge that carries neither a changeset nor a manifest change; the registry, not the
-  # push, is the state, so nothing is lost by the filter.
+  # NO `workflow_dispatch`, ON PURPOSE: a workflow file on a branch is the branch author's, and the publish holds `id-token: write`, so a
+  # dispatch from an unreviewed branch could reach an irreversible publish without `main`'s approving review. A failed release is re-run
+  # from its push run (same sha on `main`): the registry and the tags are the state, and the called workflow recomputes the same release.
   push:
     branches: [main]
-    paths: [".changeset/**", "packages/*/package.json"]
-  # NO `workflow_dispatch`, ON PURPOSE: a workflow file on a branch is the branch author's, and `publish` holds
-  # `id-token: write`, so a dispatch from an unreviewed branch could reach an irreversible publish without `main`'s
-  # approving review. A failed publish is re-run from the push run (same sha on `main`): the registry is the state.
-
-# ONE RELEASE AT A TIME, AND NEVER CANCELLED IN FLIGHT: a publish cancelled half way cannot be rolled back.
-concurrency:
-  group: release
-  cancel-in-progress: false
 
 jobs:
-  plan:
-    runs-on: ubuntu-latest
+  release:
     permissions:
-      contents: read
-    outputs:
-      mode: ${{ steps.mode.outputs.mode }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with: { node-version: 22 }
-      - id: mode
-        run: node scripts/release-plan.mjs
-
-  # THE VERSION PULL REQUEST. Pushed and opened with `A11IGN_BOT_TOKEN`, never `GITHUB_TOKEN`: a pull request opened or
-  # pushed to by `GITHUB_TOKEN` starts NO workflow (GitHub's own rule, against loops), so `ci` would never report on it and
-  # `gate` would never go green. The secret is the chairman's to set on this repository, and its absence is refused here
-  # rather than papered over with the token that cannot work.
-  version-pr:
-    needs: plan
-    if: needs.plan.outputs.mode == 'version-pr'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Refuse without the bot token, which a pull request needs to be built on
-        env:
-          A11IGN_BOT_TOKEN: ${{ secrets.A11IGN_BOT_TOKEN }}
-        run: |
-          if [ -z "$A11IGN_BOT_TOKEN" ]; then
-            echo "::error::A11IGN_BOT_TOKEN is not set on this repository. A version pull request opened with GITHUB_TOKEN gets no ci run and can never merge, so this does not fall back to it."
-            exit 1
-          fi
-      - uses: actions/checkout@v7
-        with: { token: "${{ secrets.A11IGN_BOT_TOKEN }}" }
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v7
-        with: { node-version: 22, cache: pnpm }
-      - run: pnpm install --frozen-lockfile
-      # `changeset version` does not update the lockfile; `release:version` is that plus the lockfile-only install, so
-      # the version pull request does not break the next frozen install. No `publish-script`: this job never publishes.
-      # Pinned by commit, not tag: the action holds the bot token (changesets/action v2.1.2).
-      - uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51
-        with:
-          version-script: pnpm run release:version
-          commit-message: "Version packages"
-          pr-title: "Version packages"
-          github-token: ${{ secrets.A11IGN_BOT_TOKEN }}
-
-  publish:
-    needs: plan
-    if: needs.plan.outputs.mode == 'publish'
-    runs-on: ubuntu-latest
-    # THE ONLY CONTROL THAT HOLDS AGAINST A BRANCH: no `if:` in this file can keep a branch from publishing, because the
-    # branch author writes the file. This environment's deployment branches are limited to `main`, and the npmjs.com
-    # trusted-publisher binding names it (`npm-publish`): a job on any other ref cannot enter the environment, so it is never
-    # minted an OIDC token that carries that name, and npm refuses one that does not.
-    environment: npm-publish
-    permissions:
-      # `write` for the git tag `changeset publish` creates and the step below pushes: a GitHub Action consumer or a
-      # reader pins by tag, and npm has no part in that. NOTHING IN THIS JOB WRITES A BRANCH.
       contents: write
-      # Required by trusted publishing AND by provenance: npm signs with a short-lived OIDC token from this job.
+      checks: read
       id-token: write
-    steps:
-      - uses: actions/checkout@v7
-        with: { fetch-depth: 0 }
-      - uses: pnpm/action-setup@v6
-      # `registry-url` writes the `.npmrc` that npm publishes with.
-      - uses: actions/setup-node@v7
-        with: { node-version: 22, cache: pnpm, registry-url: "https://registry.npmjs.org" }
-      # TRUSTED PUBLISHING NEEDS npm 11.5.1 OR NEWER, and the npm that ships with Node 22 is older (10.x). Without this
-      # step the publish would fall back to the token this workflow does not have, and fail at the moment of release.
-      # MEASURED on a11ign/a11ign: `npm view @a11ign/evidence@0.1.0 _npmUser` is a PERSON (`a11ign-user`), not
-      # "GitHub Actions", so the monorepo's own release has never exercised OIDC, and `dist.attestations` alone does not
-      # say which path published: `_npmUser` is the discriminator.
-      - name: Use an npm that can publish with OIDC
-        run: |
-          npm install -g npm@^11.5.1
-          echo "npm $(npm --version)"
-          node -e 'const [a,b,c]=process.argv[1].split(".").map(Number); if (a<11 || (a===11 && (b<5 || (b===5 && c<1)))) { console.error("npm is older than 11.5.1"); process.exit(1) }' "$(npm --version)"
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm test
-      # `.changeset/config.json` must say `"access": "public"`: a scoped package cannot publish under anything else.
-      - name: Refuse unless the config says public
-        run: node -e 'const c=require("./.changeset/config.json"); if (c.access !== "public") { console.error("access is " + c.access); process.exit(1) }'
-      # `changeset publish` runs `pnpm publish` per package, which packs and hands the tarball to the runner's npm, the
-      # only thing that talks to the registry. `NPM_CONFIG_PROVENANCE` rather than a flag, because there is no argv to
-      # pass through; without `id-token: write` npm fails the publish rather than omitting the attestation.
-      - name: Publish
-        run: pnpm exec changeset publish
-        env:
-          NPM_CONFIG_PROVENANCE: "true"
-      - name: Push the tags that publish created
-        run: git push origin --tags
+    # ONE RELEASE AT A TIME, AND NEVER CANCELLED IN FLIGHT: a publish cancelled half way cannot be rolled back. The called workflow carries the
+    # same block; where GitHub honours neither, two runs end in a refused push of a tag, never a moved one.
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    uses: a11ign/toolchain/.github/workflows/release-per-merge.yml@5ea3fc027eb0891d6329e6a02c2d4ed1c679178a
+    with:
+      kind: npm
+      gate-check: gate

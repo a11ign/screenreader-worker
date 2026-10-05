@@ -7,9 +7,7 @@
   "scripts": {
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test \"packages/*/src/**/*.test.ts\" \"scripts/*.test.ts\"",
-    "release:version": "changeset version && pnpm install --lockfile-only",
-    "release:plan": "node scripts/release-plan.mjs"
+    "test": "tsx --test \"packages/*/src/**/*.test.ts\" \"scripts/*.test.ts\""
   },
   "devDependencies": {
     "@changesets/cli": "3.0.3",
@@ -20,6 +18,7 @@
     "playwright": "^1.63.0",
     "tsx": "4.23.15",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.71.0"
+    "typescript-eslint": "^8.71.0",
+    "yaml": "2.9.1"
   }
 }

@@ -26,6 +26,6 @@ pnpm test        # what the `gate` check runs on every pull request and merge-qu
 ## Releasing
 
 This repository releases on its own, not with `a11ign/a11ign`. A change that should reach npm carries a changeset
-(`pnpm exec changeset`); its merge opens the **Version packages** pull request, and **merging that is the release**
+(`pnpm exec changeset`); **its merge is the release**, with no version pull request
 (`.github/workflows/release.yml`, `.changeset/README.md`). The publish uses npm trusted publishing over OIDC with
 provenance and no stored token.
