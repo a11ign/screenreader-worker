@@ -29,6 +29,9 @@ jobs:
       - uses: actions/setup-node@v7
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      # The build comes first because the package is published BUILT (`prepack` runs it at publish), so a build that fails must read red here
+      # and not at the release. The tests run on `src` and do not need it; the typecheck and the lint do not either.
+      - run: pnpm run build
       # Lint and typecheck gated every pull request in a11ign/a11ign ("CI gates on both") and were dropped by the move
       # (#3179). They run before the tests so a style or type failure reads red without waiting for the suite.
       - run: pnpm run lint
