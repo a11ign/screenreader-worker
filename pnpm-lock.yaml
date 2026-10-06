@@ -7,7 +7,14 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@guidepup/guidepup':
+        specifier: 0.31.0
+        version: 0.31.0
     devDependencies:
+      '@a11ign/evidence':
+        specifier: 0.1.0
+        version: 0.1.0
       '@a11ign/toolchain':
         specifier: 0.1.1
         version: 0.1.1(@rslib/core@1.0.3(typescript@6.0.3))(@rstest/core@0.12.3)
@@ -46,16 +53,6 @@ importers:
         version: 2.9.1
 
   packages/nvda-speech: {}
-
-  packages/nvda-worker:
-    dependencies:
-      '@guidepup/guidepup':
-        specifier: 0.31.0
-        version: 0.31.0
-    devDependencies:
-      '@a11ign/evidence':
-        specifier: 0.1.0
-        version: 0.1.0
 
 packages:
 

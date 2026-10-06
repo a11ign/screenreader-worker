@@ -153,13 +153,36 @@ A cheap pre-check decides whether to bother running the real one; it is never li
 Capture timing has TWO populations. On the ~12 s CORPUS capture the largest phase is `windowsActivate`, ~10 s / ~37%, and keeping Edge alive is the only real fix. On a REAL page it is ~0.3 s — one tenth of one percent — and `sweep` leads. [Both measurements →](docs/nvda-worker-runbook.md#capture-timing-and-the-windowsactivate-cost-analysis-from-environment-facts)
 ## The capture path — `capture-probes.mjs`, `capture-pure.mjs`, `browser-session.mjs`
 
-**These rules govern `packages/nvda-worker/src/capture-probes.mjs`, `packages/nvda-worker/src/capture-pure.mjs` and `packages/nvda-worker/src/browser-session.mjs`** (moved here from a retired role brief, #2406, so they load for whoever edits those files).
+**These rules govern `src/capture-probes.mjs`, `src/capture-pure.mjs` and `src/browser-session.mjs`** (moved here from a retired role brief, #2406, so they load for whoever edits those files).
 
 - **`capture-probes.mjs`** holds the ~30 probes and the order they run in. It is the most consequential file on the path, because **a probe's evidence is decided by where it sits in the sequence**.
 - **`capture-pure.mjs`** holds the pure verdicts a probe's evidence is turned into: the half that can be tested without NVDA, and therefore the half that must be.
 - **`browser-session.mjs`** is the CDP side: censuses, the focus-event log, anything evaluated in the page.
 - **A probe field has three states where two would be tempting.** *Confirmed false* and *could not determine* never share a value, and a skip names its reason.
 
-**A merge under `packages/nvda-worker/src/` makes the fleet STALE**: `worker:code` reads it, and the documented response is `fleet:deploy`, which reboots every guest and is the fleet driver's command, not an engineer's. So a change here is committed and held for a recapture window, not merged into a running capture; say so on the row and hand it to the agent that drives the fleet, as a row write.
+**A merge under `src/` makes the fleet STALE**: `worker:code` reads it, and the documented response is `fleet:deploy`, which reboots every guest and is the fleet driver's command, not an engineer's. So a change here is committed and held for a recapture window, not merged into a running capture; say so on the row and hand it to the agent that drives the fleet, as a row write.
 
 **Say which half of a claim you proved.** This code can prove a pure function and prove an ordering; it cannot prove that a blur leaves NVDA's tab ring where it expects, which needs a real capture. Name the two every time — *certain: the asymmetry and the missing containment; unknown: the rate* is the shape — and route the unknown half to the fleet's driver instead of settling it by argument.
+
+## The repository (moved here from the old root `README.md`, #3748)
+
+The repository root IS the published package, `@a11ign/screenreader-worker` (**AGPL-3.0-or-later**; `README.md` is its npm page and is
+shipped in the tarball), with `packages/nvda-speech` beside it as a workspace member: `@a11ign/nvda-speech`,
+**GPL-3.0-or-later** (derived from NVDA), **private**, never published on its own. Both came from
+[`a11ign/a11ign`](https://github.com/a11ign/a11ign) with their history.
+
+The worker is at the root so that a clone of this repository at `packages/nvda-worker` on a guest puts `src/` where the guests read it
+(`run-server.cmd`'s `cd /d %~dp0..\..\..`, the stamp, the Ansible tasks): **do not move `src/`.**
+
+**The worker has no authentication.** Anyone who can reach its port can drive the browser and the screen reader on that machine
+(`SECURITY.md` in `a11ign/a11ign` says what else somebody must know first). Run it only on a machine and a network you control.
+
+```bash
+pnpm install --frozen-lockfile
+pnpm test        # what the `gate` check runs on every pull request and merge-queue entry
+```
+
+`main` takes pull requests only, each with one approving review, through the merge queue. This repository releases on its own, not with
+`a11ign/a11ign`: a change that should reach npm carries a changeset (`pnpm exec changeset`); **its merge is the release**, with no version
+pull request (`.github/workflows/release.yml`, `.changeset/README.md`). The publish uses npm trusted publishing over OIDC with provenance
+and no stored token.

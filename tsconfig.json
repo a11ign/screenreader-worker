@@ -1,6 +1,6 @@
 {
   // Type-checks the `.ts` tests and, through `allowJs`, whatever they import. The root program is `noEmit`: nothing
-  // here is built by it, and a package's published files are its `src` as written.
+  // here is built by it, and the package's published files are its `src` as written. `tsconfig.build.json` is what Rslib reads.
   "compilerOptions": {
     "target": "ES2022",
     "module": "NodeNext",
@@ -12,5 +12,5 @@
     "types": ["node"],
     "allowJs": true
   },
-  "include": ["packages/*/src/**/*.ts", "scripts/**/*.ts"]
+  "include": ["src/**/*.ts", "scripts/**/*.ts"]
 }

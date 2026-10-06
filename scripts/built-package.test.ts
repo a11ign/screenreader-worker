@@ -13,7 +13,7 @@ import { pathToFileURL } from "node:url";
 //
 // NOT HERE: the deploy, and a consumer's strict `tsc` over the `.d.mts` files, which needs a network install.
 
-const packageDir = resolve(import.meta.dirname, "../packages/nvda-worker");
+const packageDir = resolve(import.meta.dirname, "..");
 const distDir = join(packageDir, "dist");
 const manifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8")) as { exports: unknown; bin: unknown };
 
