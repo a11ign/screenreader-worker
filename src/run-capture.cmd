@@ -15,7 +15,7 @@ set "NODE_EXE=%ProgramFiles%\nodejs\node.exe"
 if not exist "%NODE_EXE%" set "NODE_EXE=node"
 
 "%NODE_EXE%" src\capture\nvda\capture.mjs "%~1" "%CD%\transcript.json" 150 > capture.log 2>&1
-echo EXITCODE %ERRORLEVEL%>> capture.log
+>> capture.log echo EXITCODE %ERRORLEVEL%
 
 rem Belt-and-braces: capture.mjs closes Edge via Guidepup's windowsQuit, but a crash
 rem mid-capture would leave the window open and the next run reading a stale page.
