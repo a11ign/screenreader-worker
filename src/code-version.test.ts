@@ -29,7 +29,7 @@ test("there is exactly ONE definition of the worker file list, and one hasher", 
   // A reintroduced literal is the regression: two lists that must agree, kept in step by hope.
   // The two fleet-side files (`check-worker-code.mjs`, `deploy-worker.mjs`) were checked here while this package shared a
   // repository with `worker-fleet`. They moved to their own repository, which owns the half of this claim that reads them.
-  for (const path of ["packages/nvda-worker/src/server.mjs"]) {
+  for (const path of ["src/server.mjs"]) {
     const source = readFileSync(resolve(process.cwd(), path), "utf8");
     assert.ok(!LITERAL_LIST.test(source),
       `${path} has its own literal worker-file list again. Import WORKER_FILES from worker-files.mjs — a `
@@ -66,7 +66,7 @@ test("the hash covers every worker source file the guest runs", () => {
     const file = queue.pop()!;
     if (seen.has(file)) continue;
     seen.add(file);
-    const source = readFileSync(resolve(process.cwd(), "packages/nvda-worker/src", file), "utf8");
+    const source = readFileSync(resolve(process.cwd(), "src", file), "utf8");
     for (const [, imported] of source.matchAll(/from "\.\/([\w-]+\.mjs)"/g)) {
       assert.ok(hashed.has(imported), `${file} imports ${imported} but it is not in the code-version hash`);
       queue.push(imported);

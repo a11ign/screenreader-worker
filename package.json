@@ -1,18 +1,82 @@
 {
-  "name": "screenreader-worker-workspace",
-  "private": true,
+  "name": "@a11ign/screenreader-worker",
+  "version": "0.1.0",
+  "description": "Drives a real NVDA screen reader through real navigation on Windows and returns what it announced. The HTTP contract is the API.",
+  "license": "AGPL-3.0-or-later",
   "type": "module",
   "packageManager": "pnpm@10.34.5",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    },
+    "./code-version": {
+      "types": "./dist/code-version.d.mts",
+      "default": "./dist/code-version.mjs"
+    },
+    "./worker-files": {
+      "types": "./dist/worker-files.d.mts",
+      "default": "./dist/worker-files.mjs"
+    },
+    "./capture-pure": {
+      "types": "./dist/capture-pure.d.mts",
+      "default": "./dist/capture-pure.mjs"
+    },
+    "./protocol-version": {
+      "types": "./dist/protocol-version.d.mts",
+      "default": "./dist/protocol-version.mjs"
+    },
+    "./capture-faults": {
+      "types": "./dist/capture-faults.d.mts",
+      "default": "./dist/capture-faults.mjs"
+    },
+    "./package.json": "./package.json",
+    "./error-text": {
+      "types": "./dist/error-text.d.mts",
+      "default": "./dist/error-text.mjs"
+    },
+    "./auth-flow": {
+      "types": "./dist/auth-flow.d.mts",
+      "default": "./dist/auth-flow.mjs"
+    },
+    "./windows-trim": {
+      "types": "./dist/windows-trim.d.mts",
+      "default": "./dist/windows-trim.mjs"
+    }
+  },
+  "bin": {
+    "a11ign-nvda-worker": "./dist/server.mjs"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@guidepup/guidepup": "0.31.0"
+  },
   "engines": {
-    "node": ">=22"
+    "node": ">=20"
   },
-  "scripts": {
-    "build": "pnpm -r run build",
-    "lint": "eslint .",
-    "typecheck": "tsc --noEmit",
-    "test": "rstest run"
+  "publishConfig": {
+    "access": "public"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/a11ign/screenreader-worker.git"
+  },
+  "homepage": "https://github.com/a11ign/screenreader-worker",
+  "keywords": [
+    "accessibility",
+    "a11y",
+    "wcag",
+    "screen-reader",
+    "nvda",
+    "windows",
+    "capture"
+  ],
   "devDependencies": {
+    "@a11ign/evidence": "0.1.0",
     "@a11ign/toolchain": "0.1.1",
     "@changesets/cli": "3.0.3",
     "@eslint/js": "^10.0.1",
@@ -25,5 +89,12 @@
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.71.0",
     "yaml": "2.9.1"
+  },
+  "scripts": {
+    "build": "rslib build",
+    "prepack": "rslib build",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "rstest run"
   }
 }

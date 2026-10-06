@@ -14,7 +14,12 @@ const [library] = libraryPreset(pkg, { dir: import.meta.dirname }).lib;
 // `server` is built beside the `exports` entries because `bin` names it and is not an `exports` key, so the preset cannot see it. It
 // spawns `./windows-trim.mjs` as a sibling, and that one is an `exports` entry, so it lands next to it in `dist`.
 export default defineConfig({
-  lib: [{ ...library, source: { entry: { ...library.source.entry, server: "./src/server.mjs" } } }],
+  // `source.tsconfigPath` because the root `tsconfig.json` is the typecheck program (tests and `scripts/`), which Rslib would otherwise
+  // read and lay out under `dist/src` and `dist/scripts`.
+  lib: [{
+    ...library,
+    source: { tsconfigPath: "./tsconfig.build.json", entry: { ...library.source.entry, server: "./src/server.mjs" } },
+  }],
   // `chunkIds: "named"` keeps the chunk the entries share (`server` and the exports use the same modules) readable in `dist`, where
   // the default writes `e.mjs`, `v.mjs` and `x.mjs`.
   tools: {
