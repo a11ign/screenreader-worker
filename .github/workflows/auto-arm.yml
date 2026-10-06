@@ -80,3 +80,42 @@ jobs:
           done
           [ -n "$numbers" ] || echo "nothing to arm: every open, non-draft, unheld pull request is already armed"
           exit "$failed"
+
+  token-reach:
+    # Does `A11IGN_BOT_TOKEN` reach THIS repository on the write side? (a11ign/a11ign#3710, #3754). Copied from a11ign's
+    # `token-reach` job (`release.yml` at a11ign sha e701fbdfd): the `run:` block is byte for byte the same, so the two can
+    # be diffed. `layer-repository-protection.test.ts` in a11ign reads the LATEST run of a job NAMED `token-reach` in the
+    # file `docs/code-repository-protection.json` names (`tokenProbe: "auto-arm.yml"` for this repository), so the job's
+    # name is a contract and is the same in every code repository.
+    #
+    # The probe WRITES NOTHING: the push service's advertisement (`git-receive-pack`, 200 for a token that pushes) and
+    # `POST /pulls` with an empty body (422 when authorised, so no pull request is created). A read of a ref is not the
+    # instrument, since every code repository is public and answers 200 with no credential.
+    #
+    # IT GATES NOTHING: no job `needs` it, and `arm` keeps its documented `GITHUB_TOKEN` fallback, because stopping every
+    # arm for a token problem is worse than the degradation this reports. It runs on EVERY push to `main` (this workflow has
+    # no `paths:` filter) and on a `workflow_dispatch`, which is the reading on demand. A reading at a moment, per run.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Probe the token's reach on the write side, failing with a TOKEN-REACH line that names the cause
+        env:
+          A11IGN_BOT_TOKEN: ${{ secrets.A11IGN_BOT_TOKEN }}
+        run: |
+          repo="$GITHUB_REPOSITORY"
+          say() { echo "::error::TOKEN-REACH $repo: $1"; exit 1; }
+          [ -n "$A11IGN_BOT_TOKEN" ] || say "A11IGN_BOT_TOKEN is not set, so nothing here can push, open or arm a pull request with it"
+          status() { curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$@" || true; }
+          basic=$(printf 'x-access-token:%s' "$A11IGN_BOT_TOKEN" | base64 -w0)
+          push=$(status -H "Authorization: Basic $basic" "https://github.com/$repo.git/info/refs?service=git-receive-pack")
+          pulls=$(status -X POST -H "Authorization: Bearer $A11IGN_BOT_TOKEN" -d '{}' "https://api.github.com/repos/$repo/pulls")
+          if [ "$push/$pulls" = "200/422" ]; then
+            echo "TOKEN-REACH $repo: ok (push service 200; POST /pulls 422, authorised, nothing created)"
+            exit 0
+          fi
+          for s in "$push" "$pulls"; do
+            case "$s" in 000|5??) say "CANNOT_TELL the probe could not ask (push $push, pulls $pulls); this is not a reading of the token" ;; esac
+          done
+          [ "$push" = 200 ] || say "the token cannot push here: the push service answered HTTP $push (401: rejected, expired or revoked; 403 or 404: it does not reach this repository, or only reads it)"
+          say "the token pushes but cannot open or arm pull requests here: POST /pulls answered HTTP $pulls where 422 was wanted (403: it lacks pull-requests: write)"
