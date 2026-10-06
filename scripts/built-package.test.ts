@@ -56,7 +56,7 @@ test("every file `bin` names is in the built package", () => {
 
 test("Rspack left no `dist/static`, which is where it copies an asset it has taken `new URL(...)` for", () => {
   requireBuilt();
-  assert.equal(existsSync(join(distDir, "static")), false, "`dist/static` exists: `parser: { url: false }` is gone from rslib.config.mjs");
+  assert.equal(existsSync(join(distDir, "static")), false, "`dist/static` exists: `parser: { url: false }` is set by `libraryPreset` in @a11ign/toolchain (>= 0.1.2), not by rslib.config.mjs, so a toolchain pin below 0.1.2 brings it back");
 });
 
 test("`workerSourceDir()` in the built `code-version.mjs` is a directory, and `dist` itself", async () => {
