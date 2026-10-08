@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """End-to-end accuracy on the dominant announcement shape. HTML in, string out, diffed against NVDA.
 
-    python3 packages/nvda-speech/scripts/measure_heading_accuracy.py
+    python3 src/nvda-speech/scripts/measure_heading_accuracy.py
 
 The spike's final question. `measure_announcement_shapes.py` showed the rule set is BOUNDED — 33 shapes,
 ten covering 94.3% — but bounded is not accurate, and a shape count says nothing about whether a port

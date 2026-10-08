@@ -1,7 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """NVDA's spoken labels for roles and states. GENERATED — do not edit by hand.
 
 Regenerate with `python3 scripts/generate_labels.py`. Derived from NVDA
-(source/controlTypes/{role,state}.py), GPL-2.0-or-later; see this package's LICENSE.
+(source/controlTypes/{role,state}.py), GPL-2.0-or-later; see the licence boundary in src/nvda-speech/README.md.
 
 These strings ARE the product's vocabulary: every announcement this package composes is built
 from them, so a wrong one is a wrong finding that reads perfectly.

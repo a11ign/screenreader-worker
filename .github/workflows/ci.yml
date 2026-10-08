@@ -36,7 +36,7 @@ jobs:
       pull-requests: read
     uses: a11ign/toolchain/.github/workflows/changeset-required.yml@745b552ed550f44cc15c9d797718d350730540ce
     with:
-      releasable-paths: src/ packages/nvda-speech/
+      releasable-paths: src/
 
   checks:
     runs-on: ubuntu-latest
@@ -48,6 +48,10 @@ jobs:
       - uses: actions/setup-node@v7
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      # ADR 0043, Decision 7: one package at the root, no workspace file. The check fails on a workspace of one package, a directory not named for
+      # its package, a second README for one package and a leftover `lerna.json`, and prints which. Run through `node` because 0.1.5's `bin` has no
+      # shebang, so `pnpm exec layout-check` is read by `sh` and exits 2 (filed on a11ign/a11ign, see the pull request).
+      - run: node node_modules/@a11ign/toolchain/dist/layout-check.mjs
       # The build comes first because the package is published BUILT (`prepack` runs it at publish), so a build that fails must read red here
       # and not at the release. The tests run on `src` and do not need it; the typecheck and the lint do not either.
       - run: pnpm run build

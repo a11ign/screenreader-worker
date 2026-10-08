@@ -1,7 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Symbol expansion — why a screen reader says "Logo dot svg" for `alt="Logo.svg"`.
 
 Derived from NVDA (`source/locale/en/symbols.dic`, `source/characterProcessing.py`),
-GPL-2.0-or-later; see this package's LICENSE.
+GPL-2.0-or-later; see the licence boundary in src/nvda-speech/README.md.
 
 This layer is easy to forget and impossible to omit. It is not composition — composition puts role,
 name and states in order — it is what happens to the TEXT before any of that. A port that did

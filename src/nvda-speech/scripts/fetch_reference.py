@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Pull the NVDA source this package is derived from into `reference/` (gitignored).
 
 Kept as a script rather than a vendored copy so the repo holds GENERATED output and the recipe, not
