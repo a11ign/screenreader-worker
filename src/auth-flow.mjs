@@ -66,7 +66,7 @@ const CDP_HOST = "127.0.0.1";
  *   | { capture: string }} Step
  * @typedef {{ name: string, value: string, domain: string, path?: string, expires?: number, httpOnly?: boolean, secure?: boolean, sameSite?: string }} StateCookie
  * @typedef {{ cookies: (StateCookie & { place: number })[], localStorage: { place: number, name: string, value: string }[] }} StateEntries
- * @typedef {{ login: Step[], flow: Step[], upTo: number, state?: { path: string, entries?: StateEntries } }} AuthPlan
+ * @typedef {{ login: Step[], flow: Step[], upTo: number, state?: { path: string, entries?: StateEntries }, idpOrigins?: string[] }} AuthPlan
  */
 
 /** A request the worker refuses to act on: a 400, not a capture. Carries no value, because none was read yet. */
@@ -216,7 +216,7 @@ function validateSteps(steps, origin, label) {
  */
 export function validateAuthRequest(raw, url) {
   if (!isObject(raw)) throw new AuthRequestError("auth must be a mapping with a login");
-  refuseUnknownKeys(raw, ["login", "flow", "upTo", "state"], "auth");
+  refuseUnknownKeys(raw, ["login", "flow", "upTo", "state", "idpOrigins"], "auth");
   let origin;
   try { origin = new URL(url).origin; } catch { throw new AuthRequestError("auth needs a capture url to pin its origin to"); }
   const login = validateSteps(raw.login, origin, "login");
@@ -234,7 +234,40 @@ export function validateAuthRequest(raw, url) {
   if (typeof upTo !== "number" || !Number.isInteger(upTo) || upTo < 0 || upTo > flow.length) {
     throw new AuthRequestError("auth.upTo must be a step index within auth.flow");
   }
-  return raw.state === undefined ? { login, flow, upTo } : { login, flow, upTo, state: stateRef(raw.state) };
+  const plan = raw.state === undefined ? { login, flow, upTo } : { login, flow, upTo, state: stateRef(raw.state) };
+  return raw.idpOrigins === undefined ? plan : { ...plan, idpOrigins: validateIdpOrigins(raw.idpOrigins, origin) };
+}
+
+/**
+ * Why one `idpOrigins` entry is not an origin the worker will allow, or `null` when it is one. The CLI's own copy is `idpOriginProblem`
+ * in `flows.ts`; the worker holds it again because the list arrives over HTTP from anywhere. The entry is never echoed, since the
+ * request may have put a credential in it.
+ *
+ * @param {unknown} entry @param {string} appOrigin @returns {string | null}
+ */
+function idpOriginProblem(entry, appOrigin) {
+  if (typeof entry !== "string" || entry.trim() === "") return "is not a text";
+  if (entry.includes("*")) return "holds a wildcard; list each origin exactly";
+  let parsed;
+  try { parsed = new URL(entry); } catch { return "is not an http or https origin"; }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "is not an http or https origin";
+  if (parsed.username !== "" || parsed.password !== "") return "carries a username or password";
+  if (parsed.pathname !== "/" || parsed.search !== "" || parsed.hash !== "") return "carries a path, query or fragment; an origin is a scheme, a host and a port";
+  return parsed.origin === appOrigin ? "is the app's own origin, which needs no allowance" : null;
+}
+
+/**
+ * `auth.idpOrigins`: exact origins a LOGIN may pass through, normalised to `URL.origin` and de-duplicated.
+ * @param {unknown} raw @param {string} appOrigin @returns {string[]}
+ */
+function validateIdpOrigins(raw, appOrigin) {
+  if (!Array.isArray(raw)) throw new AuthRequestError("auth.idpOrigins must be a list of origins");
+  const origins = raw.map((entry, index) => {
+    const problem = idpOriginProblem(entry, appOrigin);
+    if (problem !== null) throw new AuthRequestError(`auth.idpOrigins entry ${index + 1} ${problem}`);
+    return new URL(entry).origin;
+  });
+  return [...new Set(origins)];
 }
 
 /**
@@ -518,6 +551,7 @@ export function expectationMet(nodes, { kind, name }) {
  * @typedef {{
  *   navigate(url: string): Promise<{ ok: boolean, error?: string }>,
  *   origin(): Promise<string>,
+ *   url?(): Promise<string>,
  *   axNodes(): Promise<AxNode[]>,
  *   inputType(handle: number): Promise<string>,
  *   fill(handle: number, text: string): Promise<void>,
@@ -697,10 +731,16 @@ async function assertNotShownLoginWall(driver, login) {
     + "not examined as the product.");
 }
 
-/** @param {AuthDriver} driver @param {string} origin @param {string} where */
-async function assertStillOnOrigin(driver, origin, where) {
+/**
+ * The page must be on the pinned origin, or on one of `allowed`: the identity-provider origins the flow declared, passed ONLY while
+ * the login is between its steps (`allowedOrigins`). An origin not named there ends `left-origin` with the sentence it always had.
+ * The CLI's own copy is `assertStillOnOrigin` in `interpreter.ts`.
+ *
+ * @param {AuthDriver} driver @param {string} origin @param {string} where @param {readonly string[]} [allowed]
+ */
+async function assertStillOnOrigin(driver, origin, where, allowed = []) {
   const now = await currentOrigin(driver);
-  if (now !== origin) {
+  if (now !== origin && !allowed.includes(now)) {
     throw loginFailed("left-origin", where, `the page is on ${now}, not ${origin}`,
       "A redirect to an identity provider is SSO, which v1 does not do: use a dedicated test account without MFA or SSO.");
   }
@@ -708,21 +748,37 @@ async function assertStillOnOrigin(driver, origin, where) {
 
 /**
  * @typedef {{ steps: Step[], origin: string, driver: AuthDriver, env: Record<string, string | undefined>,
- *   mark: (event: string, detail: Record<string, unknown>) => void, phase: "login" | "flow", bindTimeoutMs: number }} RunContext
+ *   mark: (event: string, detail: Record<string, unknown>) => void, phase: "login" | "flow", bindTimeoutMs: number,
+ *   idpOrigins?: readonly string[] }} RunContext
  */
+
+/**
+ * The origins besides the app's that the page may be on AFTER this step: only a login's steps before its last (that last is the
+ * `expect` the validation guarantees, and a login that ends parked on the identity provider has signed no one in to the app).
+ * The flow that follows gets none, so the allowance ends with the login.
+ *
+ * @param {RunContext} run @param {number} index 1-based, as `runNumbered` counts
+ * @returns {readonly string[]}
+ */
+function allowedOrigins(run, index) {
+  return run.phase === "login" && index < run.steps.length ? run.idpOrigins ?? [] : [];
+}
 
 /** @param {Step} step @returns {string} the step's verb, and never a value */
 const verbOf = (step) => /** @type {string} */ (Object.keys(step)[0]);
 
 /**
- * @param {Step} step @param {RunContext} run @param {string} where
+ * @param {Step} step @param {RunContext} run @param {{ where: string, index: number }} position
  */
-async function runStep(step, run, where) {
+async function runStep(step, run, { where, index }) {
   const { driver, origin, env, bindTimeoutMs } = run;
   if ("goto" in step) {
     const result = await driver.navigate(new URL(step.goto, origin).href);
     if (!result.ok) throw loginFailed("expect-not-met", where, `${step.goto} could not be loaded (${result.error ?? "no reason given"})`);
   } else if ("fill" in step) {
+    // Only a flow that declares an identity provider can have a fill meet a page that is not the app's, and then it is asked BEFORE
+    // typing: the last check was after the previous step, and a page can move on its own since. Nothing is typed into an undeclared origin.
+    if ((run.idpOrigins ?? []).length > 0) await assertStillOnOrigin(driver, origin, where, allowedOrigins(run, index));
     const { field, within, nth, value, fromEnv } = step.fill;
     const handle = await bindControl(driver, { roles: FILL_ROLES, name: field, within, nth }, where, bindTimeoutMs);
     const text = fromEnv === undefined ? String(value) : readCredential(fromEnv, env);
@@ -740,21 +796,23 @@ async function runStep(step, run, where) {
     const { control, within, nth } = step.press;
     await driver.click(await bindControl(driver, { roles: PRESS_ROLES, name: control, within, nth }, where, bindTimeoutMs));
   } else if ("expect" in step) {
-    await expectStepMet(step.expect, run, where);
+    await expectStepMet(step.expect, run, { where, index });
   }
 }
 
 /**
- * @param {{ kind: "heading" | "control" | "text", name: string, timeoutSeconds: number }} expected @param {RunContext} run @param {string} where
+ * @param {{ kind: "heading" | "control" | "text", name: string, timeoutSeconds: number }} expected @param {RunContext} run
+ * @param {{ where: string, index: number }} position
  */
-async function expectStepMet(expected, run, where) {
+async function expectStepMet(expected, run, { where, index }) {
   const met = await until(async () => (expectationMet(await run.driver.axNodes(), expected) ? true : undefined),
     expected.timeoutSeconds * MS_PER_SECOND);
   if (!met) {
     throw await explainFailure(run.driver, "expect-not-met", where, `no ${expected.kind} "${expected.name}" appeared within ${expected.timeoutSeconds} s`);
   }
-  // A heading on another site is not this site's dashboard: the condition is met only on the pinned origin.
-  await assertStillOnOrigin(run.driver, run.origin, where);
+  // A heading on another site is not this site's dashboard: the condition is met only on the pinned origin. A declared identity
+  // provider counts for an `expect` in the middle of a login (its page is where the next step happens), and never for the last.
+  await assertStillOnOrigin(run.driver, run.origin, where, allowedOrigins(run, index));
 }
 
 /**
@@ -770,8 +828,8 @@ async function runNumbered(step, index, run) {
   if (verb === "capture") return; // a capture point is where the caller stops; it acts on nothing
   const body = /** @type {any} */ (step)[verb];
   run.mark("authStep", { phase: run.phase, index, verb, name: typeof body === "string" ? undefined : body.field ?? body.control ?? body.name });
-  await runStep(step, run, where);
-  if (verb !== "expect") await assertStillOnOrigin(run.driver, run.origin, where);
+  await runStep(step, run, { where, index });
+  if (verb !== "expect") await assertStillOnOrigin(run.driver, run.origin, where, allowedOrigins(run, index));
 }
 
 /** @param {RunContext} run */
@@ -848,6 +906,20 @@ async function signInFromState(state, run, url) {
 }
 
 /**
+ * The requested page, loaded once the login and flow have run. **A flow that declares an identity provider and ends ON the requested
+ * page does not load it again**: the token such a login yields can live only in the page's memory, and a load discards it. Every
+ * other run loads it, as before; so does a driver that cannot say where the page is. The CLI's own copy is `loadRequestedPage` in
+ * `interpreter.ts`.
+ *
+ * @param {{ driver: AuthDriver, url: string, idpOrigins: readonly string[], land?: (url: string) => Promise<{ ok: boolean, error?: string }> }} request
+ */
+async function loadRequestedPage({ driver, url, idpOrigins, land }) {
+  if (idpOrigins.length > 0 && driver.url !== undefined && new URL(await driver.url()).href === new URL(url).href) return;
+  const landed = await (land ?? ((target) => driver.navigate(target)))(url);
+  if (!landed.ok) throw loginFailed("expect-not-met", "the requested page", `${url} could not be loaded after the login (${landed.error ?? "no reason given"})`);
+}
+
+/**
  * The whole sign-in: the login, then the flow to its capture point, then the requested page.
  *
  * `authApplied` is decided by the CALLER, and only after this returns: a worker that never reaches the end of
@@ -869,12 +941,11 @@ export async function signIn({ plan, url, driver, env, mark, bindTimeoutMs = BIN
   const origin = new URL(url).origin;
   const flow = plan.flow.slice(0, plan.upTo);
   /** @param {Step[]} steps @param {"login" | "flow"} phase @returns {RunContext} */
-  const run = (steps, phase) => ({ steps, origin, driver, env, mark, phase, bindTimeoutMs });
+  const run = (steps, phase) => ({ steps, origin, driver, env, mark, phase, bindTimeoutMs, idpOrigins: plan.idpOrigins ?? [] });
   if (state === undefined) await runSteps(run(plan.login, "login"));
   else await signInFromState(state, run(plan.login, "login"), url);
   await runSteps(run(flow, "flow"));
-  const landed = await (land ?? ((target) => driver.navigate(target)))(url);
-  if (!landed.ok) throw loginFailed("expect-not-met", "the requested page", `${url} could not be loaded after the login (${landed.error ?? "no reason given"})`);
+  await loadRequestedPage({ driver, url, land, idpOrigins: state === undefined ? plan.idpOrigins ?? [] : [] }); // a saved state signs in on the page's own load
   await assertStillOnOrigin(driver, origin, "the requested page");
   await assertNotShownLoginWall(driver, plan.login);
   mark("authApplied", { steps: (state === undefined ? plan.login.length : 1) + flow.length });
@@ -1047,6 +1118,10 @@ export async function openCdpDriver({ port, readyTimeoutMs = CDP_READY_TIMEOUT_M
     },
     async origin() {
       const { result } = await session.send("Runtime.evaluate", { expression: "location.origin", returnByValue: true });
+      return String(result?.value ?? "");
+    },
+    async url() {
+      const { result } = await session.send("Runtime.evaluate", { expression: "location.href", returnByValue: true });
       return String(result?.value ?? "");
     },
     async axNodes() {

@@ -25,15 +25,20 @@ import { assertCredentialsPresent, openCdpDriver, purgeSession, signIn } from ".
 import { errorText } from "./error-text.mjs";
 
 /**
+ * `openDriver` and `markNavigated` are the two things a test replaces: the driver (a real one needs a Chromium on the worker's port)
+ * and the flag the capture reads to decide whether NVDA must re-read its buffer.
+ *
  * @param {{ plan: import("./auth-flow.mjs").AuthPlan, url: string,
  *   diag: { mark: (event: string, detail?: Record<string, unknown>) => void }, env?: Record<string, string | undefined>,
- *   port?: number }} request
+ *   port?: number, openDriver?: typeof openCdpDriver, markNavigated?: () => void }} request
  * @returns {Promise<{ end: () => Promise<void> }>}
  */
-export async function beginAuthentication({ plan, url, diag, env = process.env, port = CDP_PORT }) {
+export async function beginAuthentication({
+  plan, url, diag, env = process.env, port = CDP_PORT, openDriver = openCdpDriver, markNavigated = markWindowNavigatedByLogin,
+}) {
   // Before a browser is driven at all: a login that runs with an empty field counts against an account's lockout.
   assertCredentialsPresent(plan, env);
-  const driver = await openCdpDriver({ port });
+  const driver = await openDriver({ port });
   let ended = false;
   const end = async () => {
     if (ended) return;
@@ -52,7 +57,6 @@ export async function beginAuthentication({ plan, url, diag, env = process.env, 
       land: async (target) => {
         try {
           await navigateExisting(target);
-          markWindowNavigatedByLogin();
           return { ok: true };
         } catch (error) {
           return { ok: false, error: errorText(error) };
@@ -63,5 +67,8 @@ export async function beginAuthentication({ plan, url, diag, env = process.env, 
     await end();
     throw error;
   }
+  // Here and not inside `land`: a declared login that ends ON the requested page is not loaded again (the token lives in the page's
+  // memory), so `land` never runs, yet the window the capture launched was still re-pointed by the login and NVDA's buffer is stale.
+  markNavigated();
   return { end };
 }
