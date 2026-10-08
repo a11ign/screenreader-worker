@@ -233,6 +233,21 @@ export async function captureWithNvda(url, opts = {}) {
 }
 
 /**
+ * DIAGNOSTIC ONLY: `A11Y_DIAG_SKIP_LOGIN_MARK=1` in the worker PROCESS's environment makes the login NOT mark the window navigated, so
+ * a control run can show whether that mark is what makes NVDA read the signed-in page (a11ign #4107). Read per capture, so whoever
+ * drives the worker sets it on the server process for the control run and unsets it after. Nothing in the request protocol, the CLI
+ * or the Action can set it. **A capture taken with it set is not a product reading**: the record says so with `loginMarkSuppressed`.
+ * Only the exact value `1` turns it on; unset, empty or `0` returns nothing, and `beginAuthentication` marks exactly as it always has.
+ *
+ * @param {{ diag: Diag, env?: Record<string, string | undefined> }} ctx
+ * @returns {{ markNavigated?: () => void }}
+ */
+export function loginMarkOverride({ diag, env = process.env }) {
+  if (env.A11Y_DIAG_SKIP_LOGIN_MARK !== "1") return {};
+  return { markNavigated: () => diag.mark("loginMarkSuppressed") };
+}
+
+/**
  * Sign in when the request carries `auth`; otherwise nothing. A login that fails closes the browser it opened:
  * nothing else can, because the capture never reached its own cleanup.
  *
@@ -242,7 +257,7 @@ export async function captureWithNvda(url, opts = {}) {
 async function signInIfAsked({ opts, url, diag, browser, reuseBrowser }) {
   if (!opts.auth) return null;
   try {
-    return await beginAuthentication({ plan: opts.auth, url, diag });
+    return await beginAuthentication({ plan: opts.auth, url, diag, ...loginMarkOverride({ diag }) });
   } catch (error) {
     endCaptureUrls();
     await stopAndCleanup(diag, browser, { keepScreenReader: false, reuseBrowser })
