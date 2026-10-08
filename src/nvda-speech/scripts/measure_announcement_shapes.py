@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """How many rules would a port of NVDA's composition actually need? Answered from the corpus.
 
-    python3 packages/nvda-speech/scripts/measure_announcement_shapes.py
+    python3 src/nvda-speech/scripts/measure_announcement_shapes.py
 
 This is the measurement the spike's go/no-go rested on, kept so the decision is re-derivable rather
 than remembered. The bar was set BEFORE running it: ten patterns covering 90% of announcements means

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Extract NVDA's role and state labels into `nvda_speech/labels.py`.
 
 Generated rather than hand-copied, deliberately. There are 159 roles and 52 states, and a
@@ -64,10 +65,11 @@ def main() -> None:
         return f"{name}: dict[str, str] = {{\n{rows}\n}}\n"
 
     OUT.write_text(
+        '# SPDX-License-Identifier: GPL-3.0-or-later\n'
         '"""NVDA\'s spoken labels for roles and states. GENERATED — do not edit by hand.\n'
         '\n'
         'Regenerate with `python3 scripts/generate_labels.py`. Derived from NVDA\n'
-        '(source/controlTypes/{role,state}.py), GPL-2.0-or-later; see this package\'s LICENSE.\n'
+        '(source/controlTypes/{role,state}.py), GPL-2.0-or-later; see the licence boundary in src/nvda-speech/README.md.\n'
         '\n'
         'These strings ARE the product\'s vocabulary: every announcement this package composes is built\n'
         'from them, so a wrong one is a wrong finding that reads perfectly.\n'

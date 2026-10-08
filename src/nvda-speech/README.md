@@ -1,4 +1,4 @@
-# @a11ign/nvda-speech
+# nvda-speech
 
 **What NVDA would say about an element, computed without Windows.**
 
@@ -10,6 +10,10 @@ screen reader. That is the whole point — it is testable against the 2,122 real
 
 This package is **derived from NVDA**, which is GPL-2.0-**or-later**. "Or later" is what makes this
 viable: the port is taken under GPL-3.0, which combines with this repo's AGPL-3.0 engine.
+
+This directory sits inside the AGPL-3.0-or-later `@a11ign/screenreader-worker` package but is not part of it: every `.py` file
+here carries `SPDX-License-Identifier: GPL-3.0-or-later`, and the published tarball (`files: ["dist", "README.md", "LICENSE"]`) never
+contains it. GPL-3.0 and AGPL-3.0 each permit combination with the other (section 13 of both).
 
 **`@a11ign/evidence` is Apache-2.0 and MUST NOT import this package.** That split exists so
 third parties can write capture backends without inheriting a copyleft obligation (ADR 0006), and
@@ -52,6 +56,8 @@ symbols each piece came from, so the derivation is auditable.
 | `source/speech/speech.py` | `getControlFieldSpeech`, `getPropertiesSpeech` |
 
 ## Refresh
+
+From this directory (`src/nvda-speech/`):
 
     python3 scripts/fetch_reference.py     # pull NVDA source into reference/
     python3 scripts/generate_labels.py     # regenerate nvda_speech/labels.py

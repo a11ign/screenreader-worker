@@ -12,11 +12,7 @@ updates:
     commit-message:
       # The handle the org's gate recognises a dependency pull request by: every title starts `deps:`.
       prefix: deps
-    # Workspace members are linked by pnpm and `changeset version` owns their versions; left alone, Dependabot would
-    # offer the registry's copy over the workspace's.
     ignore:
-      - dependency-name: "@a11ign/screenreader-worker"
-      - dependency-name: "@a11ign/nvda-speech"
       # NOT a Dependabot merge: a11ign/a11ign ADR 0033 makes the guidepup version cache-key EVIDENCE, and 0.34.0 upgrades
       # NVDA to 2026.2, so a move needs `evidence:check`, a recapture and a fleet-wide change, which is its own row
       # (screenreader-worker#7 was closed for this; `isolation-smoke.mjs` pins 0.31.0 on purpose).

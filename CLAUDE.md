@@ -167,8 +167,9 @@ Capture timing has TWO populations. On the ~12 s CORPUS capture the largest phas
 ## The repository (moved here from the old root `README.md`, #3748)
 
 The repository root IS the published package, `@a11ign/screenreader-worker` (**AGPL-3.0-or-later**; `README.md` is its npm page and is
-shipped in the tarball), with `packages/nvda-speech` beside it as a workspace member: `@a11ign/nvda-speech`,
-**GPL-3.0-or-later** (derived from NVDA), **private**, never published on its own. Both came from
+shipped in the tarball), and `src/nvda-speech/` beside the worker's code holds the Python port of NVDA's announcement composition:
+**GPL-3.0-or-later** (derived from NVDA; an SPDX line on each `.py`), never part of the tarball. It is not a package: there is no
+workspace file and no second `package.json` (ADR 0043, Decision 7), and CI's `layout-check` step keeps it so. Both came from
 [`a11ign/a11ign`](https://github.com/a11ign/a11ign) with their history.
 
 The worker is at the root so that a clone of this repository at `packages/nvda-worker` on a guest puts `src/` where the guests read it

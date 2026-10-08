@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Symbol expansion, checked against announcements a real screen reader actually produced.
 
 Every case here is either taken from this repo's corpus or from a live capture of a real website, which
@@ -5,7 +6,7 @@ is the point: the acceptance bar for a port is "it reproduces observed behaviour
 the source". Three of these failed in three different ways while the port was being written, and each
 failure would have produced a plausible-looking wrong announcement rather than an error.
 
-    python3 -m pytest packages/nvda-speech/tests -q
+    python3 -m pytest src/nvda-speech/tests -q
 
 ## Needs `reference/symbols.dic`, which is fetched, not committed
 
@@ -32,7 +33,7 @@ needs_symbols_dic = pytest.mark.skipif(
     not DIC_PATH.is_file(),
     reason=(
         f"{DIC_PATH} is gitignored and fetched on demand, not committed — run "
-        "`python3 packages/nvda-speech/scripts/fetch_reference.py` to get it. Honest skip, not a pass."
+        "`python3 src/nvda-speech/scripts/fetch_reference.py` to get it. Honest skip, not a pass."
     ),
 )
 
