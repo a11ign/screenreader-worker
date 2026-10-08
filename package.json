@@ -1,6 +1,6 @@
 {
   "name": "@a11ign/screenreader-worker",
-  "version": "0.1.0",
+  "version": "0.5.1",
   "description": "Drives a real NVDA screen reader through real navigation on Windows and returns what it announced. The HTTP contract is the API.",
   "license": "AGPL-3.0-or-later",
   "type": "module",
