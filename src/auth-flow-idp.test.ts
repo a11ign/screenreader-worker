@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { AuthRequestError, openCdpDriver, signIn, validateAuthRequest } from "./auth-flow.mjs";
+import { beginAuthentication } from "./capture-auth.mjs";
 
 const APP = "https://app.example.test";
 const IDP = "https://idp.example.test";
@@ -261,4 +262,25 @@ test("the CDP driver's url() is the page's full address, query and all, and move
     await new Promise<void>((resolve) => { site.close(() => resolve()); site.closeAllConnections(); });
     await (browser as { stop: () => Promise<void> }).stop();
   }
+});
+
+// ---- the seam: the window is marked navigated whether or not the requested page was loaded again (`capture-auth.mjs`) -----------------
+
+const noDiag = { mark: () => undefined };
+
+test("SEAM: a declared login that ends on the requested page is NOT loaded again, and the window is STILL marked navigated for NVDA", async () => {
+  const site = fakeSite();
+  let marks = 0;
+  const plan = validateAuthRequest({ login: LOGIN, idpOrigins: [IDP] }, ACCOUNT_URL);
+  await beginAuthentication({ plan, url: ACCOUNT_URL, diag: noDiag, env: ENV, openDriver: async () => site.driver as never, markNavigated: () => { marks += 1; } });
+  assert.equal(site.visited.filter((visit) => visit === `${APP}/account`).length, 1, "the requested page was visited once, by the login, and not navigated to again");
+  assert.equal(marks, 1);
+});
+
+test("CONTROL: a login that fails is not marked, because the capture does not go on", async () => {
+  const site = fakeSite();
+  let marks = 0;
+  const plan = validateAuthRequest({ login: LOGIN }, ACCOUNT_URL); // the same flow, IdP undeclared: left-origin
+  await assert.rejects(beginAuthentication({ plan, url: ACCOUNT_URL, diag: noDiag, env: ENV, openDriver: async () => site.driver as never, markNavigated: () => { marks += 1; } }));
+  assert.equal(marks, 0);
 });
