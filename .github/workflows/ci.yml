@@ -1,6 +1,6 @@
-# The merge gate. Every pull request and every merge-queue entry runs lint, the typecheck and the tests, and the single job below
-# is named `gate` because that is the check `main`'s protection and the `merge-queue-main` ruleset require
-# (`docs/code-repository-protection.json` in a11ign/a11ign names it). `merge_group` is what lets the queue's
+# The merge gate. Every pull request and every merge-queue entry runs lint, the typecheck and the tests (`checks`) and the changeset check
+# (`changeset`), and the last job below, `gate`, waits for both. It is named `gate` because that is the check `main`'s protection and the
+# `merge-queue-main` ruleset require (`docs/code-repository-protection.json` in a11ign/a11ign names it). `merge_group` is what lets the queue's
 # temporary branches run it: a required check that never runs on one blocks the queue for ever.
 #
 # Ubuntu only, on purpose: the tests here drive nothing real. Anything that needs NVDA on Windows is skipped with its
@@ -8,7 +8,11 @@
 name: ci
 
 on:
+  # `edited` because the changeset check reads the pull request's BODY: adding its `no-release:` line is an edit, and a run that did not repeat
+  # would leave the check red on a body that is now right. The cost is the whole gate once per body edit, which is deliberate: the concurrency
+  # group below cancels the run an edit interrupts, so an edit must run everything or it would cancel a full run for a partial one.
   pull_request:
+    types: [opened, synchronize, reopened, edited]
   merge_group:
 
 permissions:
@@ -19,7 +23,22 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  gate:
+  # A releasable change needs a changeset or a `no-release:` line (a11ign/a11ign#4127, the class fix for #4084: screenreader-worker#25 and #26 changed
+  # shipped code with none and released nothing). `releasable-paths` is this repository's `dora` entry's `releasablePaths` in a11ign/a11ign
+  # `.agent-org/project.json`, joined by a space and character for character: the worker's entry was wrong until #4092, and a path that matches
+  # nothing passes every pull request. On a merge-group entry the called job succeeds without evaluating (the pull request's own run decided).
+  # Pinned by full sha, as `release.yml` pins its shared workflow; Dependabot's `github-actions` entry moves the pin.
+  changeset:
+    # A called workflow cannot hold more than its caller gives, and this file's `contents: read` alone makes GitHub refuse the whole run at
+    # startup (`startup_failure`: no job, no log). The called workflow reads the pull request's files, so it needs `pull-requests: read` too.
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: a11ign/toolchain/.github/workflows/changeset-required.yml@745b552ed550f44cc15c9d797718d350730540ce
+    with:
+      releasable-paths: src/ packages/nvda-speech/
+
+  checks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -37,3 +56,21 @@ jobs:
       - run: pnpm run lint
       - run: pnpm run typecheck
       - run: pnpm test
+
+  # THE REQUIRED CHECK. `main`'s protection and the `merge-queue-main` ruleset name `gate`, so it stays the one check that answers for the run. It
+  # waits for both jobs above and accepts `success` ONLY: `always()` because a job whose need failed is SKIPPED, and a skipped required check counts
+  # as passed; and no `skipped` allowance, because the changeset job succeeds on a merge-group entry rather than skipping, so a skip here means it
+  # did not run.
+  gate:
+    needs: [changeset, checks]
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job ran, and ran clean
+        run: |
+          for result in "${{ needs.changeset.result }}" "${{ needs.checks.result }}"; do
+            if [ "$result" != "success" ]; then
+              echo "::error::a job reported '$result', not success"
+              exit 1
+            fi
+          done
