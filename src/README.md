@@ -82,6 +82,38 @@ Start-ScheduledTask -TaskName "a11ycap"
 Then collect `transcript.json` and feed it to the judge on the control plane:
 `npx tsx src/lab/judge-file.ts transcript.json "<the user's task>"`.
 
+### A signed-in capture on the worker's own machine
+
+```
+node capture.mjs <url> <outFile> [steps] --auth <plan.json>
+```
+
+**This runs on the worker's own machine, and its credentials must be fakes belonging to no account.** The login's secrets are read from THIS process's
+environment by the names the plan gives (`fromEnv`), and the transcript is written to `<outFile>`: a real account's session would be on that disk.
+It is the one authenticated capture that needs no remote channel. The CLI refuses a remote `--worker` for a request carrying `auth`, and the worker
+answers `403` to one whose socket peer is not loopback (ADR 0038, Constraint 1), so `npm run witness -- <url> --login-flow … --worker <remote>` can never
+run. The page itself may still be served from another machine: the browser opening it is a navigation, not the auth channel.
+
+`plan.json` is the wire `auth` object, the same one a capture request carries: `login` (ending in `expect`, `fromEnv` only, no literals) and optionally
+`idpOrigins`. A plan for #4086's fixture, whose IdP is a second port:
+
+```json
+{
+  "login": [
+    { "goto": "/login" },
+    { "fill": { "field": "Email", "fromEnv": "IDP_USER" } },
+    { "fill": { "field": "Password", "fromEnv": "IDP_PASSWORD" } },
+    { "press": { "control": "Sign in" } },
+    { "expect": { "kind": "heading", "name": "Account", "timeoutSeconds": 10 } }
+  ],
+  "idpOrigins": ["http://<fixture-host>:<idp-port>"]
+}
+```
+
+It prints, in order: whether `A11Y_DIAG_SKIP_LOGIN_MARK` is set in this process (only the exact value `1` is; set, the run is the CONTROL and not a product
+reading), then `HEADING NVDA announced: "…"` (the first phrase of the transcript that names a heading; the transcript begins after the login) or
+`NO HEADING announced among N phrases`. A variable the plan names that is unset or empty stops the run with a sentence naming it before anything is launched.
+
 ## Gotchas learned the hard way
 
 - **Interactive session is mandatory.** Over plain SSH, NVDA announces nothing.
