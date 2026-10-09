@@ -8,8 +8,8 @@ rem hardcoded C:\Users\<name>\a11ign breaks the moment the worker is set up unde
 rem different account -- which is exactly what happens when a prebuilt VM image is reused.
 rem See docs/local-worker-vm.md.
 rem
-rem server.ts is addressed as "%~dp0server.mjs" -- BESIDE this file -- rather than as a path
-rem from the repo root. It used to read src\capture\nvda\server.ts, and when the repo was
+rem server.ts is addressed as "%~dp0server.ts" -- BESIDE this file -- rather than as a path
+rem from the repo root. It used to read src\capture\nvda\server.mjs, and when the repo was
 rem restructured into packages/ that became a file which does not exist: node exited
 rem immediately, nothing listened on 8765, and provisioning reported only "worker did not
 rem listen". A sibling reference cannot rot when the tree moves.
