@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Keep the durable Edge profile durable *and* bounded, and clear strays left by a previous worker.
  *
@@ -129,7 +128,7 @@ const PRUNE_ABOVE_MB = 800;
  * @returns {string[]} absolute paths to remove; empty when the profile is small enough to leave alone
  */
 export function prunablePaths({ megabytes, root, exists }: { megabytes: number | null; root: string; exists: (path: string) => boolean; }): string[] {
-  const absolute = (/** @type {string} */ relative: string) => join(root, ...relative.split("/"));
+  const absolute = (relative: string) => join(root, ...relative.split("/"));
   const always = [...ALWAYS_REGENERABLE, ...FORM_DATA_STORES].map(absolute).filter(exists);
   // The cache list is size-gated because a warm cache genuinely speeds Edge up; the always-list is not,
   // because none of it helps and BrowserMetrics actively hurts.
@@ -232,7 +231,7 @@ export function reportBrowserPolicyDrift(actual: Record<string, unknown> | null 
  * `nvda.start` timeouts.
  *
  * Takes the image name rather than assuming `msedge.exe`, and the caller passes the one image this guest
- * is configured for. It comes from the preset allow-list in `browsers.mjs`, never from a request — which
+ * is configured for. It comes from the preset allow-list in `browsers.ts`, never from a request — which
  * is what makes putting it on a `taskkill` command line safe.
  *
  * @param {{ count: number | null, image: string }} stray count from diagnostics.processCounts
@@ -439,7 +438,7 @@ function readRecordedOrigin(root: string, { exists, read, log }: {
     return read(originPath).trim() || null;
   } catch (cause) {
     log(`browser-profile: ${originPath} exists and could not be read: `
-      + `${/** @type {Error} */ (cause).message} -- falling back to ${USED_MARKER} alone`);
+      + `${(cause as Error).message} -- falling back to ${USED_MARKER} alone`);
     return null;
   }
 }
@@ -476,7 +475,7 @@ export function readOrStampProfileIdentity(root: string, deps: {
       // A stamp we cannot read is NOT an absent one: adopting here would report a cold profile as the
       // corpus's own. Say so and let the caller decide, rather than guessing in the safe-looking
       // direction, which is how a silent catch once hid an outage in this repository.
-      log(`browser-profile: ${stampPath} exists and could not be read: ${/** @type {Error} */ (cause).message}`);
+      log(`browser-profile: ${stampPath} exists and could not be read: ${(cause as Error).message}`);
       return { identity: "unreadable", adopted: false, why: `stamp present but unreadable at ${stampPath}` };
     }
   }
@@ -499,7 +498,7 @@ export function readOrStampProfileIdentity(root: string, deps: {
     } catch (cause) {
       // The identity still stands for THIS capture; what is lost is that the next boot re-derives it.
       // Recorded rather than swallowed, and rather than failing a capture over a bookkeeping write.
-      log(`browser-profile: could not stamp ${stampPath}: ${/** @type {Error} */ (cause).message}`);
+      log(`browser-profile: could not stamp ${stampPath}: ${(cause as Error).message}`);
     }
   }
   log(`browser-profile: ${decision.why}`);

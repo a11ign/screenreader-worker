@@ -4,6 +4,7 @@
   "extends": "@a11ign/toolchain/tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
+    "rewriteRelativeImportExtensions": true,
     "noEmit": true
   },
   "include": ["src"],

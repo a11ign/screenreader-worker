@@ -1,9 +1,8 @@
-// @ts-check
 /**
- * capture-probes.mjs — walk a live page by structural type and run the ~30 probes that observe how it
+ * capture-probes.ts — walk a live page by structural type and run the ~30 probes that observe how it
  * responds to interaction.
  *
- * Split out of `capture-core.mjs`'s "Structural navigation + interaction phase" section, moved as ONE
+ * Split out of `capture-core.ts`'s "Structural navigation + interaction phase" section, moved as ONE
  * unit rather than by individual probe: several probes here reference each other's lessons directly in
  * their own comments (`probeFocusContext`, `probeTypedFeedback`, `probeArrowNavigation`,
  * `probeDialogEscape` and `probeFocusReveal`/`walkToReveal` all cite a sibling's retry pattern, escape
@@ -12,11 +11,11 @@
  * and the sequencing in `probePasses`/`navigateByStructure` are equally load-bearing and untouched; this
  * is a movement of code, not a reordering.
  *
- * Depends on `capture-setup.mjs` for the handful of primitives the browser/NVDA lifecycle also needs
+ * Depends on `capture-setup.ts` for the handful of primitives the browser/NVDA lifecycle also needs
  * (`withTimeout`, `errMsg`, `anchorToTop`, `waitForSpeechQuiet`, `refreshBrowseBuffer`, `reportedTitle`)
- * — imported rather than duplicated, so there is still exactly one definition of each. `capture-core.mjs`
+ * — imported rather than duplicated, so there is still exactly one definition of each. `capture-core.ts`
  * calls back in at exactly one place, `navigateByStructureThenAudit`, to run this whole phase; nothing
- * here calls back into `capture-core.mjs`.
+ * here calls back into `capture-core.ts`.
  */
 import {
   crossCheckStructure, dedupeKey, elementsListRowName, MIN_CONTROL_NAME_LEN, probeKindFor,
@@ -40,50 +39,61 @@ import {
   NAV_TIMEOUT_MS, QUERY_TIMEOUT_MS, STATE_POLL_MS,
   // `nvda`/`ensureGuidepup` rather than `@guidepup/guidepup` directly (#1772): that package throws at
   // IMPORT where no screen reader exists, so importing it here statically crashed every consumer of this
-  // file on any other host. `capture-setup.mjs` already owns the one lazy-loaded binding; `nvda` is a live
+  // file on any other host. `capture-setup.ts` already owns the one lazy-loaded binding; `nvda` is a live
   // `export let`, so it reflects whatever `ensureGuidepup()` fills in there.
   nvda, ensureGuidepup,
 } from "./capture-setup.ts";
 
+// JSON from the browser or the page (a CDP reply, a `page.evaluate` result, a request body): its shape is the other end's, and
+// modelling it is a job of its own. Named once here so the boundary is greppable and `no-explicit-any` still bites everywhere else.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Untyped = any;
+
 /**
- * @typedef {import("./capture-pure.ts").CaptureDiagnostics} Diag
- *   The mark log, threaded through almost every function here. Aliased rather than re-described: this
- *   file passes it to forty of them, and forty inline shapes is forty chances to disagree.
- *
- * @typedef {{ headings: string[], landmarks: string[], formFields: string[], graphics: string[], links: string[], lists: string[], tableCells: string[], frames: string[] }} CapturedStructure
- * @typedef {{ control: string, after: string, afterUnresolved?: boolean }} AnnouncedChange
- * @typedef {{ controls: string[], stateChanges: AnnouncedChange[], formChanges: AnnouncedChange[], postSubmitFields: string[], focusOrder: string[], routeChange?: unknown, navigatedOnSubmit?: unknown, postSubmitNames?: string[], leftSite?: unknown }} CapturedInteraction
- *
- * @typedef {{ asked: boolean, complete?: boolean, why?: string, activated?: number,
- *             stop?: { prev: string, next: string } }} Observation
- *   Whether this capture ASKED about a channel, and what it can support if it did — capture-protocol 9.
- *
- *   Every channel except `media` is a bare array, and a bare array cannot say why it is empty. `media` has
- *   been alone in getting this right for the whole project, with a comment saying so. Measured over 6,467
- *   corpus captures: `formChanges` empty on 4,830 with **3,006 never asked**, `postSubmitFields` 55%, and
- *   `tableCells` empty on 6,095 with NOT ONE where the tool could say the page has no table. Ten of the 28
- *   model features read only such channels, so a `0` they treat as a fact about the page is usually a fact
- *   about the request.
- *
- *   A RELOCATION rather than new instrumentation: the probe flags decide what runs and `collectByType`
- *   already records why every sweep stopped. Both went to `diagnostics`, a FORBIDDEN_INPUT_KEY — the
- *   capture's own record of its method, filed as debugging output. This makes it evidence.
- *
- *   ADDITIVE: every existing channel keeps its exact type, so the 28 files that read them are untouched and
- *   an older consumer ignores this entirely — the same shape as `fault` and `captureId`.
- *
- *   Named once because six sites write one — the eight-call-site lesson the browser preset records.
- *
- * @typedef {{ out: string[], seenKeys: Set<string>,
- *             onItem?: ((phrase: string) => Promise<unknown> | unknown) | null,
- *             deadline: number, diag: Diag, label: string, trips: { count: number },
- *             observed?: Record<string, Observation>, observedAs?: string,
- *             trace?: string[], ended?: () => boolean }} SweepContext
- *   What a sweep carries. `trips` is REQUIRED and that is the point: adding it to `collectByType` and
- *   spelling the context out at one call site instead of spreading it threw on the function's first line,
- *   before any sweep ran, and returned `postSubmitFields: []` on all 2,122 captures with every check
- *   green. A declared shape makes that a compile error rather than an empty field.
+ * The mark log, threaded through almost every function here. Aliased rather than re-described: this
+ * file passes it to forty of them, and forty inline shapes is forty chances to disagree.
  */
+type Diag = import("./capture-pure.ts").CaptureDiagnostics;
+
+type CapturedStructure = { headings: string[], landmarks: string[], formFields: string[], graphics: string[], links: string[], lists: string[], tableCells: string[], frames: string[] };
+
+type AnnouncedChange = { control: string, after: string, afterUnresolved?: boolean };
+
+type CapturedInteraction = { controls: string[], stateChanges: AnnouncedChange[], formChanges: AnnouncedChange[], postSubmitFields: string[], focusOrder: string[], routeChange?: unknown, navigatedOnSubmit?: unknown, postSubmitNames?: string[], leftSite?: unknown };
+
+/**
+ * Whether this capture ASKED about a channel, and what it can support if it did — capture-protocol 9.
+ *
+ * Every channel except `media` is a bare array, and a bare array cannot say why it is empty. `media` has
+ * been alone in getting this right for the whole project, with a comment saying so. Measured over 6,467
+ * corpus captures: `formChanges` empty on 4,830 with **3,006 never asked**, `postSubmitFields` 55%, and
+ * `tableCells` empty on 6,095 with NOT ONE where the tool could say the page has no table. Ten of the 28
+ * model features read only such channels, so a `0` they treat as a fact about the page is usually a fact
+ * about the request.
+ *
+ * A RELOCATION rather than new instrumentation: the probe flags decide what runs and `collectByType`
+ * already records why every sweep stopped. Both went to `diagnostics`, a FORBIDDEN_INPUT_KEY — the
+ * capture's own record of its method, filed as debugging output. This makes it evidence.
+ *
+ * ADDITIVE: every existing channel keeps its exact type, so the 28 files that read them are untouched and
+ * an older consumer ignores this entirely — the same shape as `fault` and `captureId`.
+ *
+ * Named once because six sites write one — the eight-call-site lesson the browser preset records.
+ */
+type Observation = { asked: boolean, complete?: boolean, why?: string, activated?: number,
+            stop?: { prev: string, next: string } };
+
+/**
+ * What a sweep carries. `trips` is REQUIRED and that is the point: adding it to `collectByType` and
+ * spelling the context out at one call site instead of spreading it threw on the function's first line,
+ * before any sweep ran, and returned `postSubmitFields: []` on all 2,122 captures with every check
+ * green. A declared shape makes that a compile error rather than an empty field.
+ */
+type SweepContext = { out: string[], seenKeys: Set<string>,
+            onItem?: ((phrase: string) => Promise<unknown> | unknown) | null,
+            deadline: number, diag: Diag, label: string, trips: { count: number },
+            observed?: Record<string, Observation>, observedAs?: string,
+            trace?: string[], ended?: () => boolean };
 
 
 // --- Tunables. Named so the timing/limits can be reasoned about and adjusted
@@ -191,8 +201,8 @@ const SWEEP_SILENT_RETRIES = 3;
  *           readAt: Record<string, { readAt: { startedAtMs: number, tookMs: number } }> }} reads
  * @param {Diag} diag
  */
-function recordDomOnlyEvidence(result: Record<string, any>, { mediaRead, formsRead, readAt }: {
-        mediaRead: Record<string, any> | null; formsRead: Record<string, any> | null;
+function recordDomOnlyEvidence(result: Record<string, Untyped>, { mediaRead, formsRead, readAt }: {
+        mediaRead: Record<string, Untyped> | null; formsRead: Record<string, Untyped> | null;
         readAt: Record<string, { readAt: { startedAtMs: number; tookMs: number; }; }>;
     }, diag: Diag) {
   result.media = mediaRead?.elements ?? null;
@@ -233,9 +243,9 @@ function recordDomOnlyEvidence(result: Record<string, any>, { mediaRead, formsRe
  * at the point they now run.
  */
 /** @param {Record<string, any> & { diag: Diag, deadline: number }} options */
-export async function navigateByStructureThenAudit(options: Record<string, any> & { diag: Diag; deadline: number; }) {
-  // Called after `capture-setup.mjs`'s own `bringUpCaptureEnvironment` in the real capture flow, which
-  // already resolved `nvda` -- but this is this file's ONE entry point from `capture-core.mjs`, so it
+export async function navigateByStructureThenAudit(options: Record<string, Untyped> & { diag: Diag; deadline: number; }) {
+  // Called after `capture-setup.ts`'s own `bringUpCaptureEnvironment` in the real capture flow, which
+  // already resolved `nvda` -- but this is this file's ONE entry point from `capture-core.ts`, so it
   // guards itself rather than trusting call order.
   await ensureGuidepup();
   // The audit ADDS to what the structural pass produced -- the cross-check marks below -- so the
@@ -252,8 +262,8 @@ export async function navigateByStructureThenAudit(options: Record<string, any> 
       structure: CapturedStructure; interaction: CapturedInteraction;
       observed: Record<string, Observation>; media?: Record<string, unknown>[] | null;
       formInputs?: Record<string, unknown>[] | null;
-      census: Record<string, any>; dom: Record<string, any> | null;
-      mediaCensus: Record<string, any> | null; formInputCensus: Record<string, any> | null;
+      census: Record<string, Untyped>; dom: Record<string, Untyped> | null;
+      mediaCensus: Record<string, Untyped> | null; formInputCensus: Record<string, Untyped> | null;
       readAt: Record<"census" | "dom" | "media" | "formInputs", { readAt: { startedAtMs: number; tookMs: number; }; }>;
   } = await navigateByStructure(options);
   const { census, dom, mediaCensus: mediaRead, formInputCensus: formsRead, readAt } = result;
@@ -415,7 +425,7 @@ function interactionEvidence({
  * @param {any} ctx
  * @returns {{ runSweep: () => Promise<void>, runFocus: () => Promise<void>, results: any }}
  */
-function probePasses(ctx: any): { runSweep: () => Promise<void>; runFocus: () => Promise<void>; results: any; } {
+function probePasses(ctx: Untyped): { runSweep: () => Promise<void>; runFocus: () => Promise<void>; results: Untyped; } {
   const { structure, interaction, observed, onFormField, probeForms, probeTables, probeFocus,
     probeDialog, probeArrows, probeTyping, probeFocusReveal: probeFocusReveal_, deadline, diag, trips, site } = ctx;
   // READ from ctx, NOT destructured-and-renamed. Renaming it out of the object removed it from the
@@ -427,8 +437,8 @@ function probePasses(ctx: any): { runSweep: () => Promise<void>; runFocus: () =>
   /** @type {{postSubmitFields: string[], focusOrder: string[], dialogEscape: any, focusReveal: any,
    *           arrowNavigation: any, typedFeedback: any, focusContext: any, focusEvents: any}} */
   const results: {
-      postSubmitFields: string[]; focusOrder: string[]; dialogEscape: any; focusReveal: any;
-      arrowNavigation: any; typedFeedback: any; focusContext: any; focusEvents: any;
+      postSubmitFields: string[]; focusOrder: string[]; dialogEscape: Untyped; focusReveal: Untyped;
+      arrowNavigation: Untyped; typedFeedback: Untyped; focusContext: Untyped; focusEvents: Untyped;
   } = {
     postSubmitFields: [], focusOrder: [], dialogEscape: null, focusReveal: null, arrowNavigation: null, typedFeedback: null,
     focusContext: null, focusEvents: null,
@@ -562,8 +572,8 @@ function probePasses(ctx: any): { runSweep: () => Promise<void>; runFocus: () =>
  *                                     { readAt: { startedAtMs: number, tookMs: number } }> }>}
  */
 async function censusBeforeNavigating(diag: Diag): Promise<{
-    census: Record<string, any>; dom: Record<string, any> | null;
-    mediaCensus: Record<string, any> | null; formInputCensus: Record<string, any> | null;
+    census: Record<string, Untyped>; dom: Record<string, Untyped> | null;
+    mediaCensus: Record<string, Untyped> | null; formInputCensus: Record<string, Untyped> | null;
     readAt: Record<"census" | "dom" | "media" | "formInputs", { readAt: { startedAtMs: number; tookMs: number; }; }>;
 }> {
   // EACH READ CARRIES ITS OWN MOMENT, not one shared stamp: the three run in sequence over the same
@@ -639,15 +649,15 @@ async function censusBeforeNavigating(diag: Diag): Promise<{
  */
 function activationBudgetFor({ formState, probeForms, deadline, interaction, task, pageUrl = null }: {
         formState: unknown; probeForms: boolean | undefined; deadline: number;
-        interaction: Record<string, any>; task: string | undefined; pageUrl?: string | null;
+        interaction: Record<string, Untyped>; task: string | undefined; pageUrl?: string | null;
     }): { onFormField: (phrase: string) => Promise<unknown>; markInto: (diag: Diag) => void; } {
-  let stopsAt = /** @type {number | null} */ (null);
+  let stopsAt = (null as number | null);
   let startedAt = 0;
   let spentMs = 0;
   let allowed = 0;
   let skipped = 0;
   return {
-    onFormField: (/** @type {string} */ phrase: string) => {
+    onFormField: (phrase: string) => {
       // A CONFIGURED form REPLACES the opportunistic probe rather than running beside it, so there is no
       // budget to keep: `runConfiguredForm` activates exactly the control the author named.
       if (formState) return Promise.resolve();
@@ -676,7 +686,7 @@ function activationBudgetFor({ formState, probeForms, deadline, interaction, tas
         // #1363: ASKED AFTER EVERY ACTIVATION, whether the browser is still on the page's site.
         .then(() => recordIfLeftTheSite({ phrase, interaction, from: pageUrl, phase: "sweep", heard }));
     },
-    markInto: (/** @type {Diag} */ diag: Diag) => {
+    markInto: (diag: Diag) => {
       if (stopsAt === null) return;
       diag.mark("activationBudget", activationBudgetMark({
         budgetMs: stopsAt - startedAt, spentMs, allowed, skipped }));
@@ -696,7 +706,7 @@ function activationBudgetFor({ formState, probeForms, deadline, interaction, tas
  *           phase: "sweep" | "configuredForm" | "routeChange", heard?: number, kind?: string | null }} ctx
  */
 async function recordIfLeftTheSite({ phrase, interaction, from, phase, heard = -1, kind = null }: {
-        phrase: string; interaction: Record<string, any>; from: string | null;
+        phrase: string; interaction: Record<string, Untyped>; from: string | null;
         phase: "sweep" | "configuredForm" | "routeChange"; heard?: number; kind?: string | null;
     }) {
   if (interaction.leftSite) return;
@@ -750,7 +760,6 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   } = { stateChanges: [], formChanges: [], sweepLog: [] };
   const site = await watchTheSite(interaction);
   const trips = { count: 0 };
-  /** @type {CapturedStructure} */
   const structure: CapturedStructure = {
     headings: [], landmarks: [], formFields: [], graphics: [], links: [], lists: [], tableCells: [],
     frames: [],
@@ -759,7 +768,6 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
   // inferred, for the same reason `interaction` above is: an inferred type makes adding a channel the
   // error and dropping one the default, and a dropped channel is invisible because an absent observation
   // reads exactly like an unasked one.
-  /** @type {Record<string, Observation>} */
   const observed: Record<string, Observation> = {};
   // A CONFIGURED form REPLACES the opportunistic probe rather than running beside it.
   //
@@ -847,12 +855,12 @@ async function watchTheSite(interaction: { leftSite?: unknown; }): Promise<{ pag
  *           site: { pageUrl: string | null, ended: () => boolean, skipped: Set<string> } }} ctx
  */
 async function watchTheRouteChange({ routeChange, probeNavigation, interaction, site }: {
-        routeChange: unknown; probeNavigation?: boolean; interaction: Record<string, any>;
+        routeChange: unknown; probeNavigation?: boolean; interaction: Record<string, Untyped>;
         site: { pageUrl: string | null; ended: () => boolean; skipped: Set<string>; };
     }) {
   if (probeNavigation && !routeChange && site.ended()) site.skipped.add("routeChange");
   if (!routeChange) return;
-  const control = String(/** @type {{ control?: unknown }} */ (routeChange).control ?? "");
+  const control = String((routeChange as { control?: unknown }).control ?? "");
   await recordIfLeftTheSite({ phrase: control, interaction, from: site.pageUrl, phase: "routeChange", kind: "route" });
 }
 
@@ -891,7 +899,7 @@ function markTheExcursion({ observed, leftSite, diag, skipped }: {
  */
 function assembleAndMark({ structure, interaction, postSubmitFields, focusOrder, routeChange, dialogEscape,
   arrowNavigation, typedFeedback, focusContext, focusReveal, focusEvents, diag }: {
-        structure: CapturedStructure; interaction: any; postSubmitFields: string[];
+        structure: CapturedStructure; interaction: Untyped; postSubmitFields: string[];
         focusOrder: string[]; routeChange: unknown; dialogEscape: unknown; arrowNavigation: unknown;
         typedFeedback: unknown; focusContext: unknown; focusReveal: unknown; focusEvents: unknown;
         diag: Diag;
@@ -931,7 +939,7 @@ function assembleAndMark({ structure, interaction, postSubmitFields, focusOrder,
  *           diag: Diag, trips: { count: number }, pageUrl?: string | null }} ctx
  */
 async function runConfiguredForm({ formState, interaction, results, deadline, diag, trips, pageUrl = null }: {
-        formState: any; interaction: any; results: { postSubmitFields: string[]; }; deadline: number;
+        formState: Untyped; interaction: Untyped; results: { postSubmitFields: string[]; }; deadline: number;
         diag: Diag; trips: { count: number; }; pageUrl?: string | null;
     }) {
   const heard = interaction.formChanges.length + interaction.stateChanges.length;
@@ -1051,7 +1059,7 @@ async function sweepEveryStructuralType({ structure, onFormField, probeTables, d
  *           diag: Diag, trips: { count: number } }} ctx
  */
 async function rescanFormFieldsAfterSubmit({ interaction, deadline, diag, trips }: {
-        interaction: Record<string, any>; probeForms?: boolean; deadline: number;
+        interaction: Record<string, Untyped>; probeForms?: boolean; deadline: number;
         diag: Diag; trips: { count: number; };
     }) {
   const K = nvda.keyboardCommands;
@@ -1061,7 +1069,6 @@ async function rescanFormFieldsAfterSubmit({ interaction, deadline, diag, trips 
   // "invalid entry"/the error whenever the cursor lands on it; an inaccessible
   // one leaves the field unchanged. This is version-robust, unlike the transient
   // live-region text in formChanges.after (which some NVDA builds don't emit).
-  /** @type {string[]} */
   let postSubmitFields: string[] = [];
   // GATED ON AN ACTIVATION HAVING HAPPENED, never on `probeForms`. This is the SECOND call site of the
   // defect fixed in `recordWhatWasAsked` the same day, and finding one and not the other is this repo's
@@ -1183,9 +1190,7 @@ async function collectByType(commands: { prev: object; next: object; }, ctx: Omi
   // `beforeProbe` and compares them with `FINGERPRINT_KEYS`, so this answers per sweep with no new
   // comparator and no second spelling of the key list.
   const scopeAt = await markPageState(`sweep:${ctx.label}`, ctx.diag);
-  /** @type {string[]} */
   const out: string[] = [];
-  /** @type {Set<string>} */
   const seenKeys: Set<string> = new Set();
   const sweepCtx = { ...ctx, out, seenKeys };
   // Per-sweep timing and round-trip counts. `structural` is the largest remaining phase and
@@ -1312,7 +1317,7 @@ async function markPageState(beforeProbe: string, diag: Diag) {
 /**
  * Run the two position-dependent probes, each from a KNOWN-GOOD STARTING POINT — determinism-plan D3.
  *
- * *Continuous Delivery*'s remedy for order-dependence, which `capture-core.mjs` used to declare as a
+ * *Continuous Delivery*'s remedy for order-dependence, which `capture-core.ts` used to declare as a
  * constraint to respect: steps whose order does not matter, each begun from a defined state.
  *
  * THE STATE IS ESTABLISHED BETWEEN PROBES, NOT BEFORE THE FIRST. That is why this costs nothing on the
@@ -1335,11 +1340,10 @@ async function markPageState(beforeProbe: string, diag: Diag) {
 async function runProbeSequence({ probeOrder, diag, runSweep, runFocus, observed }: {
         probeOrder: string | undefined; diag: Diag;
         runSweep: () => Promise<void>; runFocus: () => Promise<void>;
-        observed?: Record<string, any>;
+        observed?: Record<string, Untyped>;
     }) {
   const sequence = probeSequence(probeOrder);
   diag.mark("probeOrder", { order: sequence.join(","), requested: probeOrder ?? "default" });
-  /** @type {string | null} */
   let restoredFrom: string | null = null;
   for (const [i, step] of sequence.entries()) {
     if (i > 0) await establishBrowseMode(diag);
@@ -1371,7 +1375,7 @@ async function runProbeSequence({ probeOrder, diag, runSweep, runFocus, observed
  * @param {string} firstStep @param {Diag} diag
  * @returns {Promise<string | null>} the frame focus was taken out of, or null when no restore was attempted
  */
-async function restoreFocusBeforeSweeps(state: Record<string, any> | null, firstStep: string, diag: Diag): Promise<string | null> {
+async function restoreFocusBeforeSweeps(state: Record<string, Untyped> | null, firstStep: string, diag: Diag): Promise<string | null> {
   const decision = focusRestoreDecision(state, firstStep);
   if (!decision.restore) {
     diag.mark("focusRestore", { attempted: false, why: decision.why });
@@ -1548,17 +1552,16 @@ async function sweepInDirection(cmd: object, { label, out, seenKeys, onItem, dea
     const mustStop = sweepMustStop({ deadline, ended });
     if (mustStop) return { stop: mustStop, steps: i, stopPhrase: prev };
     // Declared: written in a `try` and again in a conditional, so inference gives up across both.
-    /** @type {import("./capture-pure.ts").SweepStep} */
     let step: import("./capture-pure.ts").SweepStep;
     try {
       trips.count += 2;
-      await withTimeout(nvda.perform(/** @type {any} */ (cmd)), NAV_TIMEOUT_MS, label);
+      await withTimeout(nvda.perform((cmd as Untyped)), NAV_TIMEOUT_MS, label);
       const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label)) || [];
       step = sweepStepFromSpeech({ log, seen, prev, repeats });
     } catch (error) {
       // Same asymmetry: a round trip that threw is not evidence the page ran out of elements.
       return { stop: "error", steps: i, stopPhrase: prev,
-        error: String(/** @type {Error} */ (error)?.message ?? error) };
+        error: String((error as Error)?.message ?? error) };
     }
     seen = step.seen;
     repeats = step.repeats ?? 0;
@@ -1656,8 +1659,7 @@ const EXTRA_SWEEPS = [
 async function sweepExtraTypes(ctx: Omit<SweepContext, "out" | "seenKeys">) {
   // Indexed by the sweep's own key names, which is what `EXTRA_SWEEPS` holds -- guidepup types
   // `keyboardCommands` as a 160-key literal, so a dynamic lookup needs to say it is one.
-  const K = /** @type {Record<string, any>} */ (nvda.keyboardCommands);
-  /** @type {Record<string, string[]>} */
+  const K = (nvda.keyboardCommands as Record<string, Untyped>);
   const found: Record<string, string[]> = {};
   for (const { key, label, prev, next, anchorFirst } of EXTRA_SWEEPS) {
     // See EXTRA_SWEEPS: only a sweep whose elements can CONTAIN an earlier sweep's pays for the anchor.
@@ -1725,7 +1727,7 @@ async function speechDelta(step: () => Promise<unknown>, label: string) {
   const log = await waitForAnnouncement(before, label);
   // Joined rather than reduced to one entry: a cell whose announcement arrives as two utterances
   // is still one cell, and dropping either half would be losing evidence.
-  return log.slice(before).map((/** @type {unknown} */ phrase: unknown) => String(phrase).trim()).filter(Boolean).join(", ");
+  return log.slice(before).map((phrase: unknown) => String(phrase).trim()).filter(Boolean).join(", ");
 }
 
 // Walk one direction inside a table, appending each newly announced cell.
@@ -1772,7 +1774,6 @@ async function walkTable(step: () => Promise<unknown>, { out, deadline, label, t
 async function probeTableCells({ deadline, diag }: { deadline: number; diag: Diag; }) {
   const K = nvda.keyboardCommands;
   const cells = [];
-  /** @type {string[]} */
   const trace: string[] = [];
   let note = null;
   try {
@@ -1809,7 +1810,7 @@ async function probeTableCells({ deadline, diag }: { deadline: number; diag: Dia
 const MAX_CELL_PRIMES = 3;
 
 /** @param {Record<string, any>} K @param {{ trace: string[] }} ctx */
-async function enterFirstCell(K: Record<string, any>, { trace }: { trace: string[]; }) {
+async function enterFirstCell(K: Record<string, Untyped>, { trace }: { trace: string[]; }) {
   for (let i = 0; i < MAX_CELL_PRIMES; i += 1) {
     const phrase = await speechDelta(() => nvda.perform(K.moveToNextRow), "prime").catch(() => "");
     trace.push(`prime[${i}] ${phrase.slice(0, 60) || "(silence)"}`);
@@ -1823,7 +1824,7 @@ async function enterFirstCell(K: Record<string, any>, { trace }: { trace: string
 
 // Land on a table in either direction; "" when the page has none.
 /** @param {Record<string, any>} K */
-async function enterFirstTable(K: Record<string, any>) {
+async function enterFirstTable(K: Record<string, Untyped>) {
   for (const cmd of [K.moveToNextTable, K.moveToPreviousTable]) {
     await withTimeout(nvda.perform(cmd), NAV_TIMEOUT_MS, "table").catch(() => undefined);
     const phrase = ((await withTimeout(nvda.lastSpokenPhrase(), QUERY_TIMEOUT_MS, "table").catch(() => "")) || "").trim();
@@ -1873,7 +1874,7 @@ const FOCUS_PROBE_BUDGET_MS = 120_000;
 /**
  * The order the two position-dependent probes run in, so a gate can permute them.
  *
- * `capture-core.mjs` carried "ORDER IS LOAD-BEARING from here down" as a constraint to respect. Continuous
+ * `capture-core.ts` carried "ORDER IS LOAD-BEARING from here down" as a constraint to respect. Continuous
  * Delivery names order-dependence as "a major cause of hard-to-track bugs" and prescribes the opposite —
  * atomic steps whose order does not matter, from a known starting point. This option is how that claim gets
  * TESTED rather than asserted: `gate:probe-order` captures a page under two orders and requires the evidence
@@ -1929,7 +1930,7 @@ async function probeFocusOrderWithEventLog({ deadline, diag, controlsOnPage, pro
   }
 }
 
-// Kept equal to `capture-pure.mjs`'s `FOCUS_EVENT_LOG_LIMIT` (raised 50 -> 300 on 2026-09-06, see that
+// Kept equal to `capture-pure.ts`'s `FOCUS_EVENT_LOG_LIMIT` (raised 50 -> 300 on 2026-09-06, see that
 // file's comment) so the diagnostic mark a human reads and the log a rule actually decides from never
 // silently disagree about how much of a busy page's focus activity is visible.
 const FOCUS_EVENT_LOG_DIAGNOSTIC_LIMIT = 300;
@@ -2027,7 +2028,7 @@ async function probeFocusOrder({ deadline, diag, controlsOnPage }: { deadline: n
   // and 2.4.3 all read, so a walk that starts mid-ring rather than at the page's true first tab stop
   // rotates `stops` relative to reading order without any count moving — the exact shape that already
   // cost this project a false 2.4.3 finding once, from a different cause. `startedFrom` records what
-  // was inherited; `resetFocusToDocumentStart` (browser-session.mjs) then blurs it, bracketing the
+  // was inherited; `resetFocusToDocumentStart` (browser-session.ts) then blurs it, bracketing the
   // resulting `focusout` out of the focus-event log the same way `probeFocusReveal` already does, so
   // this probe's own bookkeeping cannot manufacture the F55 finding `probeFocusOrderWithEventLog` exists
   // to detect a page ACTUALLY doing.
@@ -2050,7 +2051,7 @@ async function probeFocusOrder({ deadline, diag, controlsOnPage }: { deadline: n
   let cycled = false;
   // WHY THE WALK ENDED. Assigned at each exit rather than inferred afterwards: `cap` is the only ending
   // the loop reaches by falling out, so it is the initial value and every `break` overwrites it.
-  let stop = /** @type {"cycled"|"stalled"|"silent"|"deadline"|"cap"} */ ("cap");
+  let stop: "cycled" | "stalled" | "silent" | "deadline" | "cap" = "cap";
   for (let i = 0; i < MAX_TAB_STOPS; i += 1) {
     if (Date.now() > budget) { stop = "deadline"; break; }
     await withTimeout(nvda.press("Tab"), NAV_TIMEOUT_MS, "tab").catch(() => undefined);
@@ -2222,24 +2223,20 @@ async function readTreeRows({ type, readAfter, deadline, notes }: {
 /** @param {{ deadline: number, diag: Diag, types?: { type: string, accelerator: string }[] }} ctx */
 async function probeElementsListCounts({ deadline, diag, types = LANDMARKS_ONLY }: { deadline: number; diag: Diag; types?: { type: string; accelerator: string; }[]; }) {
   const K = nvda.keyboardCommands;
-  /** @type {Record<string, number>} */
   const counts: Record<string, number> = {};
-  /** @type {Record<string, string[]>} */
   const items: Record<string, string[]> = {};
-  /** @type {string[]} */
   const notes: string[] = [];
-  /** @type {{ step: string, spoken: string[], channelReset?: boolean }[]} */
   const trace: { step: string; spoken: string[]; channelReset?: boolean; }[] = [];
   // The offset advances instead of being re-read before every keystroke. Reading it twice per keystroke
   // doubled the round trips, and round trips are the entire cost here: all five types measured 39s on
   // top of a 20s capture, which is unaffordable for a 2,122-capture corpus.
   let seen = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "elementsListSeed").catch(() => [])) || []).length;
-  const readAfter = async (/** @type {string} */ label: string, /** @type {() => Promise<unknown>} */ action: () => Promise<unknown>) => {
+  const readAfter = async (label: string, action: () => Promise<unknown>) => {
     await withTimeout(action(), NAV_TIMEOUT_MS, label).catch(() => undefined);
     const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label).catch(() => [])) || [];
     // A shrunken log means the speech channel was rebuilt; resynchronise rather than mis-slice.
     if (log.length < seen) { seen = log.length; trace.push({ step: label, spoken: [], channelReset: true }); return []; }
-    const spoken = log.slice(seen).map((/** @type {unknown} */ phrase: unknown) => String(phrase).trim()).filter(Boolean);
+    const spoken = log.slice(seen).map((phrase: unknown) => String(phrase).trim()).filter(Boolean);
     seen = log.length;
     // Every keystroke's speech, because this dialog's focus behaviour has now been guessed wrong twice:
     // arrowing without tabbing cycled the radio GROUP, and tabbing on every type walked focus OUT of
@@ -2252,7 +2249,7 @@ async function probeElementsListCounts({ deadline, diag, types = LANDMARKS_ONLY 
     const opened = await readAfter("elementsListOpen", () => nvda.perform(K.browseModeElementsList));
     // If the dialog did not announce itself it may not have opened, and arrowing blind inside the
     // DOCUMENT instead would move the caret and corrupt everything measured after this.
-    if (!opened.some((/** @type {string} */ phrase: string) => /elements list/i.test(phrase))) {
+    if (!opened.some((phrase: string) => /elements list/i.test(phrase))) {
       diag.mark("elementsList", { opened: false, spoken: opened });
       return null;
     }
@@ -2287,7 +2284,7 @@ async function probeElementsListCounts({ deadline, diag, types = LANDMARKS_ONLY 
 // structural sweep the cursor sits at the end and the only control is the
 // current position, not a next one.
 /**
- * Construct the probe this announced control earns. The DECISION is `probeKindFor` in `capture-pure.mjs`;
+ * Construct the probe this announced control earns. The DECISION is `probeKindFor` in `capture-pure.ts`;
  * this is only the dispatch.
  *
  * Split because that decision is the safety gate on what this tool PRESSES, and `probe-forms` now
@@ -2296,7 +2293,7 @@ async function probeElementsListCounts({ deadline, diag, types = LANDMARKS_ONLY 
  * module load where no screen reader exists, so no test can import this file (see `pure-graph.test.ts`).
  */
 /** @param {string} phrase @param {Record<string, any>} ctx */
-function chooseProbe(phrase: string, ctx: Record<string, any>) {
+function chooseProbe(phrase: string, ctx: Record<string, Untyped>) {
   switch (probeKindFor(phrase, ctx)) {
     case "disclosure": return () => probeDisclosure(phrase, ctx);
     case "submit": return () => probeFormSubmit(phrase, ctx);
@@ -2357,7 +2354,7 @@ function chooseProbe(phrase: string, ctx: Record<string, any>) {
  * duplicates.
  */
 /** @param {string} phrase @param {Record<string, any>} ctx */
-async function operateControl(phrase: string, ctx: Record<string, any>) {
+async function operateControl(phrase: string, ctx: Record<string, Untyped>) {
   const probe = chooseProbe(phrase, ctx);
   if (!probe) return undefined;
   try {
@@ -2407,7 +2404,7 @@ async function operateControl(phrase: string, ctx: Record<string, any>) {
 // `after` a true re-read of the activated element needs a CDP read of that element and
 // is an evidence change: a separate row, and a recapture.
 /** @param {string} phrase @param {Record<string, any>} ctx */
-async function probeDisclosure(phrase: string, { interaction }: Record<string, any>) {
+async function probeDisclosure(phrase: string, { interaction }: Record<string, Untyped>) {
   try {
     const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "disclosure")) || []).length;
     await withTimeout(nvda.act(), ACT_TIMEOUT_MS, "disclosure"); // Enter on the control under the cursor
@@ -2415,7 +2412,7 @@ async function probeDisclosure(phrase: string, { interaction }: Record<string, a
     // probes: a fixed sleep is too long when the page answers immediately and too short in the tail,
     // and here the tail is what matters -- this is the probe whose timeout got recorded as silence.
     const log = await waitForAnnouncement(before, "disclosure");
-    const announced = log.slice(before).map((/** @type {unknown} */ s: unknown) => String(s).trim()).filter(Boolean).join(" | ");
+    const announced = log.slice(before).map((s: unknown) => String(s).trim()).filter(Boolean).join(" | ");
     const after = await reportFocusedControlWithRetry(interaction);
     interaction.sweepLog.push(
       `disclosure ${JSON.stringify(phrase.slice(0, 40))} announced=${JSON.stringify(announced)} state=${JSON.stringify(after)}`
@@ -2449,7 +2446,7 @@ async function probeDisclosure(phrase: string, { interaction }: Record<string, a
  * Measured failure rate before this: 1 in 20.
  */
 /** @param {Record<string, any>} interaction @param {number} [attempts] */
-async function reportFocusedControlWithRetry(interaction: Record<string, any>, attempts: number = 3) {
+async function reportFocusedControlWithRetry(interaction: Record<string, Untyped>, attempts: number = 3) {
   for (let attempt = 1; ; attempt++) {
     try {
       return await reportFocusedControl();
@@ -2543,7 +2540,7 @@ async function waitForAnnouncement(before: number, kind: string): Promise<string
  * @param {string[]} log @param {number} before @param {string} kind @param {any} interaction
  * @returns {Promise<string[]>} the log, extended if a second wait heard anything
  */
-async function waitPastControlState(log: string[], before: number, kind: string, interaction: any): Promise<string[]> {
+async function waitPastControlState(log: string[], before: number, kind: string, interaction: Untyped): Promise<string[]> {
   if (!onlyControlState(log.slice(before))) return log;
   const second = await waitForAnnouncement(log.length, kind);
   interaction.sweepLog.push(`${kind} SECOND-WAIT-AFTER-OWN-STATE caught=${second.length > log.length}`);
@@ -2569,7 +2566,7 @@ async function waitPastControlState(log: string[], before: number, kind: string,
  * @param {{ kind: string, control: string, interaction: any }} ctx
  * @returns {Promise<string[]>} the log, extended if a second wait resolved the title
  */
-async function waitPastUnresolvedTitle(log: string[], before: number, { kind, control, interaction }: { kind: string; control: string; interaction: any; }): Promise<string[]> {
+async function waitPastUnresolvedTitle(log: string[], before: number, { kind, control, interaction }: { kind: string; control: string; interaction: Untyped; }): Promise<string[]> {
   if (!isUnresolvedDocumentTitle(pageSpeechAfter(control, log.slice(before)))) return log;
   const second = await waitForAnnouncement(log.length, kind);
   const resolved = second.length > log.length
@@ -2591,7 +2588,7 @@ async function waitPastUnresolvedTitle(log: string[], before: number, { kind, co
  * @param {{ phrase: string, log: string[], before: number, kind: string, interaction: any }} ctx
  * @returns {{ after: string, afterUnresolved: boolean }}
  */
-function pageSpeechAfterRetries({ phrase, log, before, kind, interaction }: { phrase: string; log: string[]; before: number; kind: string; interaction: any; }): { after: string; afterUnresolved: boolean; } {
+function pageSpeechAfterRetries({ phrase, log, before, kind, interaction }: { phrase: string; log: string[]; before: number; kind: string; interaction: Untyped; }): { after: string; afterUnresolved: boolean; } {
   const after = pageSpeechAfter(phrase, log.slice(before));
   const afterUnresolved = isUnresolvedDocumentTitle(after);
   if (afterUnresolved) interaction.sweepLog.push(`${kind} UNRESOLVED-TITLE-AFTER-RETRY ${JSON.stringify(after)}`);
@@ -2616,7 +2613,7 @@ async function pressCountingSubmits(kind: string): Promise<() => Promise<boolean
 }
 
 /** @param {string} phrase @param {Record<string, any>} interaction @param {string} kind */
-async function activateAndCaptureDelta(phrase: string, interaction: Record<string, any>, kind: string) {
+async function activateAndCaptureDelta(phrase: string, interaction: Record<string, Untyped>, kind: string) {
   try {
     // Settle BEFORE reading the baseline, or something already in flight is attributed to this
     // activation. Measured: one capture of `filter-status-silent/bad` in the corpus recorded
@@ -2760,7 +2757,7 @@ async function firstHeadingFromTop(kind: string) {
   await withTimeout(nvda.perform(nvda.keyboardCommands.moveToNextHeading), NAV_TIMEOUT_MS, kind)
     .catch(() => undefined);
   const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, kind)) || [];
-  return log.slice(before).map((/** @type {unknown} */ x: unknown) => String(x).trim()).filter(Boolean).join(" | ");
+  return log.slice(before).map((x: unknown) => String(x).trim()).filter(Boolean).join(" | ");
 }
 
 /**
@@ -2928,7 +2925,7 @@ async function advanceToNextField(label: string): Promise<string> {
   await withTimeout(nvda.perform(nvda.keyboardCommands.moveToNextFormField), NAV_TIMEOUT_MS, label)
     .catch(() => undefined);
   const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label).catch(() => [])) || [];
-  return log.slice(before).map((/** @type {unknown} */ x: unknown) => String(x).trim()).filter(Boolean).join(" ");
+  return log.slice(before).map((x: unknown) => String(x).trim()).filter(Boolean).join(" ");
 }
 
 /**
@@ -3118,7 +3115,7 @@ async function toggleIfNeeded(want: boolean, label: string, diag: Diag) {
  *
  * @param {{ to: any, label: string, interaction: any, diag: Diag }} ctx
  */
-async function landOnControl({ to, label, interaction, diag }: { to: any; label: string; interaction: any; diag: Diag; }) {
+async function landOnControl({ to, label, interaction, diag }: { to: Untyped; label: string; interaction: Untyped; diag: Diag; }) {
   const K = nvda.keyboardCommands;
   // From the TOP, because quick navigation searches forward from the caret and cannot reach an element
   // the caret is already on -- the rule `sweepEveryStructuralType` records for landmarks and which is
@@ -3127,7 +3124,7 @@ async function landOnControl({ to, label, interaction, diag }: { to: any; label:
   const before = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label)) || []).length;
   await withTimeout(nvda.perform(to), NAV_TIMEOUT_MS, label).catch(() => undefined);
   const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label)) || [];
-  const landed = log.slice(before).map((/** @type {unknown} */ x: unknown) => String(x).trim()).filter(Boolean).join(" ");
+  const landed = log.slice(before).map((x: unknown) => String(x).trim()).filter(Boolean).join(" ");
   if (!landed) {
     diag.mark(label + "Landing", { landed: null, why: "no control of this kind on the page" });
     return null;
@@ -3153,7 +3150,7 @@ async function landOnControl({ to, label, interaction, diag }: { to: any; label:
  *
  * NVDA's own report is kept BESIDE it as a diagnostic, not discarded: what a screen-reader user actually
  * HEARS when they ask for the title is this project's whole subject, and the two diverging is itself
- * evidence -- of exactly this defect, on every page it still occurs. `titleSourceVerdict` (capture-pure.mjs)
+ * evidence -- of exactly this defect, on every page it still occurs. `titleSourceVerdict` (capture-pure.ts)
  * is the pure decision of which one to trust, reusing `focusTargetIsSuspect` rather than inventing a THIRD
  * answer to "is this the right document" -- that question is already `censusTargetIsSuspect`'s
  * (packages/evidence/src/verify.ts) and this function's own worker-side twin's to answer.
@@ -3189,8 +3186,8 @@ async function currentTitle(diag: Diag) {
  *
  * @param {{ interaction: Record<string, any>, deadline: number, diag: any }} ctx
  */
-async function probeFocusContext({ interaction, deadline, diag }: { interaction: Record<string, any>; deadline: number; diag: any; }) {
-  const mark = (/** @type {Record<string, unknown>} */ fields: Record<string, unknown>) => diag.mark("focusContext", fields);
+async function probeFocusContext({ interaction, deadline, diag }: { interaction: Record<string, Untyped>; deadline: number; diag: Untyped; }) {
+  const mark = (fields: Record<string, unknown>) => diag.mark("focusContext", fields);
   try {
     if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
     await anchorToTop();
@@ -3275,8 +3272,8 @@ async function probeFocusContext({ interaction, deadline, diag }: { interaction:
  *
  * @param {{ interaction: any, deadline: number, diag: Diag }} ctx
  */
-async function probeTypedFeedback({ interaction, deadline, diag }: { interaction: any; deadline: number; diag: Diag; }) {
-  const mark = (/** @type {Record<string, unknown>} */ fields: Record<string, unknown>) => diag.mark("typedFeedback", fields);
+async function probeTypedFeedback({ interaction, deadline, diag }: { interaction: Untyped; deadline: number; diag: Diag; }) {
+  const mark = (fields: Record<string, unknown>) => diag.mark("typedFeedback", fields);
   try {
     if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
     const focusBefore = await landOnControl({
@@ -3312,13 +3309,13 @@ async function probeTypedFeedback({ interaction, deadline, diag }: { interaction
     // matters more here than anywhere else: NVDA echoes six characters first, so the page's own
     // announcement is necessarily behind them in the queue.
     const log = await waitForAnnouncement(before, "typing");
-    const spoken = log.slice(before).map((/** @type {unknown} */ x: unknown) => String(x).trim()).filter(Boolean);
+    const spoken = log.slice(before).map((x: unknown) => String(x).trim()).filter(Boolean);
     // A phrase is ECHO when it is one of the characters we sent, and ANNOUNCEMENT otherwise. Compared
     // against the string actually typed rather than against a character class, so a page that legitimately
     // speaks a digit is not silently written off as an echo.
     const sent = new Set(TYPED_PROBE_TEXT.split(""));
-    const echoed = spoken.filter((/** @type {string} */ phrase: string) => sent.has(phrase));
-    const announced = spoken.filter((/** @type {string} */ phrase: string) => !sent.has(phrase)).join(" | ");
+    const echoed = spoken.filter((phrase: string) => sent.has(phrase));
+    const announced = spoken.filter((phrase: string) => !sent.has(phrase)).join(" | ");
     // AFTER the speech has settled, or the title read races the page's own announcement and returns the
     // OLD title on a page that did change context -- reporting conformance for the failure.
     const titleAfter = await currentTitle(diag);
@@ -3361,8 +3358,8 @@ async function probeTypedFeedback({ interaction, deadline, diag }: { interaction
  *
  * @param {{ interaction: any, deadline: number, diag: Diag }} ctx
  */
-async function probeArrowNavigation({ interaction, deadline, diag }: { interaction: any; deadline: number; diag: Diag; }) {
-  const mark = (/** @type {Record<string, unknown>} */ fields: Record<string, unknown>) => diag.mark("arrowNavigation", fields);
+async function probeArrowNavigation({ interaction, deadline, diag }: { interaction: Untyped; deadline: number; diag: Diag; }) {
+  const mark = (fields: Record<string, unknown>) => diag.mark("arrowNavigation", fields);
   try {
     if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
     const focusBefore = await landOnControl({
@@ -3377,7 +3374,7 @@ async function probeArrowNavigation({ interaction, deadline, diag }: { interacti
     // arrow navigation echoes at once -- and happening to work is not the same as being right. A silent
     // result here is the 2.1.1 finding, so a read that outran the speech would manufacture one.
     const log = await waitForAnnouncement(before, "arrowNav");
-    const announced = log.slice(before).map((/** @type {unknown} */ x: unknown) => String(x).trim())
+    const announced = log.slice(before).map((x: unknown) => String(x).trim())
       .filter(Boolean).join(" | ");
     const focusAfter = await reportFocusedControlWithRetry(interaction);
     mark({ focusBefore, announced: announced.slice(0, 120), focusAfter });
@@ -3420,8 +3417,8 @@ async function probeArrowNavigation({ interaction, deadline, diag }: { interacti
  *
  * @param {{ interaction: any, deadline: number, diag: Diag }} ctx
  */
-async function probeDialogEscape({ interaction, deadline, diag }: { interaction: any; deadline: number; diag: Diag; }) {
-  const mark = (/** @type {Record<string, unknown>} */ fields: Record<string, unknown>) => diag.mark("dialogEscape", fields);
+async function probeDialogEscape({ interaction, deadline, diag }: { interaction: Untyped; deadline: number; diag: Diag; }) {
+  const mark = (fields: Record<string, unknown>) => diag.mark("dialogEscape", fields);
   try {
     if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
     const focusBefore = await reportFocusedControlWithRetry(interaction);
@@ -3445,7 +3442,7 @@ async function probeDialogEscape({ interaction, deadline, diag }: { interaction:
     await withTimeout(nvda.press("Escape"), NAV_TIMEOUT_MS, "dialogEscape").catch(() => undefined);
     await withTimeout(nvda.press("Escape"), NAV_TIMEOUT_MS, "dialogEscape").catch(() => undefined);
     const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "dialogEscape")) || [];
-    const announced = log.slice(before).map((/** @type {unknown} */ x: unknown) => String(x).trim())
+    const announced = log.slice(before).map((x: unknown) => String(x).trim())
       .filter(Boolean).join(" | ");
     const focusAfter = await reportFocusedControlWithRetry(interaction);
     mark({ focusBefore, announced: announced.slice(0, 120), focusAfter });
@@ -3479,18 +3476,18 @@ async function probeDialogEscape({ interaction, deadline, diag }: { interaction:
 }
 
 /**
- * @typedef {{ press: () => Promise<unknown>, census: () => Promise<unknown>,
- *             reportFocus: (interaction: Record<string, any>) => Promise<unknown>,
- *             now: () => number }} WalkIo
- *   The four page-touching things `walkToReveal` does, behind one object so the walk's ARITHMETIC can be
- *   read without a screen reader.
+ * The four page-touching things `walkToReveal` does, behind one object so the walk's ARITHMETIC can be
+ * read without a screen reader.
  */
+type WalkIo = { press: () => Promise<unknown>, census: () => Promise<unknown>,
+            reportFocus: (interaction: Record<string, Untyped>) => Promise<unknown>,
+            now: () => number };
 
 /**
  * The live reads — what `walkToReveal` has always done, unchanged, now named (#2121).
  *
  * ARROW WRAPPERS RATHER THAN BARE REFERENCES, and this is not style. `nvda` is a live `export let` in
- * `capture-setup.mjs` that `ensureGuidepup()` fills in at run time (#1772); `press: nvda.press` evaluated
+ * `capture-setup.ts` that `ensureGuidepup()` fills in at run time (#1772); `press: nvda.press` evaluated
  * here, at module load, would capture `undefined` on every host and unbind `this` on the host where it is
  * set. Each arrow defers the read to the moment of the call, which is when the binding exists.
  *
@@ -3527,7 +3524,7 @@ const LIVE_WALK_IO: WalkIo = {
  * @param {{ interaction: Record<string, any>, deadline: number, io?: WalkIo }} ctx
  * @returns {Promise<{onFocus: unknown, control: unknown, revealedAt: number, tabs: number}>}
  */
-export async function walkToReveal({ interaction, deadline, io = LIVE_WALK_IO }: { interaction: Record<string, any>; deadline: number; io?: WalkIo; }): Promise<{ onFocus: unknown; control: unknown; revealedAt: number; tabs: number; }> {
+export async function walkToReveal({ interaction, deadline, io = LIVE_WALK_IO }: { interaction: Record<string, Untyped>; deadline: number; io?: WalkIo; }): Promise<{ onFocus: unknown; control: unknown; revealedAt: number; tabs: number; }> {
     // WALK THE TAB ORDER, do not press Tab once — `probeFocusContext` twenty lines up learned this the
   // same way: "the first version pressed once and every one of its 28 corpus cases came back BLIND ...
   // the FIRST focusable thing on a page is almost never the control you mean." `page()` gives every
@@ -3586,13 +3583,13 @@ export async function walkToReveal({ interaction, deadline, io = LIVE_WALK_IO }:
  * reachable there, and NVDA therefore CONSUMES the first press to leave focus mode. The second reaches the
  * page.
  *
- * The VERDICT is `focusRevealVerdict` in capture-pure.mjs, so what three counts mean is decided somewhere
+ * The VERDICT is `focusRevealVerdict` in capture-pure.ts, so what three counts mean is decided somewhere
  * it can be tested without NVDA.
  *
  * @param {{ interaction: Record<string, any>, deadline: number, diag: Diag }} ctx
  */
-async function probeFocusReveal({ interaction, deadline, diag }: { interaction: Record<string, any>; deadline: number; diag: Diag; }) {
-  const mark = (/** @type {Record<string, unknown>} */ fields: Record<string, unknown>) => diag.mark("focusReveal", fields);
+async function probeFocusReveal({ interaction, deadline, diag }: { interaction: Record<string, Untyped>; deadline: number; diag: Diag; }) {
+  const mark = (fields: Record<string, unknown>) => diag.mark("focusReveal", fields);
   try {
     if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
     await anchorToTop();
@@ -3604,7 +3601,7 @@ async function probeFocusReveal({ interaction, deadline, diag }: { interaction: 
     // real captures of the same page and probe order disagreed on `revealed` for exactly this reason: one
     // path left focus on "Security question" (the panel one Tab away), the other on "Daytime telephone"
     // (eight Tabs never reached it). `startedFrom` names the control the walk actually started from, and
-    // `resetFocusToDocumentStart` (browser-session.mjs) then blurs it so the walk starts at the FIRST
+    // `resetFocusToDocumentStart` (browser-session.ts) then blurs it so the walk starts at the FIRST
     // tabbable element instead -- the property `revealed: false` needs to mean anything at all.
     const startedFrom = await reportFocusedControlWithRetry(interaction);
     const focusReset = focusResetOutcome(await resetFocusToDocumentStart());
@@ -3671,8 +3668,8 @@ async function probeFocusReveal({ interaction, deadline, diag }: { interaction: 
 }
 
 /** @param {{ interaction: Record<string, any>, deadline: number, diag: Diag }} ctx */
-async function probeRouteChange({ interaction, deadline, diag }: { interaction: Record<string, any>; deadline: number; diag: Diag; }) {
-  const mark = (/** @type {Record<string, unknown>} */ fields: Record<string, unknown>) => diag.mark("routeChange", fields);
+async function probeRouteChange({ interaction, deadline, diag }: { interaction: Record<string, Untyped>; deadline: number; diag: Diag; }) {
+  const mark = (fields: Record<string, unknown>) => diag.mark("routeChange", fields);
   try {
     if (Date.now() > deadline) { mark({ skipped: "deadline" }); return null; }
     const headingBefore = await firstHeadingFromTop("routeChangeHeadingBefore");
@@ -3686,7 +3683,7 @@ async function probeRouteChange({ interaction, deadline, diag }: { interaction: 
     await withTimeout(nvda.perform(nvda.keyboardCommands.moveToNextLink), NAV_TIMEOUT_MS, "routeChange")
       .catch(() => undefined);
     const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, "routeChange")) || [];
-    const control = log.slice(before).map((/** @type {unknown} */ x: unknown) => String(x).trim()).filter(Boolean).join(" | ");
+    const control = log.slice(before).map((x: unknown) => String(x).trim()).filter(Boolean).join(" | ");
     const reachedNothing = noLinkReached(control);
     if (reachedNothing) {
       mark({ found: false, reason: reachedNothing });
@@ -3763,7 +3760,7 @@ async function probeRouteChange({ interaction, deadline, diag }: { interaction: 
 // announces the error (3.3.1) via a status message (4.1.3); an inaccessible one
 // shows it visually and the screen reader hears nothing.
 /** @param {string} phrase @param {Record<string, any>} ctx */
-async function probeFormSubmit(phrase: string, { interaction }: Record<string, any>) {
+async function probeFormSubmit(phrase: string, { interaction }: Record<string, Untyped>) {
   // Record whether submitting NAVIGATED, because that changes what the absence of an error means.
   //
   // A form that stays put and says nothing has failed 3.3.1. A form that submits successfully and moves
@@ -3814,7 +3811,7 @@ async function probeFormSubmit(phrase: string, { interaction }: Record<string, a
 // updates results in a live region announces the new state (4.1.3); one that
 // updates silently announces nothing.
 /** @param {string} phrase @param {Record<string, any>} ctx */
-async function probeTaskButton(phrase: string, { interaction }: Record<string, any>) {
+async function probeTaskButton(phrase: string, { interaction }: Record<string, Untyped>) {
   return activateAndCaptureDelta(phrase, interaction, "taskButton");
 }
 
@@ -3833,6 +3830,6 @@ async function probeTaskButton(phrase: string, { interaction }: Record<string, a
  * counted as a submit, and 12 more when the state-change rule reproduced it.
  */
 /** @param {string} phrase @param {Record<string, any>} ctx */
-async function probeToggle(phrase: string, { interaction }: Record<string, any>) {
+async function probeToggle(phrase: string, { interaction }: Record<string, Untyped>) {
   return activateAndCaptureDelta(phrase, interaction, "toggle");
 }

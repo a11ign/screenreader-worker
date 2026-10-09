@@ -1,4 +1,4 @@
-// THE SEAM BETWEEN A CAPTURE AND ITS LOGIN (`capture-auth.mjs`), against a real Chromium on the worker's OWN DevTools
+// THE SEAM BETWEEN A CAPTURE AND ITS LOGIN (`capture-auth.ts`), against a real Chromium on the worker's OWN DevTools
 // port (ADR 0038, PR 4): sign in, land on the requested page through `navigateExisting` (the navigation the capture
 // path uses), and destroy the session afterwards — including when the login failed.
 //

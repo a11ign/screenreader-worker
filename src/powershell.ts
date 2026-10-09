@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * One bounded, asynchronous PowerShell runner, shared by everything on the guest that needs Windows APIs.
  *
@@ -42,11 +41,11 @@ export async function powershell(command: string, { timeoutMs = DEFAULT_PS_TIMEO
   } catch (error) {
     // STDERR, not `error.message`. `execFile`'s message is just the command line it ran, so a failing script
     // reports its own source and nothing about what went wrong — the first version of this pasted 40 lines of
-    // C# into a diagnostic mark and said nothing. `diagnostics.mjs` documents this same trap; I walked into it
+    // C# into a diagnostic mark and said nothing. `diagnostics.ts` documents this same trap; I walked into it
     // anyway, one module later. Truncated because a mark is read by a human.
     // `execFile` rejects with an Error CARRYING extra fields, which `unknown` cannot express — so the
     // shape is named here rather than reached for blindly. `errorText` handles the message half.
-    const failure = /** @type {{stderr?: unknown, killed?: unknown, signal?: unknown}} */ (error ?? {});
+    const failure = ((error ?? {}) as { stderr?: unknown; killed?: unknown; signal?: unknown });
     const stderr = String(failure.stderr ?? "").replace(/\s+/g, " ").trim();
     const killed = failure.killed || failure.signal ? `timed out after ${timeoutMs}ms` : "";
     const reason = [killed, stderr].filter(Boolean).join(": ").slice(0, 400)

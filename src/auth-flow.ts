@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * The worker's half of an authenticated capture — ADR 0038, clauses 1, 3 and 4, and amendment 4.
  *
@@ -39,6 +38,11 @@ import { isAbsolute } from "node:path";
 import { CDP_READY_TIMEOUT_MS } from "./browser-session.ts";
 import { captureFault, FAULT, faultCode } from "./capture-faults.ts";
 
+// JSON from the browser or the page (a CDP reply, a `page.evaluate` result, a request body): its shape is the other end's, and
+// modelling it is a job of its own. Named once here so the boundary is greppable and `no-explicit-any` still bites everywhere else.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Untyped = any;
+
 /** The closed vocabulary. Same seven as `flows.ts`, in the same order; pinned equal by a test. */
 export const FLOW_VERBS = ["goto", "fill", "choose", "check", "press", "expect", "capture"];
 export const EXPECT_DEFAULT_SECONDS = 10;
@@ -55,19 +59,20 @@ const NAVIGATE_TIMEOUT_MS = 30_000;
 const CDP_CALL_TIMEOUT_MS = 15_000;
 const CDP_HOST = "127.0.0.1";
 
-/** @typedef {{ field: string, within?: string, nth?: number }} ControlRef */
-/**
- * @typedef {{ goto: string }
- *   | { fill: ControlRef & { value?: string, fromEnv?: string } }
- *   | { choose: ControlRef & { option: string } }
- *   | { check: ControlRef & { checked: boolean } }
- *   | { press: { control: string, within?: string, nth?: number } }
- *   | { expect: { kind: "heading" | "control" | "text", name: string, timeoutSeconds: number } }
- *   | { capture: string }} Step
- * @typedef {{ name: string, value: string, domain: string, path?: string, expires?: number, httpOnly?: boolean, secure?: boolean, sameSite?: string }} StateCookie
- * @typedef {{ cookies: (StateCookie & { place: number })[], localStorage: { place: number, name: string, value: string }[] }} StateEntries
- * @typedef {{ login: Step[], flow: Step[], upTo: number, state?: { path: string, entries?: StateEntries }, idpOrigins?: string[] }} AuthPlan
- */
+type ControlRef = { field: string, within?: string, nth?: number };
+type Step = { goto: string }
+  | { fill: ControlRef & { value?: string, fromEnv?: string } }
+  | { choose: ControlRef & { option: string } }
+  | { check: ControlRef & { checked: boolean } }
+  | { press: { control: string, within?: string, nth?: number } }
+  | { expect: { kind: "heading" | "control" | "text", name: string, timeoutSeconds: number } }
+  | { capture: string };
+
+type StateCookie = { name: string, value: string, domain: string, path?: string, expires?: number, httpOnly?: boolean, secure?: boolean, sameSite?: string };
+
+type StateEntries = { cookies: (StateCookie & { place: number })[], localStorage: { place: number, name: string, value: string }[] };
+
+export type AuthPlan = { login: Step[], flow: Step[], upTo: number, state?: { path: string, entries?: StateEntries }, idpOrigins?: string[] };
 
 /** A request the worker refuses to act on: a 400, not a capture. Carries no value, because none was read yet. */
 export class AuthRequestError extends Error {
@@ -96,13 +101,13 @@ function refuseUnknownKeys(entry: Record<string, unknown>, allowed: string[], wh
 function controlRef(entry: Record<string, unknown>, where: string): ControlRef {
   if (!isName(entry.field)) throw new AuthRequestError(`${where} has no field name`);
   if (entry.within !== undefined && !isName(entry.within)) throw new AuthRequestError(`${where}: within must be a name`);
-  if (entry.nth !== undefined && (!Number.isInteger(entry.nth) || /** @type {number} */ (entry.nth) < 1)) {
+  if (entry.nth !== undefined && (!Number.isInteger(entry.nth) || (entry.nth as number) < 1)) {
     throw new AuthRequestError(`${where}: nth counts from 1`);
   }
   return {
     field: entry.field,
-    ...(entry.within === undefined ? {} : { within: /** @type {string} */ (entry.within) }),
-    ...(entry.nth === undefined ? {} : { nth: /** @type {number} */ (entry.nth) }),
+    ...(entry.within === undefined ? {} : { within: (entry.within as string) }),
+    ...(entry.nth === undefined ? {} : { nth: (entry.nth as number) }),
   };
 }
 
@@ -330,7 +335,7 @@ function cookieProblem(cookie: unknown, at: string): string | undefined {
   for (const field of ["httpOnly", "secure"]) {
     if (cookie[field] !== undefined && typeof cookie[field] !== "boolean") return `${at} has a "${field}" that is not true or false`;
   }
-  if (cookie.sameSite !== undefined && !SAME_SITE.includes(/** @type {string} */ (cookie.sameSite))) return `${at} has a "sameSite" that is not Strict, Lax or None`;
+  if (cookie.sameSite !== undefined && !SAME_SITE.includes((cookie.sameSite as string))) return `${at} has a "sameSite" that is not Strict, Lax or None`;
   return undefined;
 }
 
@@ -431,7 +436,7 @@ export function withLoadedState(plan: AuthPlan, url: string, readText: (path: st
 
 /**
  * The capture options an `auth` request decides — everything about authentication that `captureOptions` (in
- * `server.mjs`, which needs a screen reader to import and so has no test) would otherwise decide inline.
+ * `server.ts`, which needs a screen reader to import and so has no test) would otherwise decide inline.
  *
  * With `auth`: the plan, validated AGAIN here (it arrives over HTTP from anywhere), its saved state (if it names one) read
  * and validated by THIS process, every variable it reads checked present in THIS process's environment before anything is launched, and `reuseBrowser` FORCED OFF whatever
@@ -461,7 +466,7 @@ export function authAcknowledgement({ auth, marks }: { auth: AuthPlan | undefine
 }
 
 /**
- * How the result store holds a capture's response: an authenticated one for ONE delivery (`capture-results.mjs`),
+ * How the result store holds a capture's response: an authenticated one for ONE delivery (`capture-results.ts`),
  * everything else exactly as it always was.
  *
  * @param {{ auth?: AuthPlan }} opts @returns {{ deliverOnce: boolean }}
@@ -501,7 +506,7 @@ export function authGate({ auth, peer }: { auth: unknown; peer: string | undefin
 // Matching controls by ACCESSIBLE NAME, over the accessibility tree — never by selector.
 // ---------------------------------------------------------------------------------------------------------------
 
-/** @typedef {{ id: string, role: string, name: string, parentId?: string, backendId?: number, ignored: boolean }} AxNode */
+type AxNode = { id: string, role: string, name: string, parentId?: string, backendId?: number, ignored: boolean };
 
 const FILL_ROLES = ["textbox", "searchbox", "combobox", "spinbutton"];
 const CHECK_ROLES = ["checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio"];
@@ -518,7 +523,7 @@ export const normalise = (text: unknown) => String(text ?? "").replace(/\s+/g, "
 export function controlsNamed(nodes: AxNode[], { roles, name, within }: { roles: string[]; name: string; within?: string; }): AxNode[] {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const wanted = normalise(name);
-  const inside = (/** @type {AxNode} */ node: AxNode) => {
+  const inside = (node: AxNode) => {
     if (within === undefined) return true;
     for (let up = node.parentId ? byId.get(node.parentId) : undefined; up; up = up.parentId ? byId.get(up.parentId) : undefined) {
       if (normalise(up.name) === normalise(within)) return true;
@@ -544,27 +549,28 @@ export function expectationMet(nodes: AxNode[], { kind, name }: { kind: "heading
 // The interpreter.
 // ---------------------------------------------------------------------------------------------------------------
 
+type AuthDriver = {
+  navigate(url: string): Promise<{ ok: boolean, error?: string }>,
+  origin(): Promise<string>,
+  url?(): Promise<string>,
+  axNodes(): Promise<AxNode[]>,
+  inputType(handle: number): Promise<string>,
+  fill(handle: number, text: string): Promise<void>,
+  choose(handle: number, option: string): Promise<boolean>,
+  frameSources(): Promise<string[]>,
+  isChecked(handle: number): Promise<boolean>,
+  click(handle: number): Promise<void>,
+  setCookies(cookies: StateCookie[]): Promise<void>,
+  setLocalStorage(entries: { name: string, value: string }[]): Promise<void>,
+  purge(origin: string): Promise<void>,
+  close(): Promise<void>,
+};
+
 /**
  * What the interpreter needs from a browser. Two implementations exist or will: the CDP driver below, and
  * Playwright in the CLI (PR 5). Handles are opaque to the interpreter.
  *
- * @typedef {{
- *   navigate(url: string): Promise<{ ok: boolean, error?: string }>,
- *   origin(): Promise<string>,
- *   url?(): Promise<string>,
- *   axNodes(): Promise<AxNode[]>,
- *   inputType(handle: number): Promise<string>,
- *   fill(handle: number, text: string): Promise<void>,
- *   choose(handle: number, option: string): Promise<boolean>,
- *   frameSources(): Promise<string[]>,
- *   isChecked(handle: number): Promise<boolean>,
- *   click(handle: number): Promise<void>,
- *   setCookies(cookies: StateCookie[]): Promise<void>,
- *   setLocalStorage(entries: { name: string, value: string }[]): Promise<void>,
- *   purge(origin: string): Promise<void>,
- *   close(): Promise<void>,
- * }} AuthDriver
- */
+ * */
 
 /**
  * `auth-login-failed`, with the reason, the step and the verb — and no value. `where` and `detail` stay on the error: a
@@ -635,7 +641,7 @@ async function explainFailure(driver: AuthDriver, reason: "expect-not-met" | "un
     + `The step failed as ${reason}: ${detail}`);
 }
 
-const sleep = (/** @type {number} */ ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Poll until `attempt` returns something other than undefined, or the bound passes. A wait for a CONDITION, with a
@@ -665,7 +671,6 @@ async function until<T>(attempt: () => Promise<T | undefined>, boundMs: number):
  * @returns {Promise<number>} the control's handle
  */
 async function bindControl(driver: AuthDriver, query: { roles: string[]; name: string; within?: string; nth?: number; }, where: string, boundMs: number): Promise<number> {
-  /** @type {AxNode[]} */
   let seen: AxNode[] = [];
   const found = await until(async () => {
     seen = controlsNamed(await driver.axNodes(), query);
@@ -692,7 +697,6 @@ const ORIGIN_SETTLE_MS = 5_000;
  * @param {AuthDriver} driver @returns {Promise<string>}
  */
 async function currentOrigin(driver: AuthDriver): Promise<string> {
-  /** @type {unknown} */
   let last: unknown;
   const found = await until(async () => {
     try { return await driver.origin(); } catch (error) { last = error; return undefined; }
@@ -746,11 +750,9 @@ async function assertStillOnOrigin(driver: AuthDriver, origin: string, where: st
   }
 }
 
-/**
- * @typedef {{ steps: Step[], origin: string, driver: AuthDriver, env: Record<string, string | undefined>,
- *   mark: (event: string, detail: Record<string, unknown>) => void, phase: "login" | "flow", bindTimeoutMs: number,
- *   idpOrigins?: readonly string[] }} RunContext
- */
+type RunContext = { steps: Step[], origin: string, driver: AuthDriver, env: Record<string, string | undefined>,
+  mark: (event: string, detail: Record<string, unknown>) => void, phase: "login" | "flow", bindTimeoutMs: number,
+  idpOrigins?: readonly string[] };
 
 /**
  * The origins besides the app's that the page may be on AFTER this step: only a login's steps before its last (that last is the
@@ -765,7 +767,7 @@ function allowedOrigins(run: RunContext, index: number): readonly string[] {
 }
 
 /** @param {Step} step @returns {string} the step's verb, and never a value */
-const verbOf = (step: Step): string => /** @type {string} */ (Object.keys(step)[0]);
+const verbOf = (step: Step): string => (Object.keys(step)[0] as string);
 
 /**
  * @param {Step} step @param {RunContext} run @param {{ where: string, index: number }} position
@@ -826,7 +828,7 @@ async function runNumbered(step: Step, index: number, run: RunContext) {
   const verb = verbOf(step);
   const where = `${run.phase} step ${index} (${verb})`;
   if (verb === "capture") return; // a capture point is where the caller stops; it acts on nothing
-  const body = /** @type {any} */ (step)[verb];
+  const body = (step as Untyped)[verb];
   run.mark("authStep", { phase: run.phase, index, verb, name: typeof body === "string" ? undefined : body.field ?? body.control ?? body.name });
   await runStep(step, run, { where, index });
   if (verb !== "expect") await assertStillOnOrigin(run.driver, run.origin, where, allowedOrigins(run, index));
@@ -897,9 +899,9 @@ async function signInFromState(state: StateEntries, run: RunContext, url: string
   try {
     await runNumbered(run.steps[run.steps.length - 1], run.steps.length, run);
   } catch (error) {
-    const reason = /** @type {{ reason?: string }} */ (error).reason;
+    const reason = (error as { reason?: string }).reason;
     if (faultCode(error) === FAULT.AUTH_LOGIN_FAILED && (reason === "expect-not-met" || reason === "left-origin")) {
-      throw stateExpired(/** @type {any} */ (error));
+      throw stateExpired((error as Untyped));
     }
     throw error;
   }
@@ -989,13 +991,11 @@ export async function purgeSession(driver: AuthDriver, url: string) {
  * @param {string} webSocketUrl
  * @returns {Promise<{ send: (method: string, params?: object) => Promise<any>, waitFor: (method: string, ms: number) => Promise<any>, close: () => void }>}
  */
-function openSession(webSocketUrl: string): Promise<{ send: (method: string, params?: object) => Promise<any>; waitFor: (method: string, ms: number) => Promise<any>; close: () => void; }> {
+function openSession(webSocketUrl: string): Promise<{ send: (method: string, params?: object) => Promise<Untyped>; waitFor: (method: string, ms: number) => Promise<Untyped>; close: () => void; }> {
   const socket = new WebSocket(webSocketUrl);
   let nextId = 1;
-  /** @type {Map<number, { resolve: (value: any) => void, reject: (error: Error) => void }>} */
-  const pending: Map<number, { resolve: (value: any) => void; reject: (error: Error) => void; }> = new Map();
-  /** @type {Set<(message: any) => void>} */
-  const listeners: Set<(message: any) => void> = new Set();
+  const pending: Map<number, { resolve: (value: Untyped) => void; reject: (error: Error) => void; }> = new Map();
+  const listeners: Set<(message: Untyped) => void> = new Set();
   socket.addEventListener("message", (event) => {
     let message;
     try { message = JSON.parse(String(event.data)); } catch (error) { void error; return; }
@@ -1025,7 +1025,7 @@ function openSession(webSocketUrl: string): Promise<{ send: (method: string, par
         }),
         waitFor: (method, ms) => new Promise((ok, fail) => {
           const timeout = setTimeout(() => { listeners.delete(listener); fail(new Error(`CDP: no ${method} within ${ms} ms`)); }, ms);
-          const listener = (/** @type {any} */ message: any) => {
+          const listener = (message: Untyped) => {
             if (message.method !== method) return;
             clearTimeout(timeout);
             listeners.delete(listener);
@@ -1057,7 +1057,7 @@ async function listTargetsOnceListening(port: number, readyTimeoutMs: number): P
     try {
       return await fetch(`http://${CDP_HOST}:${port}/json/list`, { signal: AbortSignal.timeout(CDP_CALL_TIMEOUT_MS) });
     } catch (error) {
-      if (/** @type {any} */ (error)?.cause?.code !== "ECONNREFUSED") throw error;
+      if ((error as Untyped)?.cause?.code !== "ECONNREFUSED") throw error;
       if (Date.now() >= deadline) {
         throw new Error(`CDP: the DevTools port ${port} did not open within ${readyTimeoutMs} ms (connection refused)`, { cause: error });
       }
@@ -1076,14 +1076,14 @@ async function listTargetsOnceListening(port: number, readyTimeoutMs: number): P
 async function pageSocketUrl(port: number, readyTimeoutMs: number): Promise<string> {
   const response = await listTargetsOnceListening(port, readyTimeoutMs);
   if (!response.ok) throw new Error(`CDP /json/list returned HTTP ${response.status}`);
-  const targets = /** @type {{ type?: string, url?: string, webSocketDebuggerUrl?: string }[]} */ (await response.json());
+  const targets = (await response.json() as { type?: string, url?: string, webSocketDebuggerUrl?: string }[]);
   const page = targets.find((target) => target.type === "page" && !String(target.url).startsWith("devtools://"));
   if (!page?.webSocketDebuggerUrl) throw new Error("CDP listed no page target to drive");
   return page.webSocketDebuggerUrl;
 }
 
 /** @param {any} node @returns {AxNode} */
-function axNodeOf(node: any): AxNode {
+function axNodeOf(node: Untyped): AxNode {
   return {
     id: String(node.nodeId), role: String(node.role?.value ?? ""), name: String(node.name?.value ?? ""),
     parentId: node.parentId === undefined ? undefined : String(node.parentId),
@@ -1105,9 +1105,9 @@ export async function openCdpDriver({ port, readyTimeoutMs = CDP_READY_TIMEOUT_M
   const session = await openSession(await pageSocketUrl(port, readyTimeoutMs));
   await session.send("Page.enable");
   await session.send("DOM.enable");
-  const objectOf = async (/** @type {number} */ backendNodeId: number) =>
+  const objectOf = async (backendNodeId: number) =>
     (await session.send("DOM.resolveNode", { backendNodeId })).object.objectId;
-  const callOn = async (/** @type {number} */ handle: number, /** @type {string} */ functionDeclaration: string, /** @type {unknown[]} */ args: unknown[] = []) =>
+  const callOn = async (handle: number, functionDeclaration: string, args: unknown[] = []) =>
     (await session.send("Runtime.callFunctionOn", {
       objectId: await objectOf(handle), functionDeclaration, arguments: args.map((value) => ({ value })), returnByValue: true,
     })).result?.value;
@@ -1117,7 +1117,7 @@ export async function openCdpDriver({ port, readyTimeoutMs = CDP_READY_TIMEOUT_M
       loaded.catch(() => undefined);
       const { errorText } = await session.send("Page.navigate", { url });
       if (errorText) return { ok: false, error: errorText };
-      try { await loaded; } catch (error) { return { ok: false, error: /** @type {Error} */ (error).message }; }
+      try { await loaded; } catch (error) { return { ok: false, error: (error as Error).message }; }
       return { ok: true };
     },
     async origin() {

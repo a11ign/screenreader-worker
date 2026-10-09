@@ -108,13 +108,13 @@ test("#170: the list is capped at FORM_INPUT_CAP, and `total` says when it was",
 
 test("#170 WIRED: read beside mediaCensus, put on the capture as `formInputs`, and it reaches ruleEvidence", () => {
   const source = (file: string) => readFileSync(fileURLToPath(new URL(`./${file}`, import.meta.url)), "utf8");
-  const probes = source("capture-probes.mjs");
-  const reads = probes.slice(probes.indexOf("async function censusBeforeNavigating(diag) {"));
+  const probes = source("capture-probes.ts");
+  const reads = probes.slice(probes.indexOf("async function censusBeforeNavigating("));
   assert.match(reads.slice(0, reads.indexOf("\n}\n")), /await mediaCensus\(\);[\s\S]*await formInputCensus\(\);/,
     "the census is read at the same moment as mediaCensus, before any navigating probe");
   assert.match(probes, /result\.formInputs = formsRead\?\.elements \?\? null;/,
     "`.elements` onto the result, null when the census did not run -- never an empty list for 'not checked'");
-  assert.match(source("capture-core.mjs"), /\n {4}formInputs,\n/, "and onto the capture object itself");
+  assert.match(source("capture-core.ts"), /\n {4}formInputs,\n/, "and onto the capture object itself");
   // `oracleCounts` is how a rule reaches it (verify.ts: `formInputs` passed through to ruleEvidence).
   const { elements } = censusOf([control("input", { type: "text", autocomplete: "fname" })]);
   const counts = oracleCounts({ transcript: [], structure: {}, interaction: {}, formInputs: elements } as never);

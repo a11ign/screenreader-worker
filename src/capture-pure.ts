@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * The pure half of the capture path: no guidepup, no NVDA, no browser — just the functions that turn what a
  * screen reader SAID into structure, and the constants they judge it against.
@@ -6,18 +5,18 @@
  * ## Why this file exists
  *
  * `@guidepup/guidepup` **throws at import time** where no screen reader exists. CI is Linux, so merely
- * importing `capture-core.mjs` fails there — and six test files did exactly that to reach these pure
+ * importing `capture-core.ts` fails there — and six test files did exactly that to reach these pure
  * helpers, so they died with it. Node reports that per FILE, as "test failed", which reads like broken logic
  * rather than an unavailable dependency: the job had been red since 1 August, growing from 2 files to 6 as
  * more tests imported `capture-core` for pure logic.
  *
  * Nothing here may import guidepup, and `./pure-graph.test.ts` enforces that by walking the
- * import graph. `capture-core.mjs` imports these and re-exports them, so every existing caller is unchanged.
+ * import graph. `capture-core.ts` imports these and re-exports them, so every existing caller is unchanged.
  *
  * ## What belongs here
  *
  * A function belongs here when it is a pure function of a transcript, a phrase or a URL. Anything that talks
- * to NVDA, the browser or the filesystem does not — it stays in `capture-core.mjs`, where it can only be
+ * to NVDA, the browser or the filesystem does not — it stays in `capture-core.ts`, where it can only be
  * tested against real NVDA on the Windows worker.
  *
  * The move was computed rather than eyeballed: the transitive closure of the seven symbols the tests need is
@@ -27,6 +26,11 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { captureFault, FAULT } from "./capture-faults.ts";
+
+// JSON from the browser or the page (a CDP reply, a `page.evaluate` result, a request body): its shape is the other end's, and
+// modelling it is a job of its own. Named once here so the boundary is greppable and `no-explicit-any` still bites everywhere else.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Untyped = any;
 
 export const MIN_CONTROL_NAME_LEN = 3; // shorter is a stray key echo ("f"), not a control name
 
@@ -162,7 +166,7 @@ export function phraseAction(phrase: string, heard: number, tracker: {
  * of a capture and marked at the bottom: measured on 25 of 25 captures, `structureCensus.atMs` landed
  * within 60 ms of the file's LAST mark, reporting a read that happened 93–469 s earlier.
  *
- * **It lived in `capture-core.mjs` AND `capture-setup.mjs`**, copied deliberately to avoid an import edge
+ * **It lived in `capture-core.ts` AND `capture-setup.ts`**, copied deliberately to avoid an import edge
  * between them. It is here instead because both files already import this module, so the edge does not
  * exist — and because two copies of a five-line function is the shape that produced five incidents in one
  * day. Adding `sinceStart` to one and not the other would have been the sixth.
@@ -170,10 +174,10 @@ export function phraseAction(phrase: string, heard: number, tracker: {
  * @param {{ event: string, [key: string]: any }[]} [sink]
  * @returns {CaptureDiagnostics}
  */
-export function createDiagnostics(sink?: { event: string;[key: string]: any; }[]): CaptureDiagnostics {
+export function createDiagnostics(sink?: { event: string;[key: string]: Untyped; }[]): CaptureDiagnostics {
   const entries = sink ?? [];
   const startedAt = Date.now();
-  const mark = (/** @type {string} */ event: string, /** @type {Record<string, unknown>} */ info: Record<string, unknown> = {}) =>
+  const mark = (event: string, info: Record<string, unknown> = {}) =>
     entries.push({ event, atMs: Date.now() - startedAt, ...info });
   const sinceStart = () => Date.now() - startedAt;
   return { entries, mark, sinceStart };
@@ -186,7 +190,7 @@ export function createDiagnostics(sink?: { event: string;[key: string]: any; }[]
  * caselaw's two captures matched <768px and >=992px layouts and yielded different findings (#1043), and nothing
  * recorded which. The window is pinned now (`CAPTURE_WINDOW`, #1561) and this is still the only MEASURED width --
  * Edge clamps the request to the display work area, so what was asked for and what the page got are two facts.
- * `capture-core.mjs` reads the page once it settles and marks `viewport`; `server.mjs` merges these fields into
+ * `capture-core.ts` reads the page once it settles and marks `viewport`; `server.ts` merges these fields into
  * that capture's environment only.
  *
  * THE LAST MARK WINS. `runCapture` passes one sink array to `captureWithLocalRecovery`, and a recoverable fault
@@ -209,28 +213,32 @@ export function viewportFromMarks(diagnostics: { event?: string;[key: string]: u
   if (!last) return {};
   const values = [last.innerWidth, last.innerHeight, last.devicePixelRatio];
   if (!values.every((v) => typeof v === "number" && Number.isFinite(v) && v > 0)) return {};
-  const [innerWidth, innerHeight, devicePixelRatio] = /** @type {number[]} */ (values);
+  const [innerWidth, innerHeight, devicePixelRatio] = (values as number[]);
   return { innerWidth, innerHeight, devicePixelRatio };
 }
 
 /**
- * @typedef {{ entries: { event: string, [key: string]: any }[] }} MarkLog
- *   What a READER of the diagnostics needs. Split from the writer below because most helpers here only
- *   read, and `capture-pure.corpus.test.ts` drives them with a bare `{ entries }` -- correctly, since a
- *   test that had to supply a `mark` it never calls would be describing a dependency that is not there.
+ * What a READER of the diagnostics needs. Split from the writer below because most helpers here only
+ * read, and `capture-pure.corpus.test.ts` drives them with a bare `{ entries }` -- correctly, since a
+ * test that had to supply a `mark` it never calls would be describing a dependency that is not there.
+ */
+type MarkLog = { entries: { event: string, [key: string]: Untyped }[] };
+
+/**
+ * The log plus its writer, for the one helper that records a finding as well as deciding one.
  *
- * @typedef {MarkLog & { mark: (event: string, detail?: Record<string, unknown>) => void,
- *                        sinceStart: () => number }} CaptureDiagnostics
- *   The log plus its writer, for the one helper that records a finding as well as deciding one.
+ * `sinceStart` reads the same clock `mark` stamps with, WITHOUT pushing a mark -- so a value read now
+ * and marked later can carry the moment it was read (#854). `mark`'s `atMs` is when the mark was
+ * PUSHED, which is correct for a phase mark and wrong for anything read earlier; `structureCensus`
+ * reported its read ~310 s late on every capture ever taken because those were the same field.
  *
- *   `sinceStart` reads the same clock `mark` stamps with, WITHOUT pushing a mark -- so a value read now
- *   and marked later can carry the moment it was read (#854). `mark`'s `atMs` is when the mark was
- *   PUSHED, which is correct for a phase mark and wrong for anything read earlier; `structureCensus`
- *   reported its read ~310 s late on every capture ever taken because those were the same field.
- *
- *   Named once because five helpers here take it, and this file is where "did not need to act" and
- *   "never ran" are told apart -- a shape restated five times is how those two become one.
- *
+ * Named once because five helpers here take it, and this file is where "did not need to act" and
+ * "never ran" are told apart -- a shape restated five times is how those two become one.
+ */
+export type CaptureDiagnostics = MarkLog & { mark: (event: string, detail?: Record<string, unknown>) => void,
+                       sinceStart: () => number };
+
+/**
  * @param {string[]} transcript
  * @param {CaptureDiagnostics} diag
  */
@@ -313,7 +321,7 @@ export const CONTAINER_PREFIX = /^(?:\w[\w\s'-]*[,\s]\s*)?(?:landmark|region|ban
  * reduces NONE to empty — the over-strip signature this would otherwise risk. `MAX_CONTAINER_DEPTH` bounds
  * it anyway, because a pathological announcement must not make this loop the slow part of a capture.
  */
-export const dedupeKey = (/** @type {string} */ phrase: string) => {
+export const dedupeKey = (phrase: string) => {
   let key = String(phrase);
   for (let depth = 0; depth < MAX_CONTAINER_DEPTH; depth += 1) {
     const stripped = key.replace(CONTAINER_PREFIX, "");
@@ -359,35 +367,40 @@ export const MAX_CONSECUTIVE_REPEATS = 25;
  * case that used to produce a phantom: NVDA silent, `lastSpokenPhrase` still holding older text.
  */
 /**
- * @typedef {"cap"|"channelReset"|"deadline"|"error"|"exhausted"|"focusModeStuck"|"repeat"|"silent"} SweepStop
- *   Every reason a sweep can end, enumerated. Not decoration: as a bare `string` this does not narrow at
- *   all, because `""` is a valid string and falsy, so `if (step.stop)` cannot rule the stopped branch out
- *   of the `else`. Written down, the eight reasons are also the answer to "why did this sweep find
- *   nothing?", which is the question `stopPhrase` was added for.
+ * Every reason a sweep can end, enumerated. Not decoration: as a bare `string` this does not narrow at
+ * all, because `""` is a valid string and falsy, so `if (step.stop)` cannot rule the stopped branch out
+ * of the `else`. Written down, the eight reasons are also the answer to "why did this sweep find
+ * nothing?", which is the question `stopPhrase` was added for.
+ */
+type SweepStop = "cap"|"channelReset"|"deadline"|"error"|"exhausted"|"focusModeStuck"|"repeat"|"silent";
+
+type SweepStopped = { seen: number, stop: SweepStop, phrase?: undefined, repeats?: number, silentRetries?: number };
+
+type SweepAdvanced = { seen: number, stop?: undefined, phrase: string, repeats?: number };
+
+/**
+ * DISCRIMINATED, because the invariant is real and the caller depends on it: every return below carries
+ * EITHER a `stop` or a `phrase`, and the sweep does `if (step.stop) return ...` and then reads
+ * `phrase.length`. A flat optional-everything shape says that read might be undefined, which is both
+ * untrue and unfixable without a guard for a case that cannot arise.
  *
- * @typedef {{ seen: number, stop: SweepStop, phrase?: undefined, repeats?: number, silentRetries?: number }} SweepStopped
- * @typedef {{ seen: number, stop?: undefined, phrase: string, repeats?: number }} SweepAdvanced
- * @typedef {SweepStopped | SweepAdvanced} SweepStep
+ * NARROWING WAS ESTABLISHED BY COMPILING A THREE-LINE PROBE, twice, and the first answer was wrong.
+ * Splitting the union across two named halves changed nothing, because the discriminant was `string`
+ * and `""` is a falsy string -- so the `else` could still be the stopped branch. Only enumerating the
+ * stop reasons made it decide. Reading the type would never have told me either of those things; this
+ * repo's rule that escaping is settled by RUNNING it applies to type expressions exactly as it does to
+ * Jinja, and for the same reason: what fails is silent.
  *
- *   DISCRIMINATED, because the invariant is real and the caller depends on it: every return below carries
- *   EITHER a `stop` or a `phrase`, and the sweep does `if (step.stop) return ...` and then reads
- *   `phrase.length`. A flat optional-everything shape says that read might be undefined, which is both
- *   untrue and unfixable without a guard for a case that cannot arise.
- *
- *   NARROWING WAS ESTABLISHED BY COMPILING A THREE-LINE PROBE, twice, and the first answer was wrong.
- *   Splitting the union across two named halves changed nothing, because the discriminant was `string`
- *   and `""` is a falsy string -- so the `else` could still be the stopped branch. Only enumerating the
- *   stop reasons made it decide. Reading the type would never have told me either of those things; this
- *   repo's rule that escaping is settled by RUNNING it applies to type expressions exactly as it does to
- *   Jinja, and for the same reason: what fails is silent.
- *
- *   ONE shape for what a sweep step reports, because three places produce one and they were producing
- *   three different object literals. TypeScript unions them into something on which no field is safely
- *   readable -- and the caller reads `.phrase` and `.repeats` off whatever came back. `stopPhrase` exists
- *   because a sweep reporting `found=0 stop=repeat` says only "nothing" while `stopPhrase: "k"` says NVDA
- *   was in focus mode and this pipeline typed its own quick-nav key into the page, which went unnoticed
- *   for 2,122 captures. A shape that cannot carry the field is how that happens again.
- *
+ * ONE shape for what a sweep step reports, because three places produce one and they were producing
+ * three different object literals. TypeScript unions them into something on which no field is safely
+ * readable -- and the caller reads `.phrase` and `.repeats` off whatever came back. `stopPhrase` exists
+ * because a sweep reporting `found=0 stop=repeat` says only "nothing" while `stopPhrase: "k"` says NVDA
+ * was in focus mode and this pipeline typed its own quick-nav key into the page, which went unnoticed
+ * for 2,122 captures. A shape that cannot carry the field is how that happens again.
+ */
+export type SweepStep = SweepStopped | SweepAdvanced;
+
+/**
  * @param {{ log: string[], seen: number, prev?: string, repeats?: number }} state
  * @returns {SweepStep}
  */
@@ -430,7 +443,7 @@ export function sweepStepFromSpeech({ log, seen, prev, repeats = 0 }: { log: str
 }
 
 /**
- * One iteration's verdict for `waitForSpeechQuiet`'s poll loop (capture-setup.mjs), pure and injectable
+ * One iteration's verdict for `waitForSpeechQuiet`'s poll loop (capture-setup.ts), pure and injectable
  * so the rule it exists to enforce is directly testable without guidepup: #635 -- a FAILED read of the
  * speech log is not silence, and must never by itself close the quiet window. Before this function
  * existed, the loop folded a failed read into the same variable a successful empty read used
@@ -506,9 +519,9 @@ export function elementsListRowName(phrase: string | undefined) {
  * @returns {{ value: number | undefined, fromDistinct: boolean }}
  */
 function authoritativeCount(elementsList: Record<string, number | undefined> | undefined, type: string): { value: number | undefined; fromDistinct: boolean; } {
-  const distinct = /** @type {any} */ (elementsList)?.distinct?.[type];
+  const distinct = (elementsList as Untyped)?.distinct?.[type];
   if (typeof distinct !== "number") return { value: elementsList?.[type], fromDistinct: false };
-  const unnamed = /** @type {any} */ (elementsList)?.[`${type}Unnamed`];
+  const unnamed = (elementsList as Untyped)?.[`${type}Unnamed`];
   const value = typeof unnamed === "number" ? Math.max(0, distinct - unnamed) : distinct;
   return { value, fromDistinct: true };
 }
@@ -662,7 +675,7 @@ export function focusInFrameOf(scopeAt: { focusFrame?: unknown; } | null | undef
   const frame = scopeAt.focusFrame;
   if (frame === null) return { focusInFrame: null };
   if (typeof frame === "string" && frame.length > 0) return { focusInFrame: frame };
-  const why = frame && typeof frame === "object" ? /** @type {{ cannotSay?: unknown }} */ (frame).cannotSay : undefined;
+  const why = frame && typeof frame === "object" ? (frame as { cannotSay?: unknown }).cannotSay : undefined;
   return typeof why === "string" && why.length > 0 ? { focusInFrameUnknown: why } : {};
 }
 
@@ -849,7 +862,7 @@ export function recordWhatWasAsked({ observed, probeForms, probeFocus, formState
     ? { asked: true }
     : notObserved("probeFocus is opt-in -- ~8s on a ~12s capture -- and this case did not ask");
   for (const [channel, { flag, ownReason, withoutFocus }] of Object.entries(FOCUS_DEPENDENT_PROBES)) {
-    const asked = /** @type {Record<string, boolean|undefined>} */ (flags)[flag];
+    const asked = (flags as Record<string, boolean|undefined>)[flag];
     observed[channel] = asked && probeFocus
       ? { asked: true }
       : notObserved(asked ? withoutFocus : ownReason);
@@ -981,7 +994,7 @@ const isBareContainer = (part: string) => `${part}, `.replace(CONTAINER_PREFIX, 
  */
 export function pageSpeechAfter(control: string, phrases: readonly unknown[]): string {
   const own = new Set(partsOf(control).filter((part) => !CONTROL_OWN_STATE.test(part)));
-  const isControlsOwn = (/** @type {string} */ phrase: string) => partsOf(phrase)
+  const isControlsOwn = (phrase: string) => partsOf(phrase)
     .every((part) => own.has(part) || isBareContainer(part));
   return phrases
     .map((phrase) => String(phrase ?? "").trim())
@@ -1155,7 +1168,7 @@ export const DEFAULT_BUDGET_MS = 420_000;
  */
 export const POST_READ_RESERVE_MS = 60_000;
 
-/** What the worker abandons a capture at. The default only; `server.mjs` keeps its env override. */
+/** What the worker abandons a capture at. The default only; `server.ts` keeps its env override. */
 export const CAPTURE_HARD_TIMEOUT_DEFAULT_MS = 520_000;
 
 /**
@@ -1312,13 +1325,13 @@ export function censusShape(census: { heading?: number; link?: number; graphic?:
 
 // --- Page identity, browser error pages, and the focus cycle -------------------------------------
 //
-// MOVED HERE FROM `capture-core.mjs` on 2026-08-30, verbatim including their comments, for the reason
+// MOVED HERE FROM `capture-core.ts` on 2026-08-30, verbatim including their comments, for the reason
 // this file exists: guidepup constructs a ScreenReader at MODULE SCOPE and throws `No available
-// supported screen readers` where there is none, so importing `capture-core.mjs` AT ALL fails on Linux.
+// supported screen readers` where there is none, so importing `capture-core.ts` AT ALL fails on Linux.
 //
 // Four test files reached these helpers through it and died with it the moment `main` went green enough
 // to run: `browser-error-page`, `focus-order-cycle`, `landed-on-page`, and `file-version-memo` via
-// `server.mjs`, which imports capture-core too.
+// `server.ts`, which imports capture-core too.
 //
 // THAT IS known-gaps §12 A SECOND TIME. Its fix switched two files from package-name imports to relative
 // ones and added `no-win32-imports.test.ts` to keep them that way — but a relative import of
@@ -1326,7 +1339,7 @@ export function censusShape(census: { heading?: number; link?: number; graphic?:
 // never look at the four files that were failing. The remedy reached two of six, and its guard was blind
 // to the rest.
 //
-// `capture-core.mjs` imports and re-exports every one of these, so its callers are unchanged.
+// `capture-core.ts` imports and re-exports every one of these, so its callers are unchanged.
 
 /** Between reads of the browser's current URL. A poll INTERVAL, not a guess at how long a load takes. */
 const LANDED_POLL_MS = 100;
@@ -1344,7 +1357,7 @@ const BROWSER_ERROR_TITLE_RE =
  * happens to mention connectivity. Chromium's error titles are stable and short.
  */
 /** Exported so the guard can be shown to FAIL — a check never seen to reject anything is untested. */
-export const isBrowserErrorTitle = (/** @type {unknown} */ title: unknown) => BROWSER_ERROR_TITLE_RE.test(String(title ?? ""));
+export const isBrowserErrorTitle = (title: unknown) => BROWSER_ERROR_TITLE_RE.test(String(title ?? ""));
 
 /**
  * Did the browser open the page we asked for?
@@ -1382,7 +1395,7 @@ export const isBrowserErrorTitle = (/** @type {unknown} */ title: unknown) => BR
  */
 /** @param {string} a @param {string} b */
 export function samePath(a: string, b: string) {
-  const normalise = (/** @type {string} */ path: string) => path.replace(/\/$/, "").replace(/\.html?$/i, "").replace(/\/index$/i, "");
+  const normalise = (path: string) => path.replace(/\/$/, "").replace(/\.html?$/i, "").replace(/\/index$/i, "");
   return normalise(a) === normalise(b);
 }
 
@@ -1554,15 +1567,15 @@ export const REVEALABLE_ROLES = Object.freeze(["formControl", "link", "graphic",
  * @returns {Array<[string, number]> | null}
  */
 export function censusGrowth(before: unknown, after: unknown): Array<[string, number]> | null {
-  const usable = (/** @type {unknown} */ read: unknown) =>
+  const usable = (read: unknown) =>
     (read && typeof read === "object" && !("error" in read))
-      ? /** @type {Record<string, number>} */ (read)
+      ? (read as Record<string, number>)
       : null;
   const [b, a] = [usable(before), usable(after)];
   if (!b || !a) return null;
-  return /** @type {Array<[string, number]>} */ (REVEALABLE_ROLES
-    .map((key) => [key, Number(a[key] ?? 0) - Number(b[key] ?? 0)])
-    .filter(([, delta]) => Number(delta) > 0));
+  return REVEALABLE_ROLES
+    .map((key): [string, number] => [key, Number(a[key] ?? 0) - Number(b[key] ?? 0)])
+    .filter(([, delta]) => delta > 0);
 }
 
 /** How many names a reveal records. A tooltip or disclosure adds a handful; a cap keeps a runaway page bounded. */
@@ -1576,9 +1589,9 @@ const REVEALED_NAMES_CAP = 10;
  * @returns {string[]}
  */
 export function namesThatAppeared(before: unknown, after: unknown): string[] {
-  const namesOf = (/** @type {unknown} */ read: unknown) => (read && typeof read === "object"
-    && Array.isArray(/** @type {{ names?: unknown }} */ (read).names))
-    ? /** @type {unknown[]} */ (/** @type {{ names: unknown[] }} */ (read).names).map(String) : null;
+  const namesOf = (read: unknown) => (read && typeof read === "object"
+    && Array.isArray((read as { names?: unknown }).names))
+    ? ((read as { names: unknown[] }).names).map(String) : null;
   const [b, a] = [namesOf(before), namesOf(after)];
   if (!b || !a) return [];
   const remaining = new Map();
@@ -1814,7 +1827,7 @@ export function titleSourceVerdict({ domTitle, spokenTitle, targetMatch, candida
  *
  * @param {{ blurred: boolean | null | undefined, logSuppressed?: boolean | undefined,
  *           targetMatch: string | null | undefined, candidates: number | undefined }} outcome
- *   the return value of `resetFocusToDocumentStart` (browser-session.mjs), passed straight through.
+ *   the return value of `resetFocusToDocumentStart` (browser-session.ts), passed straight through.
  * @returns {{ applied: boolean, logSuppressed: boolean, why: string }}
  */
 export function focusResetOutcome({ blurred, logSuppressed, targetMatch, candidates }: {
@@ -1940,7 +1953,7 @@ export function focusEventVerdict({ events, error, targetMatch, candidates }: {
  * the sweep, `probeFocusContext` and `probeFocusReveal` — every one of which can move real DOM focus
  * before the listener ever existed to see it (a sweep activating a control under `probeForms`;
  * `probeFocusContext`/`probeFocusReveal` each walking the tab order themselves, per their own comments in
- * `capture-probes.mjs`'s `runFocus`). `probeFocusOrder`'s own `anchorToTop()` then blurs whatever was left
+ * `capture-probes.ts`'s `runFocus`). `probeFocusOrder`'s own `anchorToTop()` then blurs whatever was left
  * focused, and that blur is the log's first event — a `focusout` with no matching `focusin`, byte-for-byte
  * the F55 signature and nothing of the kind. Measured on the real-page corpus: 37 of 37 conformant pages
  * carried exactly this shape at `log[0]` (`not-working.md` §22). `rules.ts`'s `focusLossEvidence` excluded
@@ -1961,11 +1974,11 @@ export function shouldInstallFocusEventListenerEarly(opts: { probeFocus?: boolea
 /**
  * The plain boolean probe flags the worker's request boundary accepts.
  *
- * LIVES HERE, NOT IN `server.mjs`, so a test can READ it. `probe-chain.test.ts` used to regex that file
+ * LIVES HERE, NOT IN `server.ts`, so a test can READ it. `probe-chain.test.ts` used to regex that file
  * for `^    probeX:` lines inside `captureOptions`; extracting those flags into a list on 2026-09-05 --
  * to get the function back under the complexity gate -- reduced the scan to one match, and the suite's own
  * message named the diagnosis: "the scan is broken, not the code clean". A test deriving its expectations
- * from source TEXT is this repo's anti-pattern, and importing `server.mjs` to fix it would start an HTTP
+ * from source TEXT is this repo's anti-pattern, and importing `server.ts` to fix it would start an HTTP
  * server. This module is pure and already exported.
  *
  * NAMED rather than forwarded by prefix, and that is deliberate at THIS hop specifically: it is the
@@ -2000,7 +2013,7 @@ export const PROBE_FLAGS = Object.freeze([
  *
  * ## Why this is not "trusting the browser's report", which is the objection it has to answer
  *
- * `sameDocument`'s own comment (browser-session.mjs) rejects comparing against CDP's `target.url`:
+ * `sameDocument`'s own comment (browser-session.ts) rejects comparing against CDP's `target.url`:
  * *"exactly the value this function exists to doubt, so trusting it as the oracle would remove the check
  * it is performing."* That objection is right and this does not walk into it. A `Page.frameNavigated` seen
  * BETWEEN our own `Page.navigate` and its `Page.loadEventFired` is a CAUSAL event tied to a navigation we
@@ -2030,7 +2043,7 @@ export function resolvedNavigationUrl({ events, requested }: {
         events: { method?: string; params?: { frame?: { url?: string; parentId?: string; }; }; }[];
         requested: string;
     }): { url: string; redirected: boolean; afterLoad: string | null; hops: number; } {
-  const mainFrameUrl = (/** @type {any} */ event: any) => {
+  const mainFrameUrl = (event: Untyped) => {
     if (event?.method !== "Page.frameNavigated") return null;
     const frame = event?.params?.frame;
     // A main frame has no parent. Checked as ABSENT rather than falsy-or-empty: a subframe with an empty
@@ -2043,9 +2056,9 @@ export function resolvedNavigationUrl({ events, requested }: {
   const chain = inWindow.map(mainFrameUrl).filter((url) => url !== null);
   const after = loadAt === -1 ? [] : events.slice(loadAt + 1).map(mainFrameUrl).filter((url) => url !== null);
   return {
-    url: chain.length ? /** @type {string} */ (chain[chain.length - 1]) : requested,
+    url: chain.length ? (chain[chain.length - 1] as string) : requested,
     redirected: chain.length > 0 && chain[chain.length - 1] !== requested,
-    afterLoad: after.length ? /** @type {string} */ (after[after.length - 1]) : null,
+    afterLoad: after.length ? (after[after.length - 1] as string) : null,
     hops: chain.length,
   };
 }
@@ -2077,7 +2090,6 @@ export const FOCUS_READ_ATTEMPTS = 2;
  * @returns {Promise<{ nextFocusAfter: string | null, unmeasured: string | null }>}
  */
 export async function readFocusAfterTab({ pressTab, readFocused }: { pressTab: () => Promise<unknown>; readFocused: () => Promise<string | null | undefined>; }): Promise<{ nextFocusAfter: string | null; unmeasured: string | null; }> {
-  /** @type {string[]} */
   const failures: string[] = [];
   try {
     await pressTab();
@@ -2104,7 +2116,7 @@ export async function readFocusAfterTab({ pressTab, readFocused }: { pressTab: (
  * named -- a genuine navigation the unwidened pattern under-matched). The worker's copy of
  * `packages/lab/src/training/route-change-identity.mjs`'s `announcementIdentitySignal`
  * (`packages/evidence/src/verify.ts`'s `DOCUMENT_ANNOUNCEMENT`, `/,\s*document$/i`): nothing under this
- * package's `src/*.mjs` imports either at capture time (`field-match.mjs`'s comment explains why), so this
+ * package's `src/*.mjs` imports either at capture time (`field-match.ts`'s comment explains why), so this
  * is a THIRD copy rather than a pin against one of the other two -- the ", busy" widening is deliberately
  * NOT applied to `verify.ts`'s pattern, whose own header explains that relaxing it needs a fresh corpus
  * measurement behind it, which `submitNavigatedTheDocument`'s established oracle does not have yet.

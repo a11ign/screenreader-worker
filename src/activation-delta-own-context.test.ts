@@ -74,7 +74,7 @@ test("#1467: a control's STATE word is never stripped -- the second wait and the
 });
 
 test("#1467 WIRING: activateAndCaptureDelta records `after` through pageSpeechAfter", () => {
-  const source = stripComments(readFileSync(resolve(import.meta.dirname, "capture-probes.mjs"), "utf8"));
+  const source = stripComments(readFileSync(resolve(import.meta.dirname, "capture-probes.ts"), "utf8"));
   const at = source.indexOf("async function activateAndCaptureDelta");
   assert.notEqual(at, -1, "activateAndCaptureDelta no longer exists under that name");
   const body = source.slice(at);

@@ -108,7 +108,7 @@ test("the default history is small on purpose", () => {
   assert.ok(RESULT_HISTORY <= 16, `${RESULT_HISTORY} is more history than recovery can use`);
 });
 
-// The route's own decision, tested here because `server.mjs` needs guidepup — which refuses to import
+// The route's own decision, tested here because `server.ts` needs guidepup — which refuses to import
 // without a screen reader — and nothing inside it
 // can be reached from a test. This is the endpoint's entire contract.
 

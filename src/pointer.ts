@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Put the mouse pointer somewhere it cannot change what the page renders.
  *
@@ -86,7 +85,6 @@ function setCursorPosition(x: number, y: number): Promise<void> {
   // Typed at the binding rather than inline: `new Promise(...)` with a zero-argument `resolve()` needs a
   // hint (TS2810), and an inline cast on the executor needs a second closing paren that is easy to
   // lose — which is exactly what happened on the first attempt.
-  /** @type {Promise<void>} */
   const moved: Promise<void> = new Promise((resolve, reject) => {
     execFile(
       "powershell",
@@ -152,7 +150,6 @@ const PARK_ATTEMPTS = 2;
 export async function parkPointer(diag?: { mark: (event: string, detail: object) => void; } | undefined, { setCursor = setCursorPosition }: { setCursor?: (x: number, y: number) => Promise<void>; } = {}) {
   const { x, y } = requestedParkPoint();
   const startedAt = Date.now();
-  /** @type {unknown} */
   let lastError: unknown;
   for (let attempt = 1; attempt <= PARK_ATTEMPTS; attempt += 1) {
     try {
@@ -196,10 +193,10 @@ export async function parkPointer(diag?: { mark: (event: string, detail: object)
  * @returns {boolean}
  */
 function wasKilledByTimeout(error: unknown): boolean {
-  const cause = /** @type {{ cause?: unknown }} */ (error)?.cause;
+  const cause = (error as { cause?: unknown })?.cause;
   // BOTH FIELDS, not just `killed`. A child killed by anything else -- a guest shutting down, an operator
   // ending the task -- is also `killed: true`, and calling that a timeout would put a real outage in the
   // bucket labelled "this is fine".
-  const killed = /** @type {{ killed?: unknown, signal?: unknown }} */ (cause);
+  const killed = (cause as { killed?: unknown, signal?: unknown });
   return killed?.killed === true && typeof killed?.signal === "string";
 }

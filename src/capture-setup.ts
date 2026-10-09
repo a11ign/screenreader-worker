@@ -1,15 +1,14 @@
-// @ts-check
 /**
- * capture-setup.mjs — bring the browser and NVDA up, keep them healthy, read the page, tear them down.
+ * capture-setup.ts — bring the browser and NVDA up, keep them healthy, read the page, tear them down.
  *
- * Split out of `capture-core.mjs`, which held this alongside the structural-navigation/probe machinery
+ * Split out of `capture-core.ts`, which held this alongside the structural-navigation/probe machinery
  * that reads a live page once both are up. Neither direction called the other except through the two
- * seams `capture-core.mjs` and `capture-probes.mjs` still use: `captureWithNvda`/`runCapturePhases`
- * sequence phases from both files, and `capture-probes.mjs` calls back into a handful of primitives here
+ * seams `capture-core.ts` and `capture-probes.ts` still use: `captureWithNvda`/`runCapturePhases`
+ * sequence phases from both files, and `capture-probes.ts` calls back into a handful of primitives here
  * (`withTimeout`, `anchorToTop`, `waitForSpeechQuiet`, `refreshBrowseBuffer`, `reportedTitle`,
  * `waitForPageToSettle`, `readWithRetry`, `ensureSpeechChannel`) that the browser/NVDA lifecycle needs
- * too. Keeping those here — rather than in `capture-core.mjs` or duplicated — is what keeps the import
- * graph a DAG: `capture-probes.mjs` depends on this file, this file depends on neither of the other two.
+ * too. Keeping those here — rather than in `capture-core.ts` or duplicated — is what keeps the import
+ * graph a DAG: `capture-probes.ts` depends on this file, this file depends on neither of the other two.
  */
 import { focusExistingBrowserWindow } from "./window-focus.ts";
 import { spawn } from "node:child_process";
@@ -38,19 +37,26 @@ import { connect } from "node:net";
 import { existsSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 
+// JSON from the browser or the page (a CDP reply, a `page.evaluate` result, a request body): its shape is the other end's, and
+// modelling it is a job of its own. Named once here so the boundary is greppable and `no-explicit-any` still bites everywhere else.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Untyped = any;
+
 /**
- * @typedef {import("./capture-pure.ts").CaptureDiagnostics} Diag
- *   The mark log, threaded through almost every function here. Aliased rather than re-described: this
- *   file passes it to forty of them, and forty inline shapes is forty chances to disagree.
- *
- * @typedef {{ id: string, name: string, image: string, windowTitle: string, profileName: string,
- *             suppressedFeatures: string[], extraArgs: string[], exes: () => string[] }} BrowserPreset
- *   One entry from `browsers.mjs`, READ off that file rather than guessed -- the first version of this
- *   typedef invented `processImage`, `args` and `profileDir`, none of which exist, and omitted `image`,
- *   which two functions here call. `browsers.mjs` exists because the browser was spread across EIGHT
- *   sites and a change applied at seven of them launches Chrome and kills Edge; a shared type is the same
- *   argument, and a shared type describing the wrong fields is that defect wearing the remedy's clothes.
+ * The mark log, threaded through almost every function here. Aliased rather than re-described: this
+ * file passes it to forty of them, and forty inline shapes is forty chances to disagree.
  */
+type Diag = import("./capture-pure.ts").CaptureDiagnostics;
+
+/**
+ * One entry from `browsers.ts`, READ off that file rather than guessed -- the first version of this
+ * typedef invented `processImage`, `args` and `profileDir`, none of which exist, and omitted `image`,
+ * which two functions here call. `browsers.ts` exists because the browser was spread across EIGHT
+ * sites and a change applied at seven of them launches Chrome and kills Edge; a shared type is the same
+ * argument, and a shared type describing the wrong fields is that defect wearing the remedy's clothes.
+ */
+type BrowserPreset = { id: string, name: string, image: string, windowTitle: string, profileName: string,
+            suppressedFeatures: string[], extraArgs: string[], exes: () => string[] };
 
 
 /**
@@ -68,16 +74,14 @@ const speechChannel = installSpeechChannelShim();
  * are filled in here, on first real use, so the crash stays where it belongs -- the first attempt to
  * drive a screen reader IN THIS PROCESS, never at import.
  *
- * Exported (with `ensureGuidepup`) so `capture-probes.mjs` shares this same lazily-loaded binding rather
+ * Exported (with `ensureGuidepup`) so `capture-probes.ts` shares this same lazily-loaded binding rather
  * than importing `@guidepup/guidepup` a second time -- a live `export let` binding, so a caller that reads
  * `nvda` AFTER awaiting `ensureGuidepup()` sees it populated.
  *
  * @type {any}
  */
-export let nvda: any;
-/** @type {(applicationPath: string, applicationWindowTitle: string) => Promise<void>} */
+export let nvda: Untyped;
 let windowsActivate: (applicationPath: string, applicationWindowTitle: string) => Promise<void>;
-/** @type {(application: string) => Promise<void>} */
 let windowsQuit: (application: string) => Promise<void>;
 
 /** Every function below that touches `nvda`/`windowsActivate`/`windowsQuit` calls this first. */
@@ -184,14 +188,14 @@ const NVDA_STOP_TIMEOUT_MS = 20_000;
 
 const BROWSER_QUIT_TIMEOUT_MS = 20_000;
 
-// `errorText` lives in `error-text.mjs` now, reachable by subpath so portable modules can use it without
+// `errorText` lives in `error-text.ts` now, reachable by subpath so portable modules can use it without
 // pulling this file — and therefore guidepup — in with it. This was a private one-liner with 35 call
 // sites that nothing else could reach, so every other module narrowed a caught value by hand or not at all.
 export const errMsg = errorText;
 
 // Reject if `promise` has not settled within `ms`, naming the step so a timeout
 // is self-describing in the diagnostics.
-export const withTimeout = (/** @type {Promise<any>} */ promise: Promise<any>, /** @type {number} */ ms: number, /** @type {string} */ label: string) =>
+export const withTimeout = (promise: Promise<Untyped>, ms: number, label: string) =>
   Promise.race([
     promise,
     new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
@@ -207,7 +211,7 @@ export const withTimeout = (/** @type {Promise<any>} */ promise: Promise<any>, /
  */
 /** @param {BrowserPreset} app */
 function resolveExe(app: BrowserPreset) {
-  return app.exes().find((/** @type {string} */ path: string) => existsSync(path)) ?? null;
+  return app.exes().find((path: string) => existsSync(path)) ?? null;
 }
 
 /**
@@ -246,7 +250,7 @@ const REUSE_BROWSER = process.env.A11Y_REUSE_BROWSER !== "0";
  *
  * The env variable remains the fleet-wide default; the option overrides it for one capture only.
  */
-export const reuseBrowserFor = (/** @type {{ reuseBrowser?: boolean }} */ opts: { reuseBrowser?: boolean; }) =>
+export const reuseBrowserFor = (opts: { reuseBrowser?: boolean; }) =>
   typeof opts?.reuseBrowser === "boolean" ? opts.reuseBrowser : REUSE_BROWSER;
 
 /**
@@ -265,8 +269,7 @@ export const reuseBrowserFor = (/** @type {{ reuseBrowser?: boolean }} */ opts: 
 const MAX_CAPTURES_PER_BROWSER = 25;
 
 /** The live reusable browser, if we started one. Null when reuse is off or it has gone. */
-/** @type {any} */
-let reusableBrowser: any = null;
+let reusableBrowser: Untyped = null;
 
 let browserCaptures = 0;
 
@@ -278,7 +281,6 @@ let browserCaptures = 0;
  * request that asked for Chrome while Edge is still up would otherwise pass "chrome" into a taskkill aimed
  * at an Edge process. The worker serves one capture at a time (`busy`), so there is exactly one of these.
  */
-/** @type {BrowserPreset | null} */
 let activeApp: BrowserPreset | null = null;
 
 /**
@@ -345,7 +347,7 @@ async function discardReusable(diag: Diag, mark: string, detail?: Record<string,
 export async function openPage(url: string, diag: Diag, { reuse = REUSE_BROWSER, app = browserFor() }: { reuse?: boolean; app?: BrowserPreset; } = {}) {
   navigatedExistingWindow = false;
   // The ONE chokepoint every capture navigates through, reuse or fresh launch alike -- see
-  // `setExpectedPageUrl`'s own comment for why this cannot be inferred inside browser-session.mjs on the
+  // `setExpectedPageUrl`'s own comment for why this cannot be inferred inside browser-session.ts on the
   // fresh-launch path (the URL is a command-line flag there, never a `Page.navigate` this module observes).
   setExpectedPageUrl(url);
   if (!reuse) return launchBrowser(url, diag, app);
@@ -385,7 +387,7 @@ export async function openPage(url: string, diag: Diag, { reuse = REUSE_BROWSER,
       exe, args: reusableArgs(url, browserArgs(app, url)),
       // `launchReusable` declares `onEvent: (e: object) => void`, so the parameter is typed to match and
       // the shape is read inside. A narrower parameter is not a compatible handler.
-      onEvent: (e) => { const event = /** @type {{ type: string }} */ (e); diag.mark(event.type, event); },
+      onEvent: (e) => { const event = (e as { type: string }); diag.mark(event.type, event); },
     });
     activeApp = app;
     browserCaptures = 1;
@@ -526,7 +528,7 @@ async function activateBrowserWithinDeadline(deadline: number): Promise<{ ok: bo
  * Two paths, fast one first. `focusExistingBrowserWindow` enumerates windows and calls
  * `SetForegroundWindow` — no process enumeration, so a page with fifty Edge renderers costs the same as an
  * empty one. guidepup's `windowsActivate` remains the fallback because it can LAUNCH Edge, which our path
- * deliberately cannot; see `window-focus.mjs` for why that launching is exactly what made it slow.
+ * deliberately cannot; see `window-focus.ts` for why that launching is exactly what made it slow.
  */
 /** @param {number} maxWaitMs @param {Diag} diag */
 export async function focusBrowserWindow(maxWaitMs: number, diag: Diag) {
@@ -830,7 +832,7 @@ function navigationHasAnswered(outcome: { url?: string | null; responseEnd?: num
 }
 
 /** A malformed URL is a different fault, reported by the caller; here it simply means "not HTTP". */
-function safeProtocol(/** @type {string} */ url: string) {
+function safeProtocol(url: string) {
   try {
     return new URL(url).protocol;
   } catch (error) {
@@ -942,7 +944,7 @@ let screenReader = { running: false, captures: 0 };
 function screenReaderResponds() {
   return new Promise((resolve) => {
     const socket = connect(NVDA_REMOTE_PORT, "127.0.0.1");
-    const settle = (/** @type {boolean} */ alive: boolean) => { socket.destroy(); resolve(alive); };
+    const settle = (alive: boolean) => { socket.destroy(); resolve(alive); };
     socket.setTimeout(REUSE_PROBE_MS, () => settle(false));
     socket.on("connect", () => settle(true));
     socket.on("error", () => settle(false));
@@ -1161,7 +1163,7 @@ export async function ensureSpeechChannel(diag: Diag) {
   // NVDA's own log records nothing at all when this happens, 7 lines and zero errors, identical to a
   // healthy session. Restarting NVDA costs ~23 s and, done repeatedly, is itself what produces the
   // `nvdaHelperRemote (injection_terminate)` modal that wedges a guest. So the expensive remedy was
-  // feeding the fault. See speech-channel.mjs for why guidepup cannot do this itself.
+  // feeding the fault. See speech-channel.ts for why guidepup cannot do this itself.
   // WHETHER A REBUILD WAS EVEN ATTEMPTED. `reset` returns false when there is no socket to destroy --
   // which is what an INERT shim looks like, and the mark below would still say "a socket rebuild did not
   // fix it". That is the `refreshBrowseBuffer` fault exactly: a remedy whose trigger was never set,
@@ -1200,7 +1202,7 @@ export async function ensureSpeechChannel(diag: Diag) {
   //
   // Those two lines bypassed the "already running" adoption that `startScreenReader`'s catch performs,
   // and guidepup 0.31 throws when `start()` is called on a live NVDA. So whenever a stop did not take,
-  // this path threw the BARE message with no fault attached — which meant `worker-recovery.mjs` and
+  // this path threw the BARE message with no fault attached — which meant `worker-recovery.ts` and
   // `capture-decisions.mjs` could not match it, nothing recovered, and every capture afterwards returned
   // `500 {"error":"NVDA is already running","fault":null}` while `/health` still reported `ready: true`
   // with every check green. Measured on this guest: `failures: 35` against `captures: 24`, and
@@ -1350,7 +1352,7 @@ export function screenReaderSettings() {
     return typeof nvda.getSettings === "function" ? nvda.getSettings() : null;
   } catch (error) {
     // Reading configuration must never be able to fail a capture or the diagnostics endpoint.
-    return { error: String(/** @type {Error} */ (error)?.message ?? error).split("\n")[0].slice(0, 200) };
+    return { error: String((error as Error)?.message ?? error).split("\n")[0].slice(0, 200) };
   }
 }
 
@@ -1390,7 +1392,7 @@ async function readPageInOrder({ steps, navStrategy, deadline, diag, silentAtSta
   const firstItem = await readFirstItem(diag);
   if (firstItem) transcript.push(firstItem);
 
-  const tracker = { seen: new Set(), previous: null, repeated: 0, wrapRun: 0, silentRun: 0, silentAtStart };
+  const tracker = { seen: new Set<string>(), previous: null as string | null, repeated: 0, wrapRun: 0, silentRun: 0, silentAtStart };
   let stopReason = "maxSteps", firstStepError = null;
   for (let i = 0; i < steps; i++) {
     if (Date.now() > deadline) { stopReason = "deadline"; break; }
@@ -1590,7 +1592,7 @@ export async function anchorToTop() {
  * @param {Diag} diag @param {any} browser
  * @param {{ keepScreenReader?: boolean, reuseBrowser?: boolean }} options
  */
-export async function stopAndCleanup(diag: Diag, browser: any, { keepScreenReader, reuseBrowser = REUSE_BROWSER }: { keepScreenReader?: boolean; reuseBrowser?: boolean; }) {
+export async function stopAndCleanup(diag: Diag, browser: Untyped, { keepScreenReader, reuseBrowser = REUSE_BROWSER }: { keepScreenReader?: boolean; reuseBrowser?: boolean; }) {
   if (!keepScreenReader) await stopScreenReader(diag);
   // Leaving Edge up is the entire point of reuse: closing it here would put the cold start back on
   // every capture. It is still closed on a failed capture (see captureWithNvda's finally) and when the
@@ -1612,7 +1614,7 @@ export async function stopAndCleanup(diag: Diag, browser: any, { keepScreenReade
 // When we own the process this is an event, not a poll: await its "exit". The taskkill is
 // the escalation for a browser that ignores the request, and the unowned fallback path.
 /** @param {Diag} diag @param {any} browser */
-async function closeBrowser(diag: Diag, browser: any) {
+async function closeBrowser(diag: Diag, browser: Untyped) {
   await ensureGuidepup();
   // Whatever `openPage` actually launched, which is not necessarily what this request asked for.
   const app = runningApp();

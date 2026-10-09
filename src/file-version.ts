@@ -1,37 +1,41 @@
-// @ts-check
 /**
  * An executable's product version, memoised on the FILE rather than on process lifetime.
  *
- * MOVED OUT OF `server.mjs` on 2026-08-30, verbatim. `server.mjs` imports `capture-core.mjs`, which
+ * MOVED OUT OF `server.ts` on 2026-08-30, verbatim. `server.ts` imports `capture-core.ts`, which
  * imports guidepup, which constructs a ScreenReader at MODULE SCOPE and throws where none exists — so
  * `file-version-memo.test.ts` could not import this function on a Linux runner, even though the function
  * itself touches nothing but `fs` and PowerShell and is injectable precisely so it can be tested off
  * Windows. known-gaps §12, second occurrence.
  *
- * `server.mjs` imports and re-exports both of these, so its callers are unchanged.
+ * `server.ts` imports and re-exports both of these, so its callers are unchanged.
  *
  * `fileProductVersion` is ASYNC (#2684): its `read` used to be `execFileSync`, called straight from
  * `/health`'s 5 s rebuild whenever a version had not yet been memoised -- a transient PowerShell failure,
  * or a binary that had just changed on disk, so the same call site re-shelled out on every rebuild until
- * one succeeded. That is `server.mjs`'s own `bootConstant` stall (#2673) again, for these two fields.
+ * one succeeded. That is `server.ts`'s own `bootConstant` stall (#2673) again, for these two fields.
  * `createVersionSampler` (below) now calls this on a TIMER, never from a request, and awaiting an async
  * child process off the request path costs nothing a request pays for. `powershellValue` (sync) stays,
  * unchanged, for `foregroundLockTimeout`, which reads exactly once, ever, and is not this row's subject.
  *
- * `createVersionSampler` lives here rather than in `server.mjs`, for the reason this whole file was moved
- * out on 2026-08-30: `server.mjs` needs guidepup and cannot be imported off Windows, so a test proving the
+ * `createVersionSampler` lives here rather than in `server.ts`, for the reason this whole file was moved
+ * out on 2026-08-30: `server.ts` needs guidepup and cannot be imported off Windows, so a test proving the
  * sampler's BEHAVIOUR (never blocks, retries only what failed, ages its reading) has to reach it from a
- * module that does not. `display-sample.mjs` is the display's version of the same seam.
+ * module that does not. `display-sample.ts` is the display's version of the same seam.
  */
 import { statSync } from "node:fs";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 
+// JSON from the browser or the page (a CDP reply, a `page.evaluate` result, a request body): its shape is the other end's, and
+// modelling it is a job of its own. Named once here so the boundary is greppable and `no-explicit-any` still bites everywhere else.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Untyped = any;
+
 const execFileAsync = promisify(execFile);
 
 const POWERSHELL_VALUE_TIMEOUT_MS = 5_000;
 
-export function powershellValue(/** @type {any} */ script: any) {
+export function powershellValue(script: Untyped) {
   if (process.platform !== "win32") return "unknown";
   try {
     const value = execFileSync("powershell.exe", [
@@ -53,7 +57,7 @@ export function powershellValue(/** @type {any} */ script: any) {
  * call's whole duration. `fileProductVersion` defaults to this rather than to `powershellValue`, because
  * the only remaining caller of `fileProductVersion` is a background sampler, never a request.
  */
-export async function powershellValueAsync(/** @type {any} */ script: any) {
+export async function powershellValueAsync(script: Untyped) {
   if (process.platform !== "win32") return "unknown";
   try {
     const { stdout } = await execFileAsync("powershell.exe", [
@@ -68,12 +72,12 @@ export async function powershellValueAsync(/** @type {any} */ script: any) {
 /**
  * Where the version-changed warning goes when the caller does not say.
  *
- * `server.mjs` owns the real log writer and passes it in; this default exists so the warning is never
+ * `server.ts` owns the real log writer and passes it in; this default exists so the warning is never
  * silently dropped by a caller that forgot. A no-op default would lose exactly the message this function
  * was written to emit — Edge updating under a running worker, which stamped five days of captures with a
  * build they were not taken under.
  */
-const defaultLog = (/** @type {string} */ message: string) => process.stderr.write(`${message}\n`);
+const defaultLog = (message: string) => process.stderr.write(`${message}\n`);
 
 const fileVersions = new Map();
 
@@ -88,7 +92,7 @@ const fileVersions = new Map();
  * a test, and it says in the type system that nothing here depends on the rest of `Stats`.
  *
  * ASYNC (#2684), and `read` defaults to `powershellValueAsync` rather than `powershellValue`: the only
- * remaining caller is `server.mjs`'s version sampler, on a timer, never a request. `stat` stays
+ * remaining caller is `server.ts`'s version sampler, on a timer, never a request. `stat` stays
  * SYNCHRONOUS -- it is one syscall, not a shelled-out child process, and the sampler needs the file's
  * CURRENT identity to know whether a read is even owed before it pays for one.
  *
@@ -129,20 +133,18 @@ export async function fileProductVersion(path: string, { stat = statSync, read =
 /** How long after one sample FINISHES the next one starts. The 5 s the environment cache always used. */
 export const VERSION_SAMPLE_MS = 5_000;
 
-/**
- * @typedef {{ windowsVersion: string, screenReaderVersion: string, browserVersion: string,
- *             versionsSampledMsAgo: number | null }} VersionReading
- */
+type VersionReading = { windowsVersion: string, screenReaderVersion: string, browserVersion: string,
+            versionsSampledMsAgo: number | null };
 
 /**
  * `windowsVersion`, `screenReaderVersion` and `browserVersion`, sampled on a TIMER and only ever READ by a
- * request (#2684) -- the `display-sample.mjs` shape (#2673), for the same reason: `/health` is polled, and
+ * request (#2684) -- the `display-sample.ts` shape (#2673), for the same reason: `/health` is polled, and
  * rebuilding these three on its 5 s cache used to call `bootConstant`/`fileProductVersion` synchronously,
  * so a version that had not yet been read, or a binary that had changed on disk, re-ran `powershell.exe`
  * on the request path every 5 s.
  *
  * GENERIC over its three readers, on purpose: this file already keeps the file-identity memo and the
- * change-detection logging (`fileProductVersion`, above), and `server.mjs` keeps `windowsVersion`'s memo
+ * change-detection logging (`fileProductVersion`, above), and `server.ts` keeps `windowsVersion`'s memo
  * (`bootConstants`) -- the sampler's only job is to call each reader on a timer and remember the last
  * answer, exactly as `createDisplaySampler` does for two fields instead of three.
  *
@@ -161,11 +163,8 @@ export function createVersionSampler({ readWindowsVersion, readScreenReaderVersi
   let windowsVersion = "unknown";
   let screenReaderVersion = "unknown";
   let browserVersion = "unknown";
-  /** @type {number | null} */
   let sampledAt: number | null = null;
-  /** @type {Promise<void> | null} */
   let running: Promise<void> | null = null;
-  /** @type {NodeJS.Timeout | null} */
   let timer: NodeJS.Timeout | null = null;
   let stopped = true;
 
@@ -199,7 +198,7 @@ export function createVersionSampler({ readWindowsVersion, readScreenReaderVersi
     /**
      * Memory only. This is what a request calls, and it must stay that. Spelled out rather than shorthand
      * -- `fleet-consistency.test.ts` finds these fields by scanning this literal source for `fieldName:`,
-     * the same device `display-sample.mjs`'s `current()` uses, and a shorthand collapse would blind it.
+     * the same device `display-sample.ts`'s `current()` uses, and a shorthand collapse would blind it.
      */
     current: () => ({
       windowsVersion: windowsVersion,

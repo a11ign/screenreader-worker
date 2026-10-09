@@ -12,7 +12,7 @@
  * consecutive failures therefore compared EQUAL and the wait returned "settled" having learnt nothing,
  * putting back exactly the shell-capture it was written to prevent.
  *
- * Found by typechecking `capture-core.mjs`, not by a failing capture — the outcome of the bug is "we
+ * Found by typechecking `capture-core.ts`, not by a failing capture — the outcome of the bug is "we
  * stopped waiting", which looks like success from every angle this project measures.
  */
 import { test } from "node:test";

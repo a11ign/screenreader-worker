@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Guest facts, over HTTP, because the guest agent cannot be relied on.
  *
@@ -41,7 +40,7 @@ const BYTES_PER_MB = 1024 * 1024;
  */
 export function treeSize(root: string): { megabytes: number; files: number; truncated: boolean; } | null {
   let bytes = 0, files = 0, truncated = false;
-  const walk = (/** @type {string} */ dir: string, /** @type {number} */ depth: number) => {
+  const walk = (dir: string, depth: number) => {
     if (depth > MAX_WALK_DEPTH || files >= MAX_WALK_ENTRIES) {
       truncated = true;
       return;
@@ -103,7 +102,6 @@ export function processCounts(names: string[]) {
     const csv = execFileSync("tasklist", ["/fo", "csv", "/nh"], {
       encoding: "utf8", timeout: 15_000, maxBuffer: 1 << 24,
     });
-    /** @type {Record<string, number>} */
     const counts: Record<string, number> = {};
     for (const name of names) counts[name] = 0;
     for (const line of csv.split("\n")) {
@@ -151,7 +149,6 @@ export function topProcessesByMemory(limit: number = 15) {
  * @param {number} limit
  */
 export function parseTasklistMemory(csv: string, limit: number = 15) {
-  /** @type {Record<string, {megabytes: number, count: number}>} */
   const byImage: Record<string, { megabytes: number; count: number; }> = {};
   for (const line of csv.split(/\r?\n/)) {
     const cells = line.match(/"([^"]*)"/g);
@@ -228,7 +225,7 @@ export function committedMemory() {
 export function parseCommittedMemory(output: string) {
   const [committed, limit] = String(output).trim().split(/\s+/).map(Number);
   if (!Number.isFinite(committed) || !Number.isFinite(limit) || limit <= 0) return null;
-  const toMb = (/** @type {number} */ bytes: number) => Math.round(bytes / (1024 * 1024));
+  const toMb = (bytes: number) => Math.round(bytes / (1024 * 1024));
   return {
     committedMb: toMb(committed),
     commitLimitMb: toMb(limit),
@@ -267,7 +264,7 @@ export function windowsTrimReport(markerPath = resolve(process.cwd(), ".windows-
  *   streams and exit status, none of which node's types describe
  */
 export function probeError(error: unknown) {
-  const failed = /** @type {{ stderr?: string, message?: string, status?: number }} */ (error);
+  const failed = (error as { stderr?: string, message?: string, status?: number });
   const stderr = String(failed?.stderr ?? "").trim().split(/\r?\n/).filter(Boolean).slice(0, 4);
   return {
     error: String(failed?.message ?? "").split("\n")[0].slice(0, 200),
@@ -351,7 +348,7 @@ export function serverLogTail(logPath: string, lines: number = 40) {
   try {
     return readFileSync(logPath, "utf8").split(/\r?\n/).filter(Boolean).slice(-lines);
   } catch (error) {
-    return { error: /** @type {Error} */ (error).message.split("\n")[0].slice(0, 200) };
+    return { error: (error as Error).message.split("\n")[0].slice(0, 200) };
   }
 }
 
@@ -418,7 +415,7 @@ export function largestSubtrees(root: string, limit: number = 8) {
 /** The Edge policy values the worker depends on, read back so drift is visible over HTTP. */
 export function edgePolicy() {
   if (process.platform !== "win32") return null;
-  const read = (/** @type {string} */ name: string) => {
+  const read = (name: string) => {
     try {
       const out = execFileSync("reg",
         ["query", "HKLM\\SOFTWARE\\Policies\\Microsoft\\Edge", "/v", name],
@@ -499,7 +496,6 @@ function readLooseSpec(spec: string): { body: string | null; path: string | null
  */
 function readSpecFromArchives(nvdaRoot: string): { body: string | null; path: string | null; sawInstead?: string[]; } {
   const zips = findFiles(nvdaRoot, "library.zip", 0);
-  /** @type {string[]} */
   const near: string[] = [];
   for (const zip of zips) {
     const body = readFromZip(zip, (name) => /(^|[/\\])configSpec\.pyc?$/.test(name));
@@ -517,7 +513,6 @@ function readSpecFromArchives(nvdaRoot: string): { body: string | null; path: st
  * @returns {string[]}
  */
 function listZipNames(zipPath: string): string[] {
-  /** @type {string[]} */
   const names: string[] = [];
   readFromZip(zipPath, (name) => { names.push(name); return false; });
   return names;
@@ -644,7 +639,6 @@ export function screenReaderDefaults(nvdaRoot: string | null): {
     // layout has cost a deploy to disprove. `sawInstead` is what ends that.
     return { found: false, path, ...(read.sawInstead?.length ? { sawInstead: read.sawInstead } : {}) };
   }
-  /** @type {Record<string, Record<string, string>>} */
   const sections: Record<string, Record<string, string>> = {};
   let current = null;
   for (const line of body.split(/\r?\n/)) {
@@ -664,7 +658,7 @@ export function screenReaderDefaults(nvdaRoot: string | null): {
  * There was briefly a singular `findFile` beside this, written first and kept out of habit once the
  * plural one existed. It was `findFiles(...)[0]`, and two depth-bounded tree walks in one file is how the
  * caret rule came to be documented for landmarks and true of everything — a second copy is where a fix
- * lands on one path and not the other. `server.mjs` has its own, and `screenReaderState` has a third
+ * lands on one path and not the other. `server.ts` has its own, and `screenReaderState` has a third
  * inline as `findIni`; collapsing those needs a shared module and is not this change.
  *
  * @param {string} dir
@@ -699,9 +693,8 @@ export function screenReaderState({ nvdaRoot, tempDir, tailLines = 80 }: { nvdaR
   // `ReturnType<typeof readNvdaConfig>` rather than a hand-written shape. The first attempt here called
   // it `string[]` from a glance at the loop that fills it -- and what it collects is the PARSED config,
   // which is the third time today a shape guessed from a use described the use instead of the value.
-  /** @type {NonNullable<ReturnType<typeof readNvdaConfig>>[]} */
   const configs: NonNullable<ReturnType<typeof readNvdaConfig>>[] = [];
-  const findIni = (/** @type {string} */ dir: string, /** @type {number} */ depth: number) => {
+  const findIni = (dir: string, depth: number) => {
     if (depth > 6) return;
     let entries;
     try {

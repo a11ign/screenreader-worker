@@ -25,7 +25,7 @@
  * `"Search results"`, and what stops a name matching the tail of a longer one. It is the same reason
  * `announcement.ts` tokenises rather than running regexes over the whole phrase.
  */
-const segments = (announced) => String(announced ?? "").split(",").map((part) => part.trim());
+const segments = (announced: unknown) => String(announced ?? "").split(",").map((part) => part.trim());
 
 /**
  * Compare the way a person reads it, not the way a byte comparison does.
@@ -35,7 +35,7 @@ const segments = (announced) => String(announced ?? "").split(",").map((part) =>
  * announcement can carry a non-breaking space where the config has an ordinary one — the U+FFFC and
  * U+E604 lessons in a third alphabet, and both of those cost real time before anyone looked at the bytes.
  */
-const normalise = (value) =>
+const normalise = (value: unknown) =>
   String(value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 
 /**

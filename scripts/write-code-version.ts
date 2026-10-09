@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Bakes the code hash of `src` into the built `dist/code-version.mjs`, after `rslib build` (a11ign/a11ign#3740, orchestrator
  * Ruling 2 on #3552).
@@ -57,21 +56,21 @@ export function bakeModule(moduleText: string, hash: string) {
  * @param {string} declarationText
  */
 export function bakeDeclaration(declarationText: string) {
-  assertFoundOnce(declarationText, DECLARATION_DEFAULT, "dist/code-version.d.mts");
+  assertFoundOnce(declarationText, DECLARATION_DEFAULT, "dist/code-version.d.ts");
   return declarationText.replace(DECLARATION_DEFAULT, () => "(with no argument: the hash of the `src` this package was built from)");
 }
 
 /** The hash of `src/`, by `src/code-version.ts`'s own `codeVersion`. */
 async function sourceCodeVersion() {
   const srcDir = join(packageDir, "src");
-  const hasher = await import(pathToFileURL(join(srcDir, "code-version.mjs")).href);
+  const hasher = await import(pathToFileURL(join(srcDir, "code-version.ts")).href);
   return hasher.codeVersion(srcDir);
 }
 
 /** Rewrites `dist/code-version.mjs` and its declaration in place. */
 async function main() {
   const modulePath = join(packageDir, "dist", "code-version.mjs");
-  const declarationPath = join(packageDir, "dist", "code-version.d.mts");
+  const declarationPath = join(packageDir, "dist", "code-version.d.ts");
   const hash = await sourceCodeVersion();
   writeFileSync(modulePath, bakeModule(readFileSync(modulePath, "utf8"), hash));
   writeFileSync(declarationPath, bakeDeclaration(readFileSync(declarationPath, "utf8")));

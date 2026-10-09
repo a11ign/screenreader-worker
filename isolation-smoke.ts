@@ -1,4 +1,3 @@
-// @ts-check
 // Run by `packages/guards/src/isolation-gate.mjs` from a throwaway directory OUTSIDE this repository, against the
 // installed tarball.
 //
@@ -22,7 +21,7 @@ const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 // Every file the worker's own code hash covers must be in the tarball. This is the completeness check: a
 // `files` allow-list drops assets silently, and a worker missing one module fails at runtime on the guest —
 // the most expensive place to find out.
-const { WORKER_FILES } = await import(`file://${join(root, "src/worker-files.mjs")}`);
+const { WORKER_FILES } = await import(`file://${join(root, "src/worker-files.ts")}`);
 assert.ok(WORKER_FILES.length >= 10, `expected the full worker file list, got ${WORKER_FILES.length}`);
 for (const file of WORKER_FILES) {
   assert.ok(existsSync(join(root, "src", file)), `${file} is in the code hash but missing from the tarball`);

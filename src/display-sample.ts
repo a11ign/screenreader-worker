@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * The desktop's display mode and graphics adapter, sampled on a TIMER and only ever READ by a request (#2673).
  *
@@ -13,27 +12,25 @@
  *
  * Both facts DO change under a running worker (a provisioning run sets the mode, a driver install changes
  * the adapter) and noticing that is the point of reporting them, so they are not memoised at boot. They are
- * sampled the way `desktop-dialogs.mjs` samples dialogs: off the request path, into memory. And the sample
+ * sampled the way `desktop-dialogs.ts` samples dialogs: off the request path, into memory. And the sample
  * shells out ASYNCHRONOUSLY, so even the timer's own PowerShell time does not stop the loop -- moving a
  * blocking call from a request to a timer would have kept the stall and only changed who paid for it.
  *
  * ## A sample says how old it is
  *
- * `displaySampledMsAgo` is computed at READ time, the lesson of `dialogsCheckedMsAgo` (`desktop-prepare.mjs`):
+ * `displaySampledMsAgo` is computed at READ time, the lesson of `dialogsCheckedMsAgo` (`desktop-prepare.ts`):
  * a cache that answers without its age reads as a fresh measurement, which is what `/health` said about
  * dialogs for six days. `null` is "never sampled yet" and is not a failure, and it is kept distinct from a
  * sample that read "unknown".
  *
- * No guidepup here, so a Linux test can import it (`desktop-prepare.mjs`'s header records the cost of the
+ * No guidepup here, so a Linux test can import it (`desktop-prepare.ts`'s header records the cost of the
  * alternative).
  */
 
 /** How long after one sample FINISHES the next one starts. The 5 s the environment cache always used. */
 export const DISPLAY_SAMPLE_MS = 5_000;
 
-/**
- * @typedef {{ displayMode: string, displayAdapter: string, displaySampledMsAgo: number | null }} DisplayReading
- */
+type DisplayReading = { displayMode: string, displayAdapter: string, displaySampledMsAgo: number | null };
 
 /**
  * @param {{ readMode: () => Promise<string>, readAdapter: () => Promise<string>,
@@ -51,11 +48,8 @@ export function createDisplaySampler({ readMode, readAdapter, now = Date.now, ti
   // says "never looked".
   let mode = "unknown";
   let adapter = "unknown";
-  /** @type {number | null} */
   let sampledAt: number | null = null;
-  /** @type {Promise<void> | null} */
   let running: Promise<void> | null = null;
-  /** @type {NodeJS.Timeout | null} */
   let timer: NodeJS.Timeout | null = null;
   let stopped = true;
 

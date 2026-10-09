@@ -8,8 +8,8 @@ rem hardcoded C:\Users\<name>\a11ign breaks the moment the worker is set up unde
 rem different account -- which is exactly what happens when a prebuilt VM image is reused.
 rem See docs/local-worker-vm.md.
 rem
-rem server.mjs is addressed as "%~dp0server.mjs" -- BESIDE this file -- rather than as a path
-rem from the repo root. It used to read src\capture\nvda\server.mjs, and when the repo was
+rem server.ts is addressed as "%~dp0server.mjs" -- BESIDE this file -- rather than as a path
+rem from the repo root. It used to read src\capture\nvda\server.ts, and when the repo was
 rem restructured into packages/ that became a file which does not exist: node exited
 rem immediately, nothing listened on 8765, and provisioning reported only "worker did not
 rem listen". A sibling reference cannot rot when the tree moves.
@@ -77,14 +77,14 @@ if not defined NODE_EXE (
   set "NODE_EXE=node"
 )
 
-rem No redirect: server.mjs writes to BOTH the console and server.log itself.
+rem No redirect: server.ts writes to BOTH the console and server.log itself.
 rem
 rem This window is the only thing an operator sees on the guest, and it used to be blank --
 rem everything went to the log, so a worker mid-capture and a wedged one looked identical.
 rem A capture takes ~12s, which reads as a hang.
 rem stderr is REDIRECTED to server.log, and that is the point rather than tidiness.
 rem
-rem server.mjs writes its own lines to server.log once it is running -- but a crash at IMPORT
+rem server.ts writes its own lines to server.log once it is running -- but a crash at IMPORT
 rem time happens before any of that exists, so the stack went to a console window that closes
 rem with the process. Observed: the window opened, vanished in two seconds, and server.log ended
 rem at the ForegroundLockTimeout line with no hint of why. Unreadable exactly when it matters.
@@ -93,5 +93,5 @@ rem The exit code is recorded too, the same way run-capture-check.cmd already do
 rem that stops is a different fact from a worker that never started, and without this they look
 rem identical from the outside.
 echo [run-server] starting %NODE_EXE% at %DATE% %TIME%>> server.log
-"%NODE_EXE%" "%~dp0server.mjs" 2>> server.log
+"%NODE_EXE%" "%~dp0server.ts" 2>> server.log
 echo [run-server] node exited with %ERRORLEVEL% at %DATE% %TIME%>> server.log

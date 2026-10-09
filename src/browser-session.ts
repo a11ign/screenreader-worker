@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Keep one Edge alive across captures and re-point it, instead of cold-starting Chromium every time.
  *
@@ -43,6 +42,11 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { samePath , resolvedNavigationUrl } from "./capture-pure.ts";
 
+// JSON from the browser or the page (a CDP reply, a `page.evaluate` result, a request body): its shape is the other end's, and
+// modelling it is a job of its own. Named once here so the boundary is greppable and `no-explicit-any` still bites everywhere else.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Untyped = any;
+
 /** Chromium's DevTools endpoint. Loopback only — it is never reachable off the guest. */
 export const CDP_PORT = 9222;
 const AX_TREE_TIMEOUT_MS = 5_000;
@@ -64,7 +68,7 @@ export const CDP_READY_TIMEOUT_MS = 60_000;
 const CDP_POLL_MS = 200;
 const NAVIGATE_TIMEOUT_MS = 30_000;
 
-const endpoint = (/** @type {string} */ path: string) => `http://${CDP_HOST}:${CDP_PORT}${path}`;
+const endpoint = (path: string) => `http://${CDP_HOST}:${CDP_PORT}${path}`;
 
 /**
  * Arguments for a reusable Edge.
@@ -96,7 +100,7 @@ export async function browserAlive() {
  * consent iframe surfaced its own `type: "page"` target and `choosePageTarget` took the first one.
  *
  * Module-level rather than threaded as a parameter through the ~8 functions that call `pageTarget` and
- * the 14 places in `capture-core.mjs` that call THOSE — every one of them already means "what is CDP
+ * the 14 places in `capture-core.ts` that call THOSE — every one of them already means "what is CDP
  * showing me right now, for the capture `openPage` most recently started", so a parameter would repeat
  * the same value at every call site for no reader's benefit. `setExpectedPageUrl` is the one seam that
  * needs to know it, and it already receives the URL.
@@ -123,7 +127,7 @@ export async function browserAlive() {
  *
  * STILL NOT THREADED AS A PARAMETER, and that is deliberate rather than unconsidered -- the original
  * comment's reasoning holds and is kept: threading it through the ~8 functions that call `pageTarget`
- * and the 14 places in `capture-core.mjs` that call THOSE would repeat the same value at every call site
+ * and the 14 places in `capture-core.ts` that call THOSE would repeat the same value at every call site
  * for no reader's benefit. Every one of them means "what is CDP showing me right now, for the capture
  * `openPage` most recently started". `setExpectedPageUrl` is the one seam that needs to set it, and it
  * already receives the URL.
@@ -174,7 +178,7 @@ export function expectedPageUrlForTest() {
  * 2026-09-05: every synthetic page is REQUESTED with `.html` and the page server serves the extensionless
  * path the browser then reports, so this function tagged `fallback` on every synthetic capture ever
  * taken -- undetected because a single-target page still falls back onto the right document, so no
- * evidence was ever wrong. `samePath` (`capture-pure.mjs`) already exists to solve exactly this: it was
+ * evidence was ever wrong. `samePath` (`capture-pure.ts`) already exists to solve exactly this: it was
  * written for `landedVerdict`/`addressesSamePage` after an identical incident (`serve` logging
  * `GET /route-title-stale/bad` for a request to `/bad.html`) and already normalises the extension, a
  * trailing slash AND an `/index` suffix -- a superset of "tolerate `.html`", proven against a real
@@ -219,12 +223,9 @@ function sameDocument(actualUrl: string | undefined, expectedUrl: string) {
  */
 const CANDIDATE_URLS_RECORDED = 4;
 
+type CdpTarget = { type?: string, url?: string, webSocketDebuggerUrl?: string };
+
 /**
- * @typedef {{ type?: string, url?: string, webSocketDebuggerUrl?: string }} CdpTarget
- * @typedef {CdpTarget & { webSocketDebuggerUrl: string,
- *   targetMatch: "matched" | "fallback" | "no-expected-url", candidates: number,
- *   candidateUrls: (string | null)[], resolvedUrl?: string }} UsablePageTarget
- *
  * The `filter` below already REQUIRES `typeof webSocketDebuggerUrl === "string"`, so a returned target
  * always has one -- but a predicate inside `find`/`filter` cannot narrow the result, and every caller then
  * reads a possibly-undefined URL straight into `new WebSocket`. The second typedef states what the filter
@@ -246,15 +247,20 @@ const CANDIDATE_URLS_RECORDED = 4;
  * bathingwaters/lbhf contamination makes this the whole difference: a consumer reading `targetMatch` alone
  * cannot tell a genuinely suspect census from a perfectly safe one, and would either accuse too much or
  * too little. `candidates <= 1` is what makes "fallback" safe; `> 1` is what makes it worth doubting.
- *
+ */
+type UsablePageTarget = CdpTarget & { webSocketDebuggerUrl: string,
+  targetMatch: "matched" | "fallback" | "no-expected-url", candidates: number,
+  candidateUrls: (string | null)[], resolvedUrl?: string };
+
+/**
  * @param {CdpTarget[] | null | undefined} targets
  * @param {string | null} [expectedUrl]
  * @returns {UsablePageTarget | null}
  */
-export function choosePageTarget(targets: CdpTarget[] | null | undefined, expectedUrl?: string | null, resolvedUrl = /** @type {string | null} */ (null)): UsablePageTarget | null {
-  const pages = /** @type {(CdpTarget & { webSocketDebuggerUrl: string })[]} */ ((targets ?? []).filter((t) =>
+export function choosePageTarget(targets: CdpTarget[] | null | undefined, expectedUrl?: string | null, resolvedUrl = (null as string | null)): UsablePageTarget | null {
+  const pages = (targets ?? []).filter((t) =>
     t.type === "page" && typeof t.webSocketDebuggerUrl === "string" && !t.url?.startsWith("devtools://")
-  ));
+  ) as (CdpTarget & { webSocketDebuggerUrl: string })[];
   if (!pages.length) return null;
   const candidates = pages.length;
   // THE URLS, NOT JUST THE COUNT -- added 2026-09-06 because an investigation stopped on the count.
@@ -273,7 +279,7 @@ export function choosePageTarget(targets: CdpTarget[] | null | undefined, expect
   //
   // Bounded and diagnostic-only: the FIRST FEW urls, never the target objects (a `webSocketDebuggerUrl`
   // is a live handle, not evidence), and every consumer already treats this whole block as a diagnostic
-  // rather than as evidence -- `capture-probes.mjs` takes `.elements` only, saying so at its own call site.
+  // rather than as evidence -- `capture-probes.ts` takes `.elements` only, saying so at its own call site.
   const candidateUrls = pages.slice(0, CANDIDATE_URLS_RECORDED).map((t) => t.url ?? null);
   if (!expectedUrl) return { ...pages[0], targetMatch: "no-expected-url", candidates, candidateUrls };
   const match = pages.find((t) => sameDocument(t.url, expectedUrl));
@@ -287,7 +293,7 @@ export function choosePageTarget(targets: CdpTarget[] | null | undefined, expect
   // reason is scope rather than preference. A distinct state is arguably the better model -- "the URL we
   // asked for" and "the URL our request resolved to" are different facts, and this repo's rule is not to
   // collapse states. But `targetMatch` is read by `censusSuspectReason` (packages/evidence/src/verify.ts)
-  // and by `focusTargetIsSuspect` (capture-pure.mjs), which are pinned equal by
+  // and by `focusTargetIsSuspect` (capture-pure.ts), which are pinned equal by
   // `focus-target-suspect-parity.test.ts`; a fourth value changes SUPPRESSION SEMANTICS in another package
   // and would have to land with both twins and the parity table at once.
   //
@@ -310,8 +316,8 @@ export function choosePageTarget(targets: CdpTarget[] | null | undefined, expect
   if (resolvedUrl && !sameDocument(resolvedUrl, expectedUrl)) {
     const afterRedirect = pages.find((t) => sameDocument(t.url, resolvedUrl));
     if (afterRedirect) {
-      return /** @type {UsablePageTarget} */ (
-        { ...afterRedirect, targetMatch: "matched", candidates, candidateUrls, resolvedUrl });
+      return (
+        { ...afterRedirect, targetMatch: "matched", candidates, candidateUrls, resolvedUrl } as UsablePageTarget);
     }
   }
   return { ...pages[0], targetMatch: "fallback", candidates, candidateUrls };
@@ -426,7 +432,6 @@ export async function navigateExisting(url: string) {
   // is taken no later than its `loadEventFired` -- outside that window a `frameNavigated` is just the
   // browser reporting where a target sits, which is the value `sameDocument`'s comment refuses to trust.
   // Rooted inside it, the chain is the redirect trail of a navigation we ourselves caused.
-  /** @type {{method?: string, params?: {frame?: {url?: string, parentId?: string}}}[]} */
   const events: { method?: string; params?: { frame?: { url?: string; parentId?: string; }; }; }[] = [];
   socket.addEventListener("message", (event) => {
     try {
@@ -506,7 +511,6 @@ const LANDMARK_ROLES = ["main", "navigation", "banner", "contentinfo", "compleme
  * Until then `sweep-vs-census.mjs` issues no verdict from a comparison the `heading` control has not
  * cleared, which is #844's acceptance 2 and 4.
  */
-/** @type {string[]} */
 const FORM_CONTROL_ROLES: string[] = [
   "textbox", "searchbox", "combobox", "listbox", "checkbox", "radio", "switch",
   "slider", "spinbutton", "button", "menuitemcheckbox", "menuitemradio",
@@ -516,12 +520,11 @@ const FORM_CONTROL_ROLES: string[] = [
  * Role -> which sweep it belongs to. A lookup rather than a branch chain: the chain put this function
  * over the complexity gate, and naming the mapping once is clearer than restating it in `else if`s.
  */
-/** @type {Map<string, string>} */
 const ROLE_BUCKET: Map<string, string> = new Map([
   ["heading", "heading"], ["link", "link"],
   ["image", "graphic"], ["img", "graphic"], ["graphics-document", "graphic"],
-  .../** @type {[string, string][]} */ (FORM_CONTROL_ROLES.map((role) => [role, "formControl"])),
-  .../** @type {[string, string][]} */ (LANDMARK_ROLES.map((role) => [role, "landmark"])),
+  ...FORM_CONTROL_ROLES.map((role): [string, string] => [role, "formControl"]),
+  ...LANDMARK_ROLES.map((role): [string, string] => [role, "landmark"]),
 ]);
 
 /**
@@ -540,7 +543,7 @@ const ROLE_BUCKET: Map<string, string> = new Map([
  * decided; `classifyAXNode` explains WHY it must not be counted.
  */
 /** @param {Record<string, any>} node */
-function isGeneratedContent(node: Record<string, any>) {
+function isGeneratedContent(node: Record<string, Untyped>) {
   return node.backendDOMNodeId == null;
 }
 
@@ -564,7 +567,7 @@ function isGeneratedContent(node: Record<string, any>) {
  *
  * @param {Record<string, any>} census @param {any} node @param {Map<string, any>} byId
  */
-function recordUnnamedGraphic(census: Record<string, any>, node: any, byId: Map<string, any>) {
+function recordUnnamedGraphic(census: Record<string, Untyped>, node: Untyped, byId: Map<string, Untyped>) {
   // WHICH NODE, not only where it sits (#1507). `nearestNamedAncestor` says what surrounds the graphic, and tfl's 1.1.1
   // referral (#1043) still could not be tied to an element. `backendDOMNodeId` is the id Chromium's DOM domain answers
   // to -- `null`, never absent, on generated content, which has none. `element` stays null until
@@ -636,7 +639,7 @@ const CONTROL_ROLES = new Set([
 function noteAncestor(found: {
         ancestorName: string | null; ancestorRole: string | null; controlRole: string | null;
         controlName: string | null;
-    }, ancestor: any) {
+    }, ancestor: Untyped) {
   const name = String(ancestor.name?.value ?? "").trim();
   const role = String(ancestor.role?.value ?? "").toLowerCase();
   if (found.ancestorName === null && name) {
@@ -684,7 +687,7 @@ function noteAncestor(found: {
  *
  * @param {any} node @param {Map<string, any>} byId
  */
-function nearestNamedAncestor(node: any, byId: Map<string, any>) {
+function nearestNamedAncestor(node: Untyped, byId: Map<string, Untyped>) {
   const role = String(node?.role?.value ?? "").toLowerCase();
   // An ABSENT parentId is not a lookup key. Same reason as the map above: `String(undefined)` would find
   // whatever happened to be stored under "undefined".
@@ -709,7 +712,7 @@ function nearestNamedAncestor(node: any, byId: Map<string, any>) {
 }
 
 /** @param {Record<string, any> | null} node */
-function classifyAXNode(node: Record<string, any> | null) {
+function classifyAXNode(node: Record<string, Untyped> | null) {
   // Ignored nodes are not in the tree a screen reader walks, so counting them would make the oracle demand
   // elements NVDA could never announce -- a guard that cries wolf gets removed, not heeded.
   if (!node || node.ignored) return null;
@@ -808,7 +811,7 @@ export async function bringPageToFront(): Promise<{ ok: boolean; reason?: string
  *   never be the reason a capture fails' -- so a type refusing them would describe a stricter function
  *   than the one that exists, and than the one the pipeline needs.
  */
-export function censusFromAXTree(nodes: (Record<string, any> | null)[] | null | undefined) {
+export function censusFromAXTree(nodes: (Record<string, Untyped> | null)[] | null | undefined) {
   // `graphicUnnamed` is the count of images the page exposes with NO accessible name, and it is a finding
   // the announcements cannot reach on their own. Quick navigation skips a wholly nameless graphic: on
   // pages whose images at least have a filename NVDA says "Unlabeled graphic" and the sweep records it,
@@ -837,9 +840,9 @@ export function censusFromAXTree(nodes: (Record<string, any> | null)[] | null | 
   // an image with no `parentId` looked it up and was ADOPTED by an unrelated node. In the test fixture
   // that made a nameless image the child of a named link, so the Controls/Input exception fired and the
   // count went to zero. Absent read as a value, which is this repo's oldest defect.
-  const byId: Map<string, any> = new Map((nodes ?? [])
-    .filter((/** @type {any} */ n: any) => n?.nodeId != null)
-    .map((/** @type {any} */ n: any) => [String(n.nodeId), n]));
+  const byId: Map<string, Untyped> = new Map((nodes ?? [])
+    .filter((n: Untyped) => n?.nodeId != null)
+    .map((n: Untyped) => [String(n.nodeId), n]));
   /** @type {{ landmark: number, heading: number, link: number, graphic: number,
    *           graphicUnnamed: number, graphicUnnamedDetail: object[],
    *           graphicExempted: number, graphicExemptedDetail: object[], names: string[] }
@@ -854,7 +857,7 @@ export function censusFromAXTree(nodes: (Record<string, any> | null)[] | null | 
       landmark: number; heading: number; link: number; graphic: number;
       graphicUnnamed: number; graphicUnnamedDetail: object[];
       graphicExempted: number; graphicExemptedDetail: object[]; names: string[];
-  } & Record<string, any> = { landmark: 0, heading: 0, link: 0, graphic: 0, formControl: 0, graphicUnnamed: 0,
+  } & Record<string, Untyped> = { landmark: 0, heading: 0, link: 0, graphic: 0, formControl: 0, graphicUnnamed: 0,
     graphicUnnamedDetail: [], graphicExempted: 0, graphicExemptedDetail: [], names: [],
     // DISTINCT NAMES PER TYPE, because the raw element count is not comparable with what the sweep
     // produces and the cross-check was comparing them anyway.
@@ -870,7 +873,6 @@ export function censusFromAXTree(nodes: (Record<string, any> | null)[] | null | 
     // things that are supposed to be equal. Half the "97% disagreement" was definitional and half is the
     // finding; before this they were indistinguishable.
     distinct: { landmark: 0, heading: 0, link: 0, graphic: 0, formControl: 0 } };
-  /** @type {Record<string, Set<string>>} */
   const seenByType: Record<string, Set<string>> = { landmark: new Set(), heading: new Set(), link: new Set(), graphic: new Set(),
     formControl: new Set() };
   for (const node of nodes ?? []) {
@@ -970,9 +972,8 @@ function attributeOf(attributes: string[] | undefined, name: string): string | n
  * @param {Record<string, any>} census
  * @param {(method: string, params: Record<string, unknown>) => Promise<any>} call one CDP request, resolving its result
  */
-export async function describeUnnamedGraphics(census: Record<string, any>, call: (method: string, params: Record<string, unknown>) => Promise<any>) {
-  /** @type {Record<string, any>[]} */
-  const detail: Record<string, any>[] = Array.isArray(census.graphicUnnamedDetail) ? census.graphicUnnamedDetail : [];
+export async function describeUnnamedGraphics(census: Record<string, Untyped>, call: (method: string, params: Record<string, unknown>) => Promise<Untyped>) {
+  const detail: Record<string, Untyped>[] = Array.isArray(census.graphicUnnamedDetail) ? census.graphicUnnamedDetail : [];
   await Promise.all(detail.filter((entry) => entry.backendDOMNodeId != null).map(async (entry) => {
     try {
       const node = (await call("DOM.describeNode", { backendNodeId: entry.backendDOMNodeId }))?.node;
@@ -990,7 +991,7 @@ export async function describeUnnamedGraphics(census: Record<string, any>, call:
  * @param {WebSocket} socket
  * @returns {(method: string, params: Record<string, unknown>) => Promise<any>}
  */
-function cdpCaller(socket: WebSocket): (method: string, params: Record<string, unknown>) => Promise<any> {
+function cdpCaller(socket: WebSocket): (method: string, params: Record<string, unknown>) => Promise<Untyped> {
   let lastId = 1;
   return (method, params) => {
     lastId += 1;
@@ -1024,7 +1025,7 @@ export async function structuralCensus() {
       // `Record<string, any>` so every reader of its result -- `distinct` among them -- keeps working;
       // `{...x, targetMatch}` computes a FRESH object type from only x's NAMED properties and silently
       // drops that index signature, which turned `census.distinct` into a type error two call sites away
-      // in capture-core.mjs for a census that still carries the field at runtime.
+      // in capture-core.ts for a census that still carries the field at runtime.
       const census = censusFromAXTree((await result)?.nodes);
       // #1507: say WHICH elements the unnamed graphics are, on this same socket -- see `describeUnnamedGraphics`.
       await describeUnnamedGraphics(census, cdpCaller(socket));
@@ -1049,7 +1050,7 @@ export async function structuralCensus() {
       try { socket.close(); } catch (error) { void error; }
     }
   } catch (error) {
-    return { error: /** @type {Error} */ (error).message };
+    return { error: (error as Error).message };
   }
 }
 
@@ -1457,7 +1458,7 @@ export async function domCensus() {
 
 /**
  * The document's own title, read via CDP -- known-gaps.md §44. NVDA's spoken report of the title
- * (`reportedTitle`, capture-setup.mjs) is the LAST THING NVDA SAID, which on a page whose focus lands in a
+ * (`reportedTitle`, capture-setup.ts) is the LAST THING NVDA SAID, which on a page whose focus lands in a
  * live region (a search autocomplete, say) is that region's announcement, not the title -- measured on
  * `design-system.service.gov.uk/components/checkboxes/`: `titleAfter` read `"No search results"`, missing
  * the ` - Profile 1 - Microsoft Edge` browser-chrome suffix every real title carries. `document.title`
@@ -1465,7 +1466,7 @@ export async function domCensus() {
  *
  * `targetMatch`/`candidates` travel out for the identical reason `domCensus` and `evaluateOnPageTarget`'s
  * other callers already carry them -- a title read against the wrong CDP target is not evidence about the
- * page this capture was asked for, and `focusTargetIsSuspect` (capture-pure.mjs) is the one place that
+ * page this capture was asked for, and `focusTargetIsSuspect` (capture-pure.ts) is the one place that
  * decides "wrong target" is already answered elsewhere in this file; this does not invent a second answer.
  */
 export async function documentTitle() {
@@ -1531,7 +1532,7 @@ export async function viewportMeasure() {
  *                      expectedUrl: string | null, candidates: number }>}
  */
 async function evaluateOnPageTarget(expression: string): Promise<{
-    value: any; targetMatch: UsablePageTarget["targetMatch"]; targetUrl: string | undefined;
+    value: Untyped; targetMatch: UsablePageTarget["targetMatch"]; targetUrl: string | undefined;
     expectedUrl: string | null; candidates: number;
 }> {
   const target = await pageTarget();
@@ -1553,7 +1554,7 @@ async function evaluateOnPageTarget(expression: string): Promise<{
  * Best-effort label for a focus-event log entry, computed IN THE PAGE rather than from the accessibility
  * tree -- an injected script has no CDP `Accessibility` domain access, only the DOM. Not an accessible-name
  * algorithm; a cheap approximation good enough to read back in a diagnostic, the way `nearestNamedAncestor`
- * (browser-session.mjs, 1.1.1) is a DOM-side approximation for the same reason.
+ * (browser-session.ts, 1.1.1) is a DOM-side approximation for the same reason.
  */
 const FOCUS_EVENT_NAME_OF = `(el) => {
   try {
@@ -1579,7 +1580,7 @@ const FOCUS_EVENT_NAME_OF = `(el) => {
  * BOTH events on any focus change, spec-ordered, and F55's signature is `focusin(X)` followed IMMEDIATELY
  * by `focusout(X)` for the SAME element with no intervening user action — never `focusout(A)` then
  * `focusin(B)`, which is what an ORDINARY Tab press produces (A losing focus and B gaining it are the same
- * browser-level change, not two separate ones). `focusEventVerdict` (capture-pure.mjs) is the pure function
+ * browser-level change, not two separate ones). `focusEventVerdict` (capture-pure.ts) is the pure function
  * that tells the two apart; this only produces the raw log.
  *
  * Installed for the DURATION OF ONE PROBE, not the capture — `probeFocusOrder`, the only probe that moves
@@ -1648,7 +1649,7 @@ export async function installFocusEventLog(): Promise<{
     // collapse into the same silence, the same rule `structuralCensus`'s own comment states.
     return {
       installed: false, targetMatch: null, targetUrl: undefined, expectedUrl: null,
-      error: /** @type {Error} */ (error).message,
+      error: (error as Error).message,
     };
   }
 }
@@ -1691,7 +1692,7 @@ export async function collectFocusEventLog(): Promise<{
   } catch (error) {
     return {
       events: null, targetMatch: null, targetUrl: undefined, expectedUrl: null, candidates: undefined,
-      error: /** @type {Error} */ (error).message,
+      error: (error as Error).message,
     };
   }
 }
@@ -1734,7 +1735,7 @@ export async function installSubmitEventLog(): Promise<{ installed: boolean; err
     return { installed: !!value?.installed };
   } catch (error) {
     // A diagnostic probe must never fail a capture; `submittedVerdict` reads this as "cannot say".
-    return { installed: false, error: /** @type {Error} */ (error).message };
+    return { installed: false, error: (error as Error).message };
   }
 }
 
@@ -1759,7 +1760,7 @@ export async function collectSubmitEventLog(): Promise<{
     return { submits: typeof value?.submits === "number" ? value.submits : null, targetMatch, candidates,
       error: value?.error };
   } catch (error) {
-    return { submits: null, targetMatch: null, candidates: undefined, error: /** @type {Error} */ (error).message };
+    return { submits: null, targetMatch: null, candidates: undefined, error: (error as Error).message };
   }
 }
 
@@ -1792,7 +1793,7 @@ export async function collectSubmitEventLog(): Promise<{
  * `focusLossEvidence`'s (`packages/judge/src/rules.ts`) `i === 0` exception, on the reasoning that a real
  * listener is now watching from the very start — so `log[0]` no longer needs a special case. That reasoning
  * is right about every OTHER blur on the page and wrong about THIS one: this blur is not a page behaviour,
- * it is capture-side bookkeeping (`installFocusEventListenerBeforeFirstFocus`, `capture-core.mjs`, is what
+ * it is capture-side bookkeeping (`installFocusEventListenerBeforeFirstFocus`, `capture-core.ts`, is what
  * connects the two files, and neither names the other). An orphaned `focusout` with no matching `focusin`
  * is F55's exact signature, so without the bracket below this probe's OWN diagnostic action would be
  * reported as a WCAG 2.4.7 failure against a page that did nothing wrong -- worse than the false positives
@@ -1835,11 +1836,11 @@ export async function resetFocusToDocumentStart(): Promise<{
     };
   } catch (error) {
     // A failed reset is not a claim that focus is still wherever it was -- it is a claim that NOTHING is
-    // known, and `focusResetOutcome` (capture-pure.mjs) reads `blurred: null` as exactly that: `applied:
+    // known, and `focusResetOutcome` (capture-pure.ts) reads `blurred: null` as exactly that: `applied:
     // false`, distinct from `blurred: false` ("confirmed nothing needed blurring").
     return {
       blurred: null, logSuppressed: false, targetMatch: null, targetUrl: undefined, expectedUrl: null,
-      candidates: undefined, error: /** @type {Error} */ (error).message,
+      candidates: undefined, error: (error as Error).message,
     };
   }
 }
@@ -1870,7 +1871,7 @@ export async function currentPageUrl() {
  * @param {WebSocket} socket @param {number} id @param {number} timeoutMs
  * @returns {Promise<any>}
  */
-function waitForResult(socket: WebSocket, id: number, timeoutMs: number): Promise<any> {
+function waitForResult(socket: WebSocket, id: number, timeoutMs: number): Promise<Untyped> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`CDP: no reply to ${id} within ${timeoutMs}ms`)), timeoutMs);
     socket.addEventListener("message", (event) => {
@@ -2063,7 +2064,7 @@ export async function formInputCensus(): Promise<{
  * The caller (`navigateByStructureThenAudit`) still exports `.elements` to `result.media` unconditionally —
  * this function does not decide whether the read is trustworthy, matching `structuralCensus`/`domCensus`'s
  * own split between recording (here) and judging (`censusTargetIsSuspect`, `@a11ign/evidence`, which
- * this worker cannot import — see `field-match.mjs`'s header for why).
+ * this worker cannot import — see `field-match.ts`'s header for why).
  */
 export async function mediaCensus() {
   const EXPRESSION = `Array.from(document.querySelectorAll("audio,video")).slice(0, 20).map((el) => ({

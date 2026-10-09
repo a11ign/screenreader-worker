@@ -1,20 +1,19 @@
-// @ts-check
 /**
  * `CAPTURE_PROTOCOL_VERSION`, on its own with NO imports — architecture-audit.md §5, item 3.
  *
- * MOVED HERE from `capture-core.mjs`, which imports guidepup and therefore cannot be loaded from any
+ * MOVED HERE from `capture-core.ts`, which imports guidepup and therefore cannot be loaded from any
  * PORTABLE tree (the lab, the CLI, `worker-fleet`) — `no-win32-imports.test.ts` forbids exactly that,
  * because guidepup constructs a `ScreenReader` at import time that throws on Linux, where the lab runs.
- * So four host-side modules that need this ONE number read it by regex-scraping `capture-core.mjs`'s
+ * So four host-side modules that need this ONE number read it by regex-scraping `capture-core.ts`'s
  * source text instead: `deploy-worker.mjs`, `check-worker-code.mjs`, `protocol-guard.mjs`'s callers, and
  * `control/src/fleet-playbook.mjs`. That has teeth now, not just tidiness: this value moved 14 -> 15 on
  * 2026-09-05 for a real cache-key reason (below), and a scraper whose regex or path has quietly drifted
  * reports the OLD number as though nothing changed.
  *
- * This file is the same shape as `worker-files.mjs`, `code-version.mjs` and `capture-pure.mjs` — a bare
+ * This file is the same shape as `worker-files.ts`, `code-version.ts` and `capture-pure.ts` — a bare
  * constant, safe to import from anywhere, so the number can be READ rather than parsed out of prose.
- * `capture-core.mjs` imports and re-exports it, so every existing importer of `CAPTURE_PROTOCOL_VERSION`
- * from `capture-core.mjs` or `@a11ign/screenreader-worker` is unchanged; `deploy-worker.mjs` and
+ * `capture-core.ts` imports and re-exports it, so every existing importer of `CAPTURE_PROTOCOL_VERSION`
+ * from `capture-core.ts` or `@a11ign/screenreader-worker` is unchanged; `deploy-worker.mjs` and
  * `check-worker-code.mjs` (in `@a11ign/screenreader-fleet`, which already depends on this package) now
  * import it directly for the WORKING-TREE value. The git-HEAD comparison both scripts also make cannot
  * become an import — `git show HEAD:<path>` returns historical file TEXT, not a loadable module — so that

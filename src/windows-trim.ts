@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Take Windows' background furniture off a capture guest, so its memory goes to Edge and NVDA.
  *
@@ -42,6 +41,11 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+
+// JSON from the browser or the page (a CDP reply, a `page.evaluate` result, a request body): its shape is the other end's, and
+// modelling it is a job of its own. Named once here so the boundary is greppable and `no-explicit-any` still bites everywhere else.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Untyped = any;
 
 /**
  * Provisioned Appx packages that may be removed. Taken from nano11builder's list, minus anything this
@@ -145,7 +149,7 @@ export const DISABLEABLE_SERVICES = [
  */
 export const DEFENDER_SERVICES = ["WinDefend", "WdNisSvc", "Sense"];
 
-const matchesKeep = (/** @type {any} */ name: any) => KEEP_PATTERNS.some((k) => name.toLowerCase().includes(k));
+const matchesKeep = (name: Untyped) => KEEP_PATTERNS.some((k) => name.toLowerCase().includes(k));
 
 /**
  * Which of the installed packages should actually be removed.
@@ -193,7 +197,7 @@ export function trimSummary({ removed = [], disabled = [], failed = [], skipped 
 
 const POWERSHELL_TIMEOUT_MS = 120_000;
 
-function powershell(/** @type {any} */ command: any) {
+function powershell(command: Untyped) {
   return execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", command],
     { encoding: "utf8", timeout: POWERSHELL_TIMEOUT_MS });
 }
@@ -238,7 +242,7 @@ export function isElevated() {
  *
  * @returns {{ registered: boolean, started: boolean, reason: string }}
  */
-export function runTrimViaElevatedTask(/** @type {any} */ { scriptPath, markerPath, taskName = "a11ytrim" }: any): { registered: boolean; started: boolean; reason: string; } {
+export function runTrimViaElevatedTask(/** @type {any} */ { scriptPath, markerPath, taskName = "a11ytrim" }: Untyped): { registered: boolean; started: boolean; reason: string; } {
   const user = "$([Security.Principal.WindowsIdentity]::GetCurrent().Name)";
   const register =
     `$a = New-ScheduledTaskAction -Execute '${process.execPath}' ` +
@@ -253,7 +257,7 @@ export function runTrimViaElevatedTask(/** @type {any} */ { scriptPath, markerPa
     powershell(register);
     return { registered: true, started: true, reason: `started '${taskName}' at RunLevel Highest` };
   } catch (error) {
-    const detail = String(/** @type {any} */ (error)?.stderr ?? /** @type {any} */ (error)?.message ?? "").split("\n")[0].slice(0, 300);
+    const detail = String((error as Untyped)?.stderr ?? (error as Untyped)?.message ?? "").split("\n")[0].slice(0, 300);
     return { registered: false, started: false, reason: `could not register an elevated task: ${detail}` };
   }
 }
@@ -281,7 +285,7 @@ const SELF_PATH = fileURLToPath(import.meta.url);
  * unelevated attempt wrote a marker, and every boot afterwards read that marker and returned early.
  * "Attempted" and "done" have to read differently here for the same reason they do in `trimSummary`.
  */
-export function trimAlreadyDone(/** @type {any} */ markerPath: any) {
+export function trimAlreadyDone(markerPath: Untyped) {
   try {
     return !/needs elevation/i.test(readFileSync(markerPath, "utf8"));
   } catch {
@@ -289,7 +293,7 @@ export function trimAlreadyDone(/** @type {any} */ markerPath: any) {
   }
 }
 
-export function applyWindowsTrim(/** @type {any} */ { markerPath, log = () => {} }: any) {
+export function applyWindowsTrim(/** @type {any} */ { markerPath, log = () => {} }: Untyped) {
   // Three empty lists and an `escalation` added only when one is attempted. Inferred from this literal
   // every list is `never[]` and `escalation` does not exist at all -- so recording what was removed, and
   // recording that elevation was tried, are both errors while returning an empty report is fine.
@@ -297,7 +301,7 @@ export function applyWindowsTrim(/** @type {any} */ { markerPath, log = () => {}
    *           needsElevation: boolean, escalation?: any }} */
   const result: {
       removed: string[]; disabled: string[]; failed: string[]; skipped: boolean;
-      needsElevation: boolean; escalation?: any;
+      needsElevation: boolean; escalation?: Untyped;
   } = { removed: [], disabled: [], failed: [], skipped: false, needsElevation: false };
   if (process.platform !== "win32" || trimAlreadyDone(markerPath)) {
     result.skipped = true;
@@ -328,7 +332,7 @@ export function applyWindowsTrim(/** @type {any} */ { markerPath, log = () => {}
     } catch (error) {
       // Some provisioned packages are in use or system-locked. Recorded, never fatal.
       result.failed.push(pkg.split("_")[0]);
-      log(`trim: could not remove ${pkg}: ${/** @type {any} */ (error).message.split("\n")[0]}`);
+      log(`trim: could not remove ${pkg}: ${(error as Untyped).message.split("\n")[0]}`);
     }
   }
   for (const { name } of DISABLEABLE_SERVICES) {
@@ -340,7 +344,7 @@ export function applyWindowsTrim(/** @type {any} */ { markerPath, log = () => {}
       result.disabled.push(name);
     } catch (error) {
       result.failed.push(name);
-      log(`trim: could not disable ${name}: ${/** @type {any} */ (error).message.split("\n")[0]}`);
+      log(`trim: could not disable ${name}: ${(error as Untyped).message.split("\n")[0]}`);
       continue;
     }
     try {
@@ -370,7 +374,7 @@ export function tryDisableDefender(): { disabled: boolean; reason: string; } {
   try {
     powershell("Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop");
   } catch (error) {
-    return { disabled: false, reason: `Tamper Protection refused: ${/** @type {any} */ (error).message.split("\n")[0]}` };
+    return { disabled: false, reason: `Tamper Protection refused: ${(error as Untyped).message.split("\n")[0]}` };
   }
   try {
     const state = powershell("(Get-MpComputerStatus).RealTimeProtectionEnabled").trim();
@@ -378,12 +382,12 @@ export function tryDisableDefender(): { disabled: boolean; reason: string; } {
       ? { disabled: true, reason: "real-time protection off" }
       : { disabled: false, reason: `accepted the setting but still reports enabled (${state})` };
   } catch (error) {
-    return { disabled: false, reason: `could not confirm: ${/** @type {any} */ (error).message.split("\n")[0]}` };
+    return { disabled: false, reason: `could not confirm: ${(error as Untyped).message.split("\n")[0]}` };
   }
 }
 
 /**
- * Run as a detached one-shot: `node windows-trim.mjs <markerPath>`.
+ * Run as a detached one-shot: `node windows-trim.ts <markerPath>`.
  *
  * A module and a CLI in one file so the trim ships through `worker:deploy` like everything else, with
  * no extra file to add to the code hash and no second delivery mechanism to get wrong.
@@ -392,13 +396,13 @@ export function tryDisableDefender(): { disabled: boolean; reason: string; } {
  * synchronous, and the worker must keep answering `/health` throughout — `worker-ctl.sh up` and
  * `worker:deploy` both gate on that endpoint, so a blocking trim would present as a failed deploy.
  */
-if (process.argv[1]?.endsWith("windows-trim.mjs")) {
+if (/windows-trim\.(ts|mjs)$/.test(process.argv[1] ?? "")) {
   const marker = process.argv[2];
   if (!marker) {
-    process.stderr.write("usage: node windows-trim.mjs <marker-path>\n");
+    process.stderr.write("usage: node windows-trim.ts <marker-path>\n");
     process.exit(2);
   }
-  const write = (/** @type {any} */ line: any) => process.stdout.write(`${line}\n`);
+  const write = (line: Untyped) => process.stdout.write(`${line}\n`);
   const trim = applyWindowsTrim({ markerPath: marker, log: write });
   const defender = tryDisableDefender();
   write(`defender: ${defender.disabled ? "disabled" : "NOT disabled"} — ${defender.reason}`);

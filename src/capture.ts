@@ -1,6 +1,5 @@
-// @ts-check
-// capture.mjs — standalone NVDA capture CLI.
-// Usage: node capture.mjs <url> <outFile> [steps] [--auth <plan.json>]
+// capture.ts — standalone NVDA capture CLI.
+// Usage: node capture.ts <url> <outFile> [steps] [--auth <plan.json>]
 // MUST run in an interactive desktop session (NVDA needs a real desktop).
 //
 // `--auth <plan.json>` signs in first (a11y-witness #4171, #4084 outcome 1, prerequisite of #4107). The file is the wire `auth` object a
@@ -20,16 +19,14 @@ const DEFAULT_STEPS = 150;
 const SWITCH = "A11Y_DIAG_SKIP_LOGIN_MARK";
 const HEADING_PHRASE = /\bheading\b/i;
 
-/**
- * @typedef {{
- *   argv: string[],
- *   env?: Record<string, string | undefined>,
- *   capture?: (url: string, opts: Record<string, unknown>) => Promise<{ transcript: string[] }>,
- *   readText?: (path: string) => string,
- *   writeText?: (path: string, text: string) => void,
- *   log?: (line: string) => void,
- * }} LocalCapture
- */
+type LocalCapture = {
+  argv: string[],
+  env?: Record<string, string | undefined>,
+  capture?: (url: string, opts: Record<string, unknown>) => Promise<{ transcript: string[] }>,
+  readText?: (path: string) => string,
+  writeText?: (path: string, text: string) => void,
+  log?: (line: string) => void,
+};
 
 /** @param {string[]} argv */
 function readArguments(argv: string[]) {

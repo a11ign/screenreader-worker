@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const SOURCE = readFileSync(resolve(import.meta.dirname, "capture-probes.mjs"), "utf8");
+const SOURCE = readFileSync(resolve(import.meta.dirname, "capture-probes.ts"), "utf8");
 
 test("the fingerprint is taken inside collectByType, so ONE line covers every sweep", () => {
   // `sweepEveryStructuralType`, `sweepExtraTypes` and `rescanFormFieldsAfterSubmit` all reach the page

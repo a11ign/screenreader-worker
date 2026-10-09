@@ -68,7 +68,7 @@ npx --yes @guidepup/setup install nvda   # run from the repo: it reads the LOCAL
 
 ## Running a capture (in the interactive session)
 
-`run-capture.cmd <url>` runs `capture.mjs`, which launches Edge maximized, starts
+`run-capture.cmd <url>` runs `capture.ts`, which launches Edge maximized, starts
 NVDA, reads the page in browse mode (`nvda.next()`), and writes `transcript.json`.
 Trigger it as an interactive scheduled task:
 
@@ -85,7 +85,7 @@ Then collect `transcript.json` and feed it to the judge on the control plane:
 ### A signed-in capture on the worker's own machine
 
 ```
-node capture.mjs <url> <outFile> [steps] --auth <plan.json>
+node capture.ts <url> <outFile> [steps] --auth <plan.json>
 ```
 
 **This runs on the worker's own machine, and its credentials must be fakes belonging to no account.** The login's secrets are read from THIS process's

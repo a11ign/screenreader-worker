@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Turn NVDA's own logging up, on demand, so a mute screen reader can be explained.
  *
@@ -29,7 +28,7 @@ const LEVELS = new Set(["DEBUG", "INFO", "WARNING", "ERROR", "OFF", "DEBUGWARNIN
  * `catch` and logged as a failed write rather than left silently unset. Escaping now costs nothing against
  * today's values and closes that off before a setting needs it.
  */
-const escapeRegExp = (/** @type {string} */ text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * A literal, safe to splice into `String.replace`'s REPLACEMENT argument.
@@ -42,7 +41,7 @@ const escapeRegExp = (/** @type {string} */ text: string) => text.replace(/[.*+?
  * ampersand. `$$` is how `String.replace` spells a literal `$`, so escaping here is DIFFERENT from
  * `escapeRegExp` and must not be confused with it.
  */
-const escapeReplacement = (/** @type {string} */ text: string) => text.replace(/\$/g, "$$$$");
+const escapeReplacement = (text: string) => text.replace(/\$/g, "$$$$");
 
 /**
  * The `nvda.ini` body with `logLevel` set, or null when nothing needs changing.
@@ -241,7 +240,7 @@ export const CAPTURE_SETTINGS = Object.freeze([
  * capture stays reusable. The `why` is deliberately NOT in the digest; the digest answers "is this the
  * same evidence", and a reworded comment is not a different capture.
  *
- * Lives beside `CAPTURE_SETTINGS` rather than in `server.mjs`, which imports `capture-core.mjs` and
+ * Lives beside `CAPTURE_SETTINGS` rather than in `server.ts`, which imports `capture-core.ts` and
  * therefore guidepup — unsafe to import from a portable test on any host without a screen reader.
  * `capture-settings.test.ts` needs this reachable on its own to prove the digest actually moves.
  *

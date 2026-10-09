@@ -264,7 +264,7 @@ test("the CDP driver's url() is the page's full address, query and all, and move
   }
 });
 
-// ---- the seam: the window is marked navigated whether or not the requested page was loaded again (`capture-auth.mjs`) -----------------
+// ---- the seam: the window is marked navigated whether or not the requested page was loaded again (`capture-auth.ts`) -----------------
 
 const noDiag = { mark: () => undefined };
 

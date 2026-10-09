@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * The readable text of something thrown, whatever it was.
  *
@@ -11,7 +10,7 @@
  * and reported success, a guard that crashed writing its own explanation, seven capture failures logging
  * a bare fault code. Narrowing before reading is the cheapest possible guard against another.
  *
- * `capture-core.mjs` had this as a private one-liner with 35 call sites and nothing else could use it, so
+ * `capture-core.ts` had this as a private one-liner with 35 call sites and nothing else could use it, so
  * every other module reached into a caught value directly. One definition now, reachable by subpath so a
  * caller does not pull the worker's root — and therefore guidepup — into a portable module.
  */
@@ -24,7 +23,7 @@ export function errorText(thrown: unknown): string {
   if (thrown instanceof Error) return thrown.message;
   // Not an Error, but object-shaped with a message: node and several libraries throw these.
   if (thrown && typeof thrown === "object" && "message" in thrown) {
-    return String(/** @type {{message: unknown}} */ (thrown).message);
+    return String((thrown as {message: unknown}).message);
   }
   return String(thrown);
 }
@@ -33,7 +32,7 @@ export function errorText(thrown: unknown): string {
  * A thrown value's `code`, when it carries one, else null.
  *
  * Node attaches `code` to system errors (`ENOENT`, `ECONNRESET`) and this repo attaches its own fault
- * codes. Matching on a CODE rather than on message text is the rule `capture-faults.mjs` was written to
+ * codes. Matching on a CODE rather than on message text is the rule `capture-faults.ts` was written to
  * enforce; this is the same idea for the errors it did not raise.
  *
  * @param {unknown} thrown
@@ -41,7 +40,7 @@ export function errorText(thrown: unknown): string {
  */
 export function errorCode(thrown: unknown): string | null {
   if (thrown && typeof thrown === "object" && "code" in thrown) {
-    const code = /** @type {{code: unknown}} */ (thrown).code;
+    const code = (thrown as {code: unknown}).code;
     return typeof code === "string" ? code : null;
   }
   return null;

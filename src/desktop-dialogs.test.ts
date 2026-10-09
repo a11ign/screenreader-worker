@@ -1,5 +1,5 @@
 /**
- * The dialog-list parser — the only part of `desktop-dialogs.mjs` a test can reach off Windows.
+ * The dialog-list parser — the only part of `desktop-dialogs.ts` a test can reach off Windows.
  *
  * It is also the part that matters most, because a FALSE positive here takes a healthy worker out of service:
  * `noBlockingDialog` gates readiness, so anything this misreads as a dialog stops the guest accepting work.

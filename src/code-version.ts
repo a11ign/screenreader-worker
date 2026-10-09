@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * What code is this worker running? One hash, computed the same way on both sides.
  *
@@ -10,9 +9,9 @@
  * `/health` is reachable exactly when the worker is usable.
  *
  * That comparison is only meaningful if the guest and the host hash the same bytes in the same order, and
- * this used to be two implementations of that — `codeVersion()` inside `server.mjs`, which needs guidepup on
+ * this used to be two implementations of that — `codeVersion()` inside `server.ts`, which needs guidepup on
  * import, and `localVersion()` in `check-worker-code.mjs`. Same loop, same order, written twice. The file
- * LIST was already unified into `worker-files.mjs`; this is the other half.
+ * LIST was already unified into `worker-files.ts`; this is the other half.
  *
  * It also has to be importable without starting a server, because the package exports `codeVersion()`.
  */

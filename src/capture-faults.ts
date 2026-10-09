@@ -1,8 +1,7 @@
-// @ts-check
 // The faults a capture can end with, as CODES rather than as prose to be pattern-matched.
 //
 // Recovery used to be decided by running a regex over `error.message` -- on the guest in
-// worker-recovery.mjs, and on the host in capture-decisions.mjs. That couples behaviour to wording:
+// worker-recovery.ts, and on the host in capture-decisions.mjs. That couples behaviour to wording:
 // rewording the mute error silently disables the retry, and because the unit tests hardcode the old
 // wording they keep passing while production quietly stops recovering. A check that cannot
 // discriminate is this project's recurring defect, and that was one of them.
@@ -55,11 +54,11 @@ export const FAULT = {
    * first reader's likeliest failure got the generic path instead of an explanation.
    *
    * NOT put in `RECOVERABLE`: the capture has already spent its whole budget, so retrying locally
-   * on this worker cannot help -- same reasoning `worker-recovery.mjs` already gives for excluding
+   * on this worker cannot help -- same reasoning `worker-recovery.ts` already gives for excluding
    * the hard timeout from local recovery.
    */
   HARD_TIMEOUT: "hard-timeout",
-  // ADR 0038's authenticated capture (`auth-flow.mjs`). The seven faults THIS worker can raise; the CLI
+  // ADR 0038's authenticated capture (`auth-flow.ts`). The seven faults THIS worker can raise; the CLI
   // raises these and its own (`packages/cli/src/auth/auth-faults.ts`), and both lists share `FAULT_REMEDIATION`'s entries. NONE is
   // in `RECOVERABLE`: a wrong password, a missing variable or a refused peer is not cured by a fresh NVDA, and
   // retrying a login is exactly what trips an account lockout.
@@ -98,7 +97,7 @@ export function captureFault(code: string, message: string, options?: { cause?: 
   // code became the message. Measured 2026-08-26: seven real-page captures failed and the log read
   // `wrong-page` seven times, naming neither what was shown nor what was asked for, which is the whole
   // question. Worse, `faultCode()` then returned an Error OBJECT, so nothing keyed on fault codes —
-  // `worker-recovery.mjs`, `capture-decisions.mjs` — could classify these two faults at all.
+  // `worker-recovery.ts`, `capture-decisions.mjs` — could classify these two faults at all.
   //
   // This repo chose codes over message-matching precisely so recovery could not be broken by a reworded
   // string; a swap that turns the code into an object defeats that from the other end.
@@ -121,6 +120,6 @@ const KNOWN_FAULTS = new Set(Object.values(FAULT));
  * @returns {string | null}
  */
 export function faultCode(error: unknown): string | null {
-  const code = /** @type {{ code?: unknown }} */ (error)?.code;
+  const code = (error as { code?: unknown })?.code;
   return typeof code === "string" ? code : null;
 }

@@ -1,7 +1,7 @@
 /**
  * The pure capture helpers, against every announcement NVDA has actually produced.
  *
- * `capture-pure.mjs` exists so this half of the capture path can be tested without NVDA, and it is — but
+ * `capture-pure.ts` exists so this half of the capture path can be tested without NVDA, and it is — but
  * against hand-written phrases. That is a weaker fixture than it looks. `dedupe-key.test.ts` asserts on
  * `"Main support article, region, Resetting a password, heading, level 2"`, and NVDA does not say that: it
  * announces the role BEFORE the name — `"Main support article, region, heading, level 2, Resetting a

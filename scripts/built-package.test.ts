@@ -4,6 +4,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { codeVersion as codeVersionOfSource } from "../src/code-version.ts";
 import { bakeDeclaration, bakeModule } from "./write-code-version.ts";
 
 // THE BUILT PACKAGE IS PINNED, because every other test in this repository reads `src` (a11ign/a11ign#3734, follow-up of #3552).
@@ -13,7 +14,7 @@ import { bakeDeclaration, bakeModule } from "./write-code-version.ts";
 // FILE. It was found by reading the output by hand. CI runs `pnpm run build` before `pnpm test`, so a test that reads `dist` is red in CI
 // the next time a build breaks one of these.
 //
-// NOT HERE: the deploy, and a consumer's strict `tsc` over the `.d.mts` files, which needs a network install.
+// NOT HERE: the deploy, and a consumer's strict `tsc` over the `.d.ts` files, which needs a network install.
 
 const packageDir = resolve(import.meta.dirname, "..");
 const distDir = join(packageDir, "dist");
@@ -40,7 +41,7 @@ const binTargets = targetsOf(manifest.bin);
 
 test("the guard names a target that is missing (positive control for the two emptiness assertions below)", () => {
   assert.deepEqual(missingTargets(packageDir, ["./package.json", "./dist/no-such-file.mjs"]), ["./dist/no-such-file.mjs"]);
-  assert.ok(exportTargets.includes("./dist/index.mjs") && exportTargets.includes("./dist/index.d.mts"), "`exports` names `.` for both conditions");
+  assert.ok(exportTargets.includes("./dist/index.mjs") && exportTargets.includes("./dist/index.d.ts"), "`exports` names `.` for both conditions");
   assert.deepEqual(binTargets, ["./dist/server.mjs"], "`bin` names the server, which is not an `exports` key");
 });
 
@@ -72,8 +73,8 @@ test("`codeVersion()` with no argument, from the built package, is the hash of t
   // The worker a guest runs is raw `src` (ADR 0031), so `/health.code` is a hash over `src` bytes and the expected value must be
   // that hash and not a hash of `dist`, which `workerSourceDir()` names in the built package and which holds none of `WORKER_FILES`.
   const built = await import(/* webpackIgnore: true */ pathToFileURL(join(distDir, "code-version.mjs")).href);
-  const source = await import(/* webpackIgnore: true */ pathToFileURL(join(packageDir, "src", "code-version.mjs")).href);
-  const fromSource: string = source.codeVersion(join(packageDir, "src"));
+  // Imported statically, so the test runner compiles it: Node cannot load a `.ts` through a dynamic `import()` here.
+  const fromSource: string = codeVersionOfSource(join(packageDir, "src"));
   assert.match(fromSource, /^[0-9a-f]{16}$/, "the reference reading is a hash, so the equality below is not between two empty values");
   assert.equal(built.codeVersion(), fromSource);
 });

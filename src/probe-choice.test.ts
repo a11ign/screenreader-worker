@@ -6,9 +6,9 @@
  * gate for a tool that now operates controls on a live application by default, so it needs a test that
  * runs anywhere — not a 4-minute Windows job, and not a Windows VM.
  *
- * It could not have one before. The decision lived in `capture-core.mjs`, which imports guidepup, which
+ * It could not have one before. The decision lived in `capture-core.ts`, which imports guidepup, which
  * throws at module load where no screen reader exists; `pure-graph.test.ts` exists to enforce that no test
- * reaches that file. So the policy moved to `capture-pure.mjs` and the dispatch stayed behind.
+ * reaches that file. So the policy moved to `capture-pure.ts` and the dispatch stayed behind.
  *
  * The CLI keeps `probe-forms` OFF, and the asymmetry is the point: a workflow tests your own application,
  * while the CLI can be aimed at any URL on the internet. Both defaults are exercised below.

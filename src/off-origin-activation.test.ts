@@ -94,7 +94,7 @@ const SWEEPS = ["headings", "landmarks", "formFields", "graphics", "links", "lis
 
 /**
  * `observed` with every sweep recorded, each record the real one: `sweepObservation` is what `collectByType` writes for
- * a sweep (`capture-probes.mjs`, `ctx.observed[...] = { ...sweepObservation(prevOutcome, nextOutcome), ... }`), here for
+ * a sweep (`capture-probes.ts`, `ctx.observed[...] = { ...sweepObservation(prevOutcome, nextOutcome), ... }`), here for
  * a sweep both of whose directions were exhausted.
  */
 const EVERY_SWEEP = (): Record<string, Observation> =>
@@ -143,16 +143,16 @@ test("#1363 PARITY: the worker's copy of the new-window grammar answers exactly 
 
 /**
  * THE WIRING, READ FROM THE SOURCE -- the exemption `activation-budget-is-wired.test.ts` records, for its reason:
- * `capture-probes.mjs` imports guidepup, which throws at module load where no screen reader exists, so no test
+ * `capture-probes.ts` imports guidepup, which throws at module load where no screen reader exists, so no test
  * can call these functions. COMMENTS ARE STRIPPED FIRST: a comment naming a call is the mutation a prose search
  * agrees with.
  */
-const PROBES = stripComments(readFileSync(resolve(import.meta.dirname, "capture-probes.mjs"), "utf8"));
+const PROBES = stripComments(readFileSync(resolve(import.meta.dirname, "capture-probes.ts"), "utf8"));
 
 /** The body of one top-level function: from its declaration to the next line that closes a top-level block. */
 function bodyOf(name: string): string {
   const start = PROBES.search(new RegExp(`\\n(async )?function ${name}\\(`));
-  assert.ok(start >= 0, `capture-probes.mjs no longer declares ${name}`);
+  assert.ok(start >= 0, `capture-probes.ts no longer declares ${name}`);
   return PROBES.slice(start, PROBES.indexOf("\n}\n", start));
 }
 

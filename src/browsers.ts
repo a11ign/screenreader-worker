@@ -1,13 +1,12 @@
-// @ts-check
 import { errorText } from "./error-text.ts";
 
 /**
  * Which browser a capture drives — as DATA, in one place.
  *
- * The browser was spread across eight sites: an exe search list in `capture-core.mjs`, a launch-flag
- * builder and a profile path in `capture-pure.mjs`, two `"msedge.exe"` string literals in the close path,
+ * The browser was spread across eight sites: an exe search list in `capture-core.ts`, a launch-flag
+ * builder and a profile path in `capture-pure.ts`, two `"msedge.exe"` string literals in the close path,
  * a `windowsActivate("msedge.exe", "Edge")` call, a `cmd /c start msedge` fallback, a watched-process
- * name in `diagnostics.mjs`, and an orphan-killer in `browser-profile.mjs`. Adding a second browser by
+ * name in `diagnostics.ts`, and an orphan-killer in `browser-profile.ts`. Adding a second browser by
  * editing eight sites is the shape this repo has paid for repeatedly — *a fix applied at ONE call site
  * when the behaviour reaches several* — except run forwards: a preset applied at seven sites and missed
  * at the eighth is a capture that launches Chrome and kills Edge.
@@ -71,7 +70,7 @@ export const SHARED_SUPPRESSED_FEATURES = [
  * the overlay took the foreground and the capture read `"Image Magnify, document"` instead of the page, so
  * the run reported that it could not read the site at all.
  *
- * **`pointer.mjs` is the fix. This flag is an UNVERIFIED belt beside that brace.** With the pointer parked
+ * **`pointer.ts` is the fix. This flag is an UNVERIFIED belt beside that brace.** With the pointer parked
  * at (0,0) no image is ever under it, so the shortcut cannot fire at all — measured: gov.uk went from
  * three failed attempts and a refusal to a clean 108-announcement capture on the first try. The flag only
  * matters if the park itself fails, which the capture records as `pointerParkFailed`. The park is
@@ -80,7 +79,7 @@ export const SHARED_SUPPRESSED_FEATURES = [
  * The name is a GUESS, from Microsoft's documented *enable* flag `--enable-features=msEdgeImageMagnifyUI`;
  * there is no policy for this feature, only a per-profile settings toggle. An unrecognised
  * `--disable-features` name is ignored in complete silence, so it is kept for its non-zero chance of being
- * right at zero runtime cost — not because it is known to work. `pointer.mjs` is the second, independent
+ * right at zero runtime cost — not because it is known to work. `pointer.ts` is the second, independent
  * guard.
  *
  * **Do not try to verify it through CDP `SystemInfo.getFeatureState`.** That was built here and removed: it
@@ -132,7 +131,7 @@ export function browserProfileDir(browser: BrowserPreset) {
  * **Three different facts, kept apart on purpose, because they disagree and each is worth reading:**
  *
  *   this constant        what we ASK Edge for. A launch flag, reported by `/health` as `windowSize`.
- *   `displayMode`        what the SCREEN holds (`server.mjs`, #1953). An upper bound on the above.
+ *   `displayMode`        what the SCREEN holds (`server.ts`, #1953). An upper bound on the above.
  *   `innerWidth`         what the PAGE was actually read at (`viewportFromMarks`, #1513). The outcome.
  *
  * A Windows Chromium window is clamped to the display work area (WindowSizer's `AdjustToFit`,
@@ -207,19 +206,25 @@ function chromiumArgs(browser: BrowserPreset, url: string, profileDir: string) {
  * top-level windows `Chrome_WidgetWin_1` whatever the branding, so the code that already focuses Edge
  * focuses Chrome unchanged.
  */
-/**
- * @typedef {object} BrowserPreset
- * @property {string} id             allow-list key; the only value a request may name
- * @property {string} name           product name, and the capture cache's word for this browser
- * @property {string} image          process image, for activate / quit / taskkill / stray counting
- * @property {string} windowTitle    regex guidepup matches against MainWindowTitle
- * @property {string} profileName    directory under %LOCALAPPDATA%\\a11y-witness
- * @property {string[]} suppressedFeatures  goes in the single --disable-features list
- * @property {string[]} extraArgs    switches this browser needs and the others do not
- * @property {() => string[]} exes   install locations, in search order
- */
+type BrowserPreset = {
+  /** allow-list key; the only value a request may name */
+  id: string;
+  /** product name, and the capture cache's word for this browser */
+  name: string;
+  /** process image, for activate / quit / taskkill / stray counting */
+  image: string;
+  /** regex guidepup matches against MainWindowTitle */
+  windowTitle: string;
+  /** directory under %LOCALAPPDATA%\\a11y-witness */
+  profileName: string;
+  /** goes in the single --disable-features list */
+  suppressedFeatures: string[];
+  /** switches this browser needs and the others do not */
+  extraArgs: string[];
+  /** install locations, in search order */
+  exes: () => string[];
+};
 
-/** @type {Record<string, BrowserPreset>} */
 export const BROWSERS: Record<string, BrowserPreset> = {
   edge: {
     id: "edge",
@@ -299,7 +304,7 @@ export function resolveBrowser(id?: string): BrowserPreset {
  *
  * The asymmetry with `resolveBrowser` is deliberate, and it is about who can see the failure. A bad value
  * in a request is the caller's mistake and belongs in their 400. A bad `A11Y_BROWSER` in the guest's
- * scheduled task is read at module load by `server.mjs` and `capture-core.mjs`, where throwing means the
+ * scheduled task is read at module load by `server.ts` and `capture-core.ts`, where throwing means the
  * worker never binds its port — no `/health`, no diagnostics, nothing to read. That is indistinguishable
  * from a dead machine, which this project has already misdiagnosed for two days once, and it would be
  * caused by a typo in an environment variable.

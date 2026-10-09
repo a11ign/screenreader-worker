@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Bring the browser window to the foreground — bounded, and without enumerating processes.
  *

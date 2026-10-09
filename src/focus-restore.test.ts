@@ -74,7 +74,7 @@ test("#972 THE PAGE SIDE: blur the focused frame and focus the window -- adding 
 });
 
 test("#972 WIRED: once, before the FIRST probe, from the reading #953 measured; marked every time; recorded on the first sweep", () => {
-  const probes = source("capture-probes.mjs");
+  const probes = source("capture-probes.ts");
   const sequence = bodyOf(probes, "async function runProbeSequence(");
   assert.match(sequence, /const state = await markPageState\(step, diag\);\n[\s\S]*if \(i === 0\) restoredFrom = await restoreFocusBeforeSweeps\(state, step, diag\);/,
     "the restore is decided from the pre-probe reading, before the first step only");

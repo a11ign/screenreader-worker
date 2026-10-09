@@ -1,5 +1,4 @@
-// @ts-check
-// server.mjs — NVDA capture worker as an HTTP service.
+// server.ts — NVDA capture worker as an HTTP service.
 // MUST run in an interactive desktop session (see run-server.cmd + the README).
 //   POST /capture  { url, task?, steps?, probeForms?, probeFocus?, probeTables?, probeNavigation?, captureId?,
 //                    async? }   -> async:true returns 202 {captureId} at once and delivers the result to
@@ -12,15 +11,15 @@
 // NVDA is a single shared resource, so captures are serialized.
 import { createServer } from "node:http";
 // Kept in their own module so a Linux test can import them without reaching guidepup through
-// this file's `capture-core` import — see file-version.mjs. Re-exported below, unchanged.
+// this file's `capture-core` import — see file-version.ts. Re-exported below, unchanged.
 import { createVersionSampler, fileProductVersion, powershellValue } from "./file-version.ts";
-// Re-exported so every existing importer of `server.mjs` is unchanged by the move.
+// Re-exported so every existing importer of `server.ts` is unchanged by the move.
 export { fileProductVersion, powershellValue } from "./file-version.ts";
 import { existsSync, openSync, readFileSync, readdirSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { freemem, totalmem, uptime as osUptime } from "node:os";
-import { join, resolve } from "node:path";
+import { extname, join, resolve } from "node:path";
 import {
   browserAvailable, CAPTURE_PROTOCOL_VERSION, captureWithNvda, forgetScreenReader,
   screenReaderSettings,
@@ -46,6 +45,11 @@ import { trimAlreadyDone } from "./windows-trim.ts";
 import { createLogWriter, silenceStreamErrors } from "./server-log.ts";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+// JSON from the browser or the page (a CDP reply, a `page.evaluate` result, a request body): its shape is the other end's, and
+// modelling it is a job of its own. Named once here so the boundary is greppable and `no-explicit-any` still bites everywhere else.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Untyped = any;
+
 /**
  * Was this file RUN, or merely imported?
  *
@@ -58,7 +62,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
  *
  * That import is not hypothetical: CLAUDE.md makes it the only real check that an .mjs file still loads,
  * because neither lint nor tsc can see a ReferenceError at import — a fault this repo has already had in
- * `capture-core.mjs`. The worker's own entry point was the one file that check could not be run against.
+ * `capture-core.ts`. The worker's own entry point was the one file that check could not be run against.
  */
 const IS_MAIN = import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
 
@@ -66,7 +70,7 @@ const IS_MAIN = import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
 const PORT = Number(process.env.A11Y_PORT || 8765);
 // `worker.log`, NOT `server.log`, and the split is the whole point.
 //
-// `run-server.cmd` line 96 is `node server.mjs 2>> server.log`, so cmd.exe holds a write handle on that
+// `run-server.cmd` line 96 is `node server.ts 2>> server.log`, so cmd.exe holds a write handle on that
 // file for node's ENTIRE lifetime — and this process was appending to the same path. Measured 2026-09-02
 // across all five boxes: a 40-line tail spanning ten restarts over two days contained only launcher
 // output, the ForegroundLockTimeout script and node's DEP0190 warning. Not one line from this logger,
@@ -96,7 +100,7 @@ const LOG_PATH = process.env.A11Y_SERVER_LOG || "worker.log";
 // PowerShell 5.1 has no -Encoding parameter and writes UTF-16 -- that changed the log's
 // encoding mid-file and broke every existing reader of it.
 //
-// The writer itself lives in server-log.mjs, where it can be tested: this file needs guidepup, and
+// The writer itself lives in server-log.ts, where it can be tested: this file needs guidepup, and
 // the console write below used to be OUTSIDE the try that guarded the append -- an EPIPE from a parent that
 // had gone away then reached the uncaughtException handler, which logged, which wrote to the same broken
 // pipe. That loop reached 354 GB. See that module's header.
@@ -117,7 +121,7 @@ const log = createLogWriter({ path: LOG_PATH });
  * Boot-time hygiene: bound the Edge profile and clear strays from a previous worker.
  *
  * At boot and nowhere else, because a capture owns Edge for its whole duration -- see
- * browser-profile.mjs for the measurements that made this necessary (a 511 MB profile and 5 orphaned
+ * browser-profile.ts for the measurements that made this necessary (a 511 MB profile and 5 orphaned
  * Edge processes on the slowest of three otherwise identical guests).
  */
 const TRIM_MARKER = resolve(process.cwd(), ".windows-trimmed");
@@ -137,7 +141,9 @@ function trimWindowsAtBoot() {
   if (process.platform !== "win32" || process.env.A11Y_SKIP_TRIM === "1") return;
   if (trimAlreadyDone(TRIM_MARKER)) return;
   try {
-    const script = fileURLToPath(new URL("./windows-trim.ts", import.meta.url));
+    // The sibling wears this module's own extension: `.ts` when the guest runs the source (Node 24 strips the types), `.mjs`
+    // beside `dist/server.mjs`, where Rslib emits `windows-trim` as an `exports` entry and no `.ts` exists.
+    const script = fileURLToPath(new URL(`./windows-trim${extname(fileURLToPath(import.meta.url))}`, import.meta.url));
     // Its output goes to a file, not /dev/null. A detached child with stdio "ignore" that dies on
     // startup leaves no trace anywhere, which is exactly how this failed silently on three boots.
     const out = openSync(`${TRIM_MARKER}.log`, "a");
@@ -147,7 +153,7 @@ function trimWindowsAtBoot() {
     log("windows trim started in the background (once per guest; see .windows-trimmed.json)");
   } catch (error) {
     // Trimming is an optimisation, never a precondition for serving captures.
-    log(`windows trim could not start: ${/** @type {any} */ (error).message}`);
+    log(`windows trim could not start: ${(error as Untyped).message}`);
   }
 }
 
@@ -177,7 +183,7 @@ async function tidyBrowserAtBoot() {
     await pruneEdgeProfile(profileDir, treeSize(profileDir)?.megabytes ?? null, log);
   } catch (error) {
     // Hygiene is not a precondition for serving. Say what went wrong and carry on.
-    log(`browser tidy-up at boot failed: ${/** @type {any} */ (error).message}`);
+    log(`browser tidy-up at boot failed: ${(error as Untyped).message}`);
   }
 }
 
@@ -185,7 +191,7 @@ async function tidyBrowserAtBoot() {
  * THE STATE INVENTORY — architecture audit §6.2, "700 lines of policy and fifteen loose state variables".
  *
  * Below this comment is every module-level mutable this file owns (a second, smaller group — `dialogCache`
- * and `foregroundCache` — lives in `desktop-prepare.mjs` and is only READ here; see the comment above
+ * and `foregroundCache` — lives in `desktop-prepare.ts` and is only READ here; see the comment above
  * `readiness()`). Sixteen touchpoints in total, inventoried by what writes each, what reads it, and —
  * the question that actually mattered, per the `prepareDesktop` fence this mirrors — whether an abandoned
  * or concurrent operation can reach it while stale.
@@ -194,10 +200,10 @@ async function tidyBrowserAtBoot() {
  * |---|---|---|
  * | `busy` | per-capture | Claimed and released around exactly one capture; the ordering itself is `busy-claim.test.ts`'s whole subject. Correct. |
  * | `inFlight` | per-capture | **WAS THE BUG.** Set at the start of a capture, never reset — so it silently answered `/progress` as "still capturing the last one" forever after every worker's first capture, on an idle box reporting `busy: false`. Measured in production (see `fleet-status.mjs`'s own defensive comment). Fixed 2026-09-06: cleared in the same `finally` as `busy`. This is the `dialogCache` shape exactly — per-capture data surviving in module scope past the capture's own lifetime — found by asking the same question of every variable rather than of this one by accident. |
- * | `results` | per-process, by design | A bounded (8-entry) history across MANY captures — that persistence is the feature (`GET /capture/<id>` surviving a lost socket), not a hazard, and `capture-results.mjs`'s own header argues the bound and the eviction policy. |
+ * | `results` | per-process, by design | A bounded (8-entry) history across MANY captures — that persistence is the feature (`GET /capture/<id>` surviving a lost socket), not a hazard, and `capture-results.ts`'s own header argues the bound and the eviction policy. |
  * | `worked` (`captures`/`failures`/`recoveries`) | per-process, by design | Cumulative counters across the worker's whole life — `/health.vitals` and the pool's degradation detection need exactly this, not a per-capture reset. |
  * | `consecutiveRecoveries` | per-process, by design | A rolling window ACROSS captures on purpose — it is the circuit breaker's memory, and resetting it per-capture would delete the thing it exists to count (a STREAK). |
- * | `environmentCache` / `environmentMeasuredAt` | per-process | A 5 s TTL cache of facts that do not change per capture (guidepup version, digest, profile, protocol) — never per-capture data. Neither the display nor the three PowerShell-read versions are in it: `displaySampler` (`display-sample.mjs`) and `versionSampler` (below) hold them, and `currentEnvironment` merges each one's last sample in with its age on every call (#2673, #2684). |
+ * | `environmentCache` / `environmentMeasuredAt` | per-process | A 5 s TTL cache of facts that do not change per capture (guidepup version, digest, profile, protocol) — never per-capture data. Neither the display nor the three PowerShell-read versions are in it: `displaySampler` (`display-sample.ts`) and `versionSampler` (below) hold them, and `currentEnvironment` merges each one's last sample in with its age on every call (#2673, #2684). |
  * | `bootConstants` (Map) | per-process | `windowsVersion`'s memo, read by `versionSampler` alone since #2684 — never on `/health`'s request path. Fixed until whatever would restart this process anyway (a reboot). |
  * | `foundFiles` (Map) | per-process | Resolved executable paths; same reasoning as `bootConstants`. |
  * | `fltCache` | per-process | `ForegroundLockTimeout`, applied once per session by `run-server.cmd` before this process starts; cannot change under a running worker. |
@@ -208,8 +214,8 @@ async function tidyBrowserAtBoot() {
  * feature it serves genuinely spans the process's life, not because nobody asked the question.
  *
  * **No split follows from this table, and that is a finding rather than a default.** The state groups
- * cleanly by the CONCERN that already owns it elsewhere in this package (`capture-results.mjs` for
- * `results`, `desktop-prepare.mjs` for the dialog/foreground pair, `diagnostics.mjs`/`file-version.mjs`
+ * cleanly by the CONCERN that already owns it elsewhere in this package (`capture-results.ts` for
+ * `results`, `desktop-prepare.ts` for the dialog/foreground pair, `diagnostics.ts`/`file-version.ts`
  * for the environment facts) — what remains here is irreducibly the HTTP-request and process-lifecycle
  * policy that ties those concerns to the five routes this file serves, which is one cohesive job, not
  * several unrelated ones sharing a file by accident. The routing being nine lines is not the defect the
@@ -220,7 +226,7 @@ let busy = false;
 /**
  * Recent capture outcomes, so a lost response does not destroy a finished capture.
  *
- * In this process rather than in `capture-results.mjs` as module state, because a store owned by the module
+ * In this process rather than in `capture-results.ts` as module state, because a store owned by the module
  * would be shared by any test that imported it and the leakage between cases would be invisible.
  */
 const results = createResultStore();
@@ -251,14 +257,14 @@ const ENVIRONMENT_CACHE_MS = 5_000;
 // Every probe is opt-in over the wire and defaults to off, so an old client keeps the old
 // behaviour and no capture pays for a probe it did not ask for. Extracted from the handler
 // because each default is a branch and the handler sat at the complexity ceiling.
-// The worker reports its own code over the channel it serves on — see `code-version.mjs` for why that
+// The worker reports its own code over the channel it serves on — see `code-version.ts` for why that
 // channel, and not `utmctl exec`. Wrapped here because a worker that cannot hash itself can still capture,
 // and saying so beats refusing to start.
 function reportedCodeVersion() {
   try {
     return codeVersion();
   } catch (e) {
-    log(`could not compute code version: ${/** @type {any} */ (e).message}`);
+    log(`could not compute code version: ${(e as Untyped).message}`);
     return "unknown";
   }
 }
@@ -307,7 +313,7 @@ const bootConstants = new Map();
  */
 const foundFiles = new Map();
 
-function findFileMemo(/** @type {any} */ root: any, /** @type {any} */ wanted: any) {
+function findFileMemo(root: Untyped, wanted: Untyped) {
   const key = `${root}\u0000${wanted}`;
   if (foundFiles.has(key)) return foundFiles.get(key);
   const found = findFile(root, wanted);
@@ -342,7 +348,7 @@ function findFile(root: string, wanted: string, depth: number = 0): string | nul
   return null;
 }
 
-function packageVersion(/** @type {any} */ name: any) {
+function packageVersion(name: Untyped) {
   try {
     const require = createRequire(import.meta.url);
     const packagePath = require.resolve(`${name}/package.json`);
@@ -400,7 +406,7 @@ function runtimeEnvironment() {
     // without this the cache treats their evidence as interchangeable.
     architecture: process.arch,
     workerCode: CODE_VERSION,
-    // What the evidence means, and what the host's capture cache keys on. See capture-core.mjs.
+    // What the evidence means, and what the host's capture cache keys on. See capture-core.ts.
     captureProtocol: CAPTURE_PROTOCOL_VERSION,
     // Which provisioning built this guest. Written by provision-nvda-worker.ps1 rather than
     // hashed on the host, so it describes what the guest ACTUALLY has -- provisioning changes
@@ -476,7 +482,7 @@ function provisionRevision() {
  *
  * ## Sampled on a timer, never on a request (#2673)
  *
- * `async`, and read by `displaySampler` beside `displayMode`. See `display-sample.mjs` for why a request must
+ * `async`, and read by `displaySampler` beside `displayMode`. See `display-sample.ts` for why a request must
  * not run PowerShell and why the sample carries its age.
  *
  * NOT the driver VERSION, which is a different field: `ceo` ruled on #1567 that workers 2-6 on
@@ -569,7 +575,7 @@ const DISPLAY_READ_TIMEOUT_MS = 5_000;
  * below and by `bootConstantAsync` (#2684): both are timer-driven readers with the same bound and the same
  * degrade-to-`"unknown"` contract.
  */
-async function sampledValue(/** @type {string} */ script: string) {
+async function sampledValue(script: string) {
   const result = await powershell(script, { timeoutMs: DISPLAY_READ_TIMEOUT_MS });
   return (result.ok && result.stdout.trim()) || "unknown";
 }
@@ -603,7 +609,7 @@ const WINDOWS_VERSION_SCRIPT =
  * `windowsVersion`'s read, ASYNCHRONOUS (#2684) and called only by `versionSampler`'s timer. Same memo,
  * same retry-only-on-`"unknown"` rule the old synchronous `bootConstant` had -- see `bootConstants` above.
  */
-async function bootConstantAsync(/** @type {string} */ script: string) {
+async function bootConstantAsync(script: string) {
   if (bootConstants.has(script)) return bootConstants.get(script);
   const value = await sampledValue(script);
   // Only a real answer is memoised. Caching "unknown" forever would make a transient PowerShell failure
@@ -617,7 +623,7 @@ async function bootConstantAsync(/** @type {string} */ script: string) {
  * PowerShell reads (#2684). `runtimeEnvironment`'s 5 s rebuild called `bootConstant`/`fileProductVersion`
  * straight from `/health`'s request path, and a read that had not yet succeeded -- or a binary that had
  * changed on disk -- re-ran `powershell.exe` SYNCHRONOUSLY on every such rebuild. `createVersionSampler`
- * (`file-version.mjs`) is the generic timer; these three closures are the real readers it drives -- kept
+ * (`file-version.ts`) is the generic timer; these three closures are the real readers it drives -- kept
  * here rather than in that guidepup-free module because `bootConstants`, `discoverExecutables` and `log`
  * are all this process's own state.
  */
@@ -634,8 +640,7 @@ const versionSampler = createVersionSampler({
 });
 if (IS_MAIN) versionSampler.start();
 
-/** @type {any} */
-let environmentCache: any = null;
+let environmentCache: Untyped = null;
 let environmentMeasuredAt = 0;
 
 function currentEnvironment() {
@@ -674,11 +679,11 @@ function currentEnvironment() {
  *
  * @param {any} parsed @returns {Record<string, boolean>}
  */
-function probeFlags(parsed: any): Record<string, boolean> {
+function probeFlags(parsed: Untyped): Record<string, boolean> {
   return Object.fromEntries(PROBE_FLAGS.map((flag) => [flag, parsed[flag] ?? false]));
 }
 
-function captureOptions(/** @type {any} */ parsed: any) {
+function captureOptions(parsed: Untyped) {
   // A binding, not `env: process.env` inline: `wire-request-describes-the-wire.test.ts` reads the `name:` pairs of the
   // object below as the request's fields, and `env` is not one — it is this process's own environment.
   const env = process.env;
@@ -714,7 +719,7 @@ function captureOptions(/** @type {any} */ parsed: any) {
   };
 }
 
-function send(/** @type {any} */ res: any, /** @type {any} */ code: any, /** @type {any} */ obj: any) {
+function send(res: Untyped, code: Untyped, obj: Untyped) {
   res.writeHead(code, { "content-type": "application/json" });
   res.end(JSON.stringify(obj));
 }
@@ -758,8 +763,7 @@ function vitals() {
 // what the session uses (that is the whole reason apply-foreground-lock-timeout.ps1 exists). Left
 // non-zero, Edge is refused the foreground and every capture returns 0 phrases with no error.
 const FLT_GET = 0x2000; // SPI_GETFOREGROUNDLOCKTIMEOUT
-/** @type {any} */
-let fltCache: any;
+let fltCache: Untyped;
 
 function foregroundLockTimeout() {
   if (fltCache !== undefined) return fltCache;
@@ -786,10 +790,10 @@ function foregroundLockTimeout() {
 //
 // Extracted from the request handler because the handler was at the complexity ceiling, and because
 // "what we do after a failure" deserves a name.
-async function recoverFromFailure(/** @type {any} */ error: any) {
+async function recoverFromFailure(error: Untyped) {
   forgetScreenReader();
   // A CODE, not a regex over the message -- issue #336 gave the hard timeout one specifically so this
-  // check could not be broken by a reworded message the way `capture-faults.mjs`'s own header describes.
+  // check could not be broken by a reworded message the way `capture-faults.ts`'s own header describes.
   if (faultCode(error) !== FAULT.HARD_TIMEOUT) return;
   log("abandoned capture may still be driving NVDA — stopping it so the next capture starts clean");
   await shutdownScreenReader().catch((e) => log("could not stop NVDA after abandonment: " + e.message));
@@ -813,7 +817,7 @@ async function recoverFromFailure(/** @type {any} */ error: any) {
 // The abandoned capture cannot be killed -- it may still be waiting on NVDA -- so the screen reader
 // is treated as untrustworthy afterwards and the next capture cold-starts one.
 // startFreshScreenReader already knows how to clear a leftover instance out of the way.
-// Default from the shared budget ladder in `capture-pure.mjs`, so it cannot drift below the capture
+// Default from the shared budget ladder in `capture-pure.ts`, so it cannot drift below the capture
 // budget it is supposed to contain — it was 240_000 against a budget of 120_000, and nothing checked.
 const CAPTURE_HARD_TIMEOUT_MS =
   Number(process.env.A11Y_CAPTURE_HARD_TIMEOUT_MS || CAPTURE_HARD_TIMEOUT_DEFAULT_MS);
@@ -825,15 +829,15 @@ const CAPTURE_HARD_TIMEOUT_MS =
 // capture succeeded), so the second attempt necessarily cold-starts a fresh NVDA -- which is precisely
 // what made the next capture succeed when this was diagnosed by hand on two guests.
 //
-// See worker-recovery.mjs for why this is bounded at one attempt and why the hard timeout is excluded.
-async function captureWithLocalRecovery(/** @type {any} */ url: any, /** @type {any} */ opts: any) {
+// See worker-recovery.ts for why this is bounded at one attempt and why the hard timeout is excluded.
+async function captureWithLocalRecovery(url: Untyped, opts: Untyped) {
   try {
     const clean = await withHardTimeout(captureWithNvda(url, opts));
     consecutiveRecoveries = 0;
     return clean;
   } catch (error) {
     if (!isLocallyRecoverable(error)) throw error;
-    // CIRCUIT BREAKER. Recovering is bounded at one attempt PER CAPTURE, which worker-recovery.mjs
+    // CIRCUIT BREAKER. Recovering is bounded at one attempt PER CAPTURE, which worker-recovery.ts
     // argued was enough not to become the restart loop that once wedged a guest. It is not: per-capture
     // is unbounded ACROSS captures, so a guest with a high fault rate restarts NVDA again and again.
     // Observed on a real run -- one guest reached 28 recoveries while its healthy peer sat at 0, and it
@@ -849,7 +853,7 @@ async function captureWithLocalRecovery(/** @type {any} */ url: any, /** @type {
       log("  failing the case so the run can retire this worker rather than restarting NVDA in a loop");
       throw error;
     }
-    log(`  recoverable fault: ${(error && /** @type {any} */ (error).message) || error}`);
+    log(`  recoverable fault: ${(error && (error as Untyped).message) || error}`);
     log("  retrying once on a fresh screen reader rather than failing the caller's case");
     await recoverFromFailure(error);
     const result = await withHardTimeout(captureWithNvda(url, opts));
@@ -860,9 +864,8 @@ async function captureWithLocalRecovery(/** @type {any} */ url: any, /** @type {
   }
 }
 
-function withHardTimeout(/** @type {Promise<any>} */ promise: Promise<any>) {
-  /** @type {any} */
-  let timer: any;
+function withHardTimeout(promise: Promise<Untyped>) {
+  let timer: Untyped;
   const abandon = new Promise((_resolve, reject) => {
     timer = setTimeout(
       () => reject(captureFault(FAULT.HARD_TIMEOUT,
@@ -875,11 +878,10 @@ function withHardTimeout(/** @type {Promise<any>} */ promise: Promise<any>) {
 
 // Warm-up state. `error` is kept so a not-ready worker says WHY, which is the difference between
 // "give it a moment" and "this guest is broken".
-/** @type {{ ok: boolean, error: string | null, at: string | null }} */
 let warm: { ok: boolean; error: string | null; at: string | null; } = { ok: false, error: "not warmed up yet", at: null };
 let warming = false;
 
-async function warmUp(/** @type {any} */ reason: any) {
+async function warmUp(reason: Untyped) {
   // One at a time. Readiness polling drives re-warms, and two concurrent NVDA starts would fight
   // over a single machine-wide screen reader.
   if (warming) return;
@@ -933,10 +935,10 @@ function warmUpOnceIfNeeded() {
     .catch((e) => log("warm-up threw: " + e.message));
 }
 
-// `dialogCache`/`foregroundCache`/`sampleDesktopDialogs`/`prepareDesktop` live in `desktop-prepare.mjs`,
+// `dialogCache`/`foregroundCache`/`sampleDesktopDialogs`/`prepareDesktop` live in `desktop-prepare.ts`,
 // imported above -- guidepup-free, so a test can reach them without importing this whole file. See that
 // module's own header for why. `readiness()` below reads the two caches as LIVE bindings; only
-// `desktop-prepare.mjs` itself ever reassigns them.
+// `desktop-prepare.ts` itself ever reassigns them.
 
 /**
  * Is this a form state this worker can act on?
@@ -954,11 +956,10 @@ function warmUpOnceIfNeeded() {
  * @returns {{state?: string, submit: string, fields: unknown[]}|undefined}
  */
 function formStateOf(value: unknown): { state?: string; submit: string; fields: unknown[]; } | undefined {
-  const candidate = /** @type {{submit?: unknown, fields?: unknown}} */ (
-    value && typeof value === "object" ? value : {});
+  const candidate = (value && typeof value === "object" ? value : {}) as { submit?: unknown; fields?: unknown };
   const usable = typeof candidate.submit === "string" && candidate.submit !== ""
     && Array.isArray(candidate.fields) && candidate.fields.length > 0;
-  return usable ? /** @type {{state?: string, submit: string, fields: unknown[]}} */ (value) : undefined;
+  return usable ? (value as {state?: string, submit: string, fields: unknown[]}) : undefined;
 }
 
 /**
@@ -976,7 +977,7 @@ function nvdaConfigPaths(): string[] {
       (process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "guidepup") : null),
     tempDir: process.env.TEMP || process.env.TMP || ".",
     tailLines: 1,
-  }).config ?? []).map((/** @type {{path: string}} */ c: { path: string; }) => c.path);
+  }).config ?? []).map((c: { path: string; }) => c.path);
 }
 
 // NOT on a timer. The first version sampled every 30 s, and on a 3 GB guest that is a PowerShell process
@@ -1071,7 +1072,7 @@ async function readiness() {
     browserConfigError: BROWSER_CONFIG_ERROR,
     reason: failed.length ? `not ready: ${failed.join(", ")}`
       + (BROWSER_CONFIG_ERROR ? ` — ${BROWSER_CONFIG_ERROR}` : "")
-      + (dialogs?.length ? ` — desktop blocked by: ${dialogs.map((/** @type {any} */ d: any) => d.message || d.title).join(" / ")}` : "")
+      + (dialogs?.length ? ` — desktop blocked by: ${dialogs.map((d: Untyped) => d.message || d.title).join(" / ")}` : "")
       : busy ? "busy with a capture"
         : warm.ok ? null : `ready, but not warmed up (${warm.error})`,
   };
@@ -1116,15 +1117,15 @@ const server = createServer((req, res) => {
  * store can actually promise. It means "not retained here", and there are three ways to reach it that are
  * NOT "never started": the id genuinely never arrived (the common case, and the only one re-issuing is
  * free for); it was EVICTED after finishing, because `RESULT_HISTORY` other captures completed on this
- * worker first (`capture-results.mjs`'s `evictOldestDone`); or the worker RESTARTED and lost the whole
+ * worker first (`capture-results.ts`'s `evictOldestDone`); or the worker RESTARTED and lost the whole
  * in-memory store. Re-issuing is still the right recovery in all three -- the worst cost is one redundant
  * capture, never a wrong answer -- but "never started" is a claim this endpoint cannot back up, and this
  * comment used to make it anyway. Deliberately NOT closed by payload-fingerprint duplicate suppression:
  * an in-memory store cannot promise exactly-once across a restart regardless, so naming the real,
  * BOUNDED guarantee is more honest than a mechanism that would still fall short of what "idempotent"
- * implies. See `capture-results.mjs`'s own header for the retention bound and why it is not persisted.
+ * implies. See `capture-results.ts`'s own header for the retention bound and why it is not persisted.
  */
-function respondWithStoredResult(/** @type {any} */ res: any, /** @type {any} */ id: any) {
+function respondWithStoredResult(res: Untyped, id: Untyped) {
   const { status, body } = storedResultResponse(results.recall(id), id);
   send(res, status, body);
 }
@@ -1138,7 +1139,7 @@ function respondWithStoredResult(/** @type {any} */ res: any, /** @type {any} */
  *
  * #426: `phases` USED TO STRIP EVERY MARK DOWN TO `{event, atMs}`, discarding whatever `diag.mark(event,
  * detail)` recorded alongside it -- and that data was never actually missing, only thrown away here.
- * `capture-core.mjs`'s own `mark` already does `entries.push({ event, atMs, ...info })`, so a real
+ * `capture-core.ts`'s own `mark` already does `entries.push({ event, atMs, ...info })`, so a real
  * capture's `structureCensus` mark (fired before the sweep can be trapped by anything) has always carried
  * the full census -- `{ event: "structureCensus", atMs: 1234, landmark: 3, heading: 0, ... }` -- sitting in
  * memory and unreadable from outside the process. This is the same shape as `sweepLog` recording 604
@@ -1156,7 +1157,7 @@ function respondWithStoredResult(/** @type {any} */ res: any, /** @type {any} */
  * "the probe has not reached that point" read as different things here, which is exactly the distinction
  * `addMissingHeadings` needed and did not have for months (CLAUDE.md's own record of that incident).
  */
-function respondWithProgress(/** @type {any} */ res: any) {
+function respondWithProgress(res: Untyped) {
   if (!inFlight) return send(res, 200, { busy, capturing: null });
   const marks = inFlight.marks;
   const last = marks.length ? marks[marks.length - 1] : null;
@@ -1171,12 +1172,12 @@ function respondWithProgress(/** @type {any} */ res: any) {
     lastPhaseAtMs: last && last.atMs,
     // Spread into a fresh object per mark, never the SAME reference `inFlight.marks` holds -- a caller
     // must not be able to mutate this worker's own in-memory diagnostic state through the HTTP response.
-    phases: marks.map((/** @type {any} */ m: any) => ({ ...m })),
+    phases: marks.map((m: Untyped) => ({ ...m })),
   });
 }
 
 /** Cheap by contract: this is polled, so nothing here may walk a disk or shell out. */
-function respondWithHealth(/** @type {any} */ res: any) {
+function respondWithHealth(res: Untyped) {
   const environment = currentEnvironment();
   // `ok` is kept for older callers and still means "the HTTP server is answering". `ready` is
   // the one to dispatch on -- see readiness().
@@ -1189,15 +1190,15 @@ function respondWithHealth(/** @type {any} */ res: any) {
     busy,
     code: CODE_VERSION,
     environment,
-  })).catch((e) => send(res, 500, { error: String((e && /** @type {any} */ (e).message) || e) }));
+  })).catch((e) => send(res, 500, { error: String((e && (e as Untyped).message) || e) }));
 }
 
 /**
  * On-demand guest facts. Deliberately NOT part of /health, which is polled and must stay cheap: this one
- * walks the Edge profile and shells out to tasklist. See diagnostics.mjs for why it exists at all -- the
+ * walks the Edge profile and shells out to tasklist. See diagnostics.ts for why it exists at all -- the
  * guest agent that used to answer these questions cannot be relied on.
  */
-async function respondWithDiagnostics(/** @type {any} */ res: any) {
+async function respondWithDiagnostics(res: Untyped) {
   try {
     return send(res, 200, {
       ...guestDiagnostics({ edgeProfile: browserProfileDir(BROWSER), logPath: LOG_PATH }),
@@ -1219,7 +1220,7 @@ async function respondWithDiagnostics(/** @type {any} */ res: any) {
       desktopForeground: await probeWindowOwner((reason) => log(`foreground probe: ${reason}`)),
     });
   } catch (e) {
-    return send(res, 500, { error: String((e && /** @type {any} */ (e).message) || e) });
+    return send(res, 500, { error: String((e && (e as Untyped).message) || e) });
   }
 }
 
@@ -1241,12 +1242,12 @@ async function respondWithDiagnostics(/** @type {any} */ res: any) {
  * Claiming earlier buys a new hazard, so it is handled: a request that dies before `end` would hold `busy`
  * forever, which is the "wedged worker" that once cost two days of misdiagnosis. `releaseOnAbandon` covers it.
  */
-function acceptCaptureRequest(/** @type {any} */ req: any, /** @type {any} */ res: any) {
+function acceptCaptureRequest(req: Untyped, res: Untyped) {
   if (busy) return send(res, 429, { error: "a capture is already in progress" });
   busy = true;
   let body = "";
   releaseOnAbandon(req);
-  req.on("data", (/** @type {any} */ c: any) => (body += c));
+  req.on("data", (c: Untyped) => (body += c));
   req.on("end", async () => {
     let parsed;
     try { parsed = JSON.parse(body || "{}"); }
@@ -1266,7 +1267,7 @@ function acceptCaptureRequest(/** @type {any} */ req: any, /** @type {any} */ re
     catch (error) {
       busy = false;
       // `fault` when the refusal has one (a missing variable is `auth-credential-missing`): additive, as on every response.
-      return send(res, 400, { error: /** @type {any} */ (error).message, ...(faultCode(error) ? { fault: faultCode(error) } : {}) });
+      return send(res, 400, { error: (error as Untyped).message, ...(faultCode(error) ? { fault: faultCode(error) } : {}) });
     }
     // Optional and validated here, so an older host that sends nothing behaves exactly as before and a
     // malformed id is a 400 rather than a strange Map key that later appears in a URL.
@@ -1312,7 +1313,7 @@ function acceptCaptureRequest(/** @type {any} */ req: any, /** @type {any} */ re
  * time out — a worker that answers /health, reports ready, and 429s every capture forever. That is precisely
  * the wedge this project misdiagnosed as a dead machine, arrived at from the other direction.
  */
-function releaseOnAbandon(/** @type {any} */ req: any) {
+function releaseOnAbandon(req: Untyped) {
   let finished = false;
   req.once("end", () => { finished = true; });
   for (const event of ["aborted", "error", "close"]) {
@@ -1332,8 +1333,7 @@ function releaseOnAbandon(/** @type {any} */ req: any) {
  * minutes and then died told you only that it had died. Watching a real website fail was what made that
  * unacceptable — the question "which phase?" had no answer available at any price.
  */
-/** @type {any} */
-let inFlight: any = null;
+let inFlight: Untyped = null;
 
 /**
  * How long desktop preparation may take before the capture goes ahead without it.
@@ -1351,9 +1351,8 @@ const DESKTOP_PREPARE_TIMEOUT_MS = 60_000;
  * @param {number} ms
  * @param {string} label
  */
-function withTimeoutMs(promise: Promise<any>, ms: number, label: string) {
-  /** @type {any} */
-  let timer: any;
+function withTimeoutMs(promise: Promise<Untyped>, ms: number, label: string) {
+  let timer: Untyped;
   const expire = new Promise((_resolve, reject) => {
     timer = setTimeout(() => reject(new Error(`${label} exceeded ${ms} ms`)), ms);
   });
@@ -1361,7 +1360,7 @@ function withTimeoutMs(promise: Promise<any>, ms: number, label: string) {
 }
 
 // `prepareDesktop` (and the `abandonedAfter` fence it checks before touching the shared caches) lives in
-// `desktop-prepare.mjs`, imported above -- see that module's header for why, and its own comment on
+// `desktop-prepare.ts`, imported above -- see that module's header for why, and its own comment on
 // `abandonedAfter` for the abandonment shape `runCapture` guards against below.
 
 /**
@@ -1386,7 +1385,7 @@ function withTimeoutMs(promise: Promise<any>, ms: number, label: string) {
  *
  * THE ABANDONED CALL KEEPS RUNNING -- losing the race does not cancel it -- so it is handed a signal it can
  * check before touching `dialogCache`/`foregroundCache` after we have stopped waiting on it. See
- * `desktop-prepare.mjs`'s `abandonedAfter` for why a fence, not real cancellation, and why this cannot
+ * `desktop-prepare.ts`'s `abandonedAfter` for why a fence, not real cancellation, and why this cannot
  * reach a capture result.
  *
  * @param {Record<string, unknown>[]} marks
@@ -1415,10 +1414,10 @@ async function prepareDesktopBounded(marks: Record<string, unknown>[]) {
  * point: a result stored only after a successful write would be missing in exactly the case the store
  * exists for -- a socket that died before the host read it.
  */
-async function runCapture(/** @type {any} */ res: any, /** @type {any} */ { url, opts, captureId }: any) {
+async function runCapture(res: Untyped, /** @type {any} */ { url, opts, captureId }: Untyped) {
   const { deliverOnce } = retentionFor(opts);
-  const answer = (/** @type {any} */ status: any, /** @type {any} */ body: any) => {
-    // An authenticated response is kept for ONE delivery only (`capture-results.mjs`), and never on the synchronous
+  const answer = (status: Untyped, body: Untyped) => {
+    // An authenticated response is kept for ONE delivery only (`capture-results.ts`), and never on the synchronous
     // route once written: what was delivered to its own socket is not held.
     if (captureId) results.finish(captureId, { status, body }, { deliverOnce });
     if (deliverOnce && res && captureId) res.once("close", () => results.evict(captureId));
@@ -1431,8 +1430,7 @@ async function runCapture(/** @type {any} */ res: any, /** @type {any} */ { url,
   log(`[${startedAt}] capture ${url} (nav=${opts.nav || "object"}, probeForms=${opts.probeForms}, probeFocus=${opts.probeFocus})`);
   // Ours, not the capture's, so an abandoned capture cannot take its own evidence down with it, and
   // `/progress` can read it WHILE the capture runs.
-  /** @type {any[]} */
-  const marks: any[] = [];
+  const marks: Untyped[] = [];
   inFlight = { url, startedAt, marks };
   // Clear the desktop BEFORE driving it. A modal dialog left by an earlier failure swallows every keystroke
   // this capture is about to send, so the capture would run its full budget and be abandoned with no
@@ -1442,7 +1440,7 @@ async function runCapture(/** @type {any} */ res: any, /** @type {any} */ { url,
     await prepareDesktopBounded(marks);
     const result = await captureWithLocalRecovery(url, { ...opts, diagnosticsSink: marks });
     const environment = currentEnvironment();
-    const after = (result.diagnostics || []).find((/** @type {any} */ e: any) => e.event === "afterStart");
+    const after = (result.diagnostics || []).find((e: Untyped) => e.event === "afterStart");
     log(`  -> ${result.transcript.length} phrases; afterStart.lastSpoken=${JSON.stringify(after && after.lastSpoken)}`);
     if (result.transcript.length === 0) {
       log("  WARNING: 0 phrases. If afterStart.lastSpoken is empty, NVDA is running but not speaking — restart/reboot the worker.");
@@ -1460,9 +1458,9 @@ async function runCapture(/** @type {any} */ res: any, /** @type {any} */ { url,
     });
   } catch (e) {
     worked.failures += 1;
-    log("  capture failed: " + ((e && /** @type {any} */ (e).stack) || e));
+    log("  capture failed: " + ((e && (e as Untyped).stack) || e));
     // `fault` is additive on the wire: an older host ignores it and keeps matching on `error`,
-    // a newer one can classify without parsing prose. See capture-faults.mjs for why that matters.
+    // a newer one can classify without parsing prose. See capture-faults.ts for why that matters.
     // The phases it DID complete, so a caller can see where it stopped. Without this a hung capture
     // reports only "exceeded the hard timeout", which names the symptom and nothing else — and the marks
     // that would name the phase were being discarded with the abandoned capture.
@@ -1472,7 +1470,7 @@ async function runCapture(/** @type {any} */ res: any, /** @type {any} */ { url,
     // capture failed, so losing this response replaces a diagnosis with "no answer" -- which this project
     // has repeatedly misread as a dead machine.
     answer(500, {
-      error: String((e && /** @type {any} */ (e).message) || e),
+      error: String((e && (e as Untyped).message) || e),
       fault: faultCode(e),
       diagnostics: marks,
       reachedPhase: reached && reached.event,
@@ -1537,7 +1535,7 @@ const RECOVERABLE = /Cannot connect to NVDA|ECONNREFUSED[\s\S]*6837/i;
 /**
  * Socket errnos that mean "the NVDA speech channel went away", which is EXPECTED and must never be fatal.
  *
- * Node's own `error.code`, not prose — the rule `capture-faults.mjs` already establishes for capture faults,
+ * Node's own `error.code`, not prose — the rule `capture-faults.ts` already establishes for capture faults,
  * applied here where it was missing. The regex above could not match what actually happens: stopping NVDA
  * after an abandoned capture resets the TLS socket to NVDA Remote, Node reports `read ECONNRESET` from
  * `TLSWrap.onStreamRead`, and that stack contains neither "Cannot connect to NVDA" nor the port 6837 the

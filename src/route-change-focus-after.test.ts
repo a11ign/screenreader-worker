@@ -2,7 +2,7 @@
  * #1497: the focus read after the route probe's Tab is retried once, never re-Tabbed, and a read that fails
  * every time is NAMED rather than recorded as a bare null.
  *
- * Imports only `capture-pure.mjs`: `capture-probes.mjs` imports `@guidepup/guidepup`, which throws at import
+ * Imports only `capture-pure.ts`: `capture-probes.ts` imports `@guidepup/guidepup`, which throws at import
  * where no screen reader exists (measured on the agents host: "No available supported screen readers"), so the
  * decision lives in the pure module and the probe keeps only the call. The Tab and the read are injected and
  * counted, so every assertion is about what the helper DID, not what it returned alone.
@@ -75,13 +75,13 @@ test("#1497: a Tab that throws does not stop the read, and is named if the reads
 });
 
 test("#1497 WIRING: the route probe's focus read goes through readFocusAfterTab, and an unmeasured reason reaches its mark", () => {
-  // READ AS TEXT, never imported: `capture-probes.mjs` imports @guidepup/guidepup, which throws here. Anchored on
+  // READ AS TEXT, never imported: `capture-probes.ts` imports @guidepup/guidepup, which throws here. Anchored on
   // code shapes (`return readFocusAfterTab({`, a spread into the mark), not on words a comment could carry.
   const source = readFileSync(new URL("./capture-probes.ts", import.meta.url), "utf8");
-  assert.match(source, /\breadFocusAfterTab, routeChangeNavigated,\n\} from "\.\/capture-pure\.mjs";/,
+  assert.match(source, /\breadFocusAfterTab, routeChangeNavigated,\n\} from "\.\/capture-pure\.ts";/,
     "the helper is imported from the pure module");
   const start = source.indexOf("async function focusedAfterTab(");
-  assert.ok(start >= 0, "focusedAfterTab is gone from capture-probes.mjs");
+  assert.ok(start >= 0, "focusedAfterTab is gone from capture-probes.ts");
   const body = source.slice(start, source.indexOf("\n}\n", start));
   assert.match(body, /return readFocusAfterTab\(\{/, "the probe's read is the pure helper's, retried once");
   assert.doesNotMatch(body, /\bcatch\b/, "and no local catch turns a failed read back into a bare null");

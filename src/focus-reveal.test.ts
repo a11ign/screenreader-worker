@@ -82,7 +82,7 @@ focusRevealTest("nothing appearing on focus is not a finding of any kind", () =>
  * exception for the same reason.
  */
 focusRevealTest("the reveal probe is sequenced BEFORE the probe that walks the tab ring", () => {
-  // `probePasses`, where both live, moved to `capture-probes.mjs` in the 2026-09-05 split.
+  // `probePasses`, where both live, moved to `capture-probes.ts` in the 2026-09-05 split.
   const source = readFileSync(
     resolve(import.meta.dirname, "./capture-probes.ts"), "utf8");
   const reveal = source.indexOf("results.focusReveal = probeFocusReveal_");
@@ -92,7 +92,7 @@ focusRevealTest("the reveal probe is sequenced BEFORE the probe that walks the t
   // this test's own name states; the marker is just how a source-text test has to find it.
   const order = source.indexOf("await probeFocusOrderWithEventLog");
   focusRevealAssert.ok(reveal >= 0 && order >= 0,
-    "one of the two assignments is gone from capture-probes.mjs -- this test examines nothing; find where "
+    "one of the two assignments is gone from capture-probes.ts -- this test examines nothing; find where "
     + "the probes are sequenced now and assert the order there");
   focusRevealAssert.ok(reveal < order,
     "probeFocusReveal must run BEFORE probeFocusOrder. It ran after once, and its baseline census was "
@@ -120,7 +120,7 @@ focusRevealTest("a role that SHRANK is not growth", () => {
 });
 
 /**
- * `focusResetOutcome` -- architecture-audit.md §43. `resetFocusToDocumentStart` (browser-session.mjs)
+ * `focusResetOutcome` -- architecture-audit.md §43. `resetFocusToDocumentStart` (browser-session.ts)
  * blurs whatever a PREVIOUS probe left focused, so `walkToReveal`'s first Tab starts at the first
  * tabbable element rather than wherever an earlier probe happened to land. This is the PURE half: given
  * that CDP call's return value, what actually happened, in words a mark can carry.
@@ -282,7 +282,7 @@ focusRevealTest("the PROBE passes the baseline's trust to the verdict — a sour
   const source = readFileSync(resolve(import.meta.dirname, "./capture-probes.ts"), "utf8");
   const call = source.indexOf("focusRevealVerdict({");
   focusRevealAssert.ok(call >= 0,
-    "the call to focusRevealVerdict is gone from capture-probes.mjs -- this test examines nothing; find "
+    "the call to focusRevealVerdict is gone from capture-probes.ts -- this test examines nothing; find "
     + "where the verdict is computed now and assert the wiring there");
   const args = source.slice(call, call + 400);
   focusRevealAssert.match(args, /baselineUntouched:\s*focusReset\?\.applied !== true/,
@@ -354,7 +354,7 @@ focusRevealTest("#1506: a verdict without a control read keeps the old single-ba
 });
 
 focusRevealTest("#1506: the walk reads the census BEFORE each Tab and credits only growth since that read", () => {
-  const source = readFileSync(resolve(import.meta.dirname, "capture-probes.mjs"), "utf8");
+  const source = readFileSync(resolve(import.meta.dirname, "capture-probes.ts"), "utf8");
   const start = source.indexOf("async function walkToReveal(");
   const end = source.indexOf("\n}\n", start);
   focusRevealAssert.ok(start !== -1 && end > start, "the positive control: walkToReveal is found");

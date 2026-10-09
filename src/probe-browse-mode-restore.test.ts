@@ -14,7 +14,7 @@
  * the throw is exactly when the mode is most likely wrong. Four of the five already do this; asserting the
  * placement rather than mere presence is what stops a future edit satisfying the letter of it.
  *
- * SOURCE TEXT, with the anti-vacuity guards that requires — `capture-core.mjs` imports guidepup, which
+ * SOURCE TEXT, with the anti-vacuity guards that requires — `capture-core.ts` imports guidepup, which
  * throws at module load with no screen reader, so none of these probes can be imported and called
  * (`pure-graph.test.ts` records this). Markers are CALL SYNTAX, never bare names: this file's prose names
  * `restoreBrowseMode` in several comments, and a previous unit shipped a test whose bare `indexOf` stayed
@@ -38,7 +38,7 @@ const FOCUS_RIDING_PROBES = [
 
 function functionBody(name: string): string {
   const start = SOURCE.indexOf(`async function ${name}(`);
-  assert.ok(start >= 0, `${name} not found in capture-probes.mjs -- this test examines nothing until it is`);
+  assert.ok(start >= 0, `${name} not found in capture-probes.ts -- this test examines nothing until it is`);
   const rest = SOURCE.slice(start + 1);
   const nextFn = rest.search(/\n(?:async )?function /);
   return rest.slice(0, nextFn >= 0 ? nextFn : rest.length);

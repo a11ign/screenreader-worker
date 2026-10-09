@@ -1,13 +1,12 @@
-// @ts-check
 /**
  * The worker's log: the console AND a file, bounded within a SINGLE process lifetime.
  *
- * ## Why this is not in server.mjs
+ * ## Why this is not in server.ts
  *
- * `server.mjs` needs guidepup, so anything decided inside it is decided where no test without a screen
+ * `server.ts` needs guidepup, so anything decided inside it is decided where no test without a screen
  * reader can reach — it does NOT bind a port on import, which the `IS_MAIN` guard settled and this
  * sentence outlived in six files (verified 2026-09-05) —
- * the same reason `capture-results.mjs` exists. That mattered here: the fault below ran to completion with
+ * the same reason `capture-results.ts` exists. That mattered here: the fault below ran to completion with
  * every check green, and there was no seam at which to prove a guard against it works.
  *
  * ## The fault this exists for
@@ -45,19 +44,20 @@ import { appendFileSync, renameSync, statSync } from "node:fs";
 export const MAX_LOG_BYTES = 16 * 1024 * 1024;
 
 /**
+ * DECLARED, so the docstring above is enforced rather than merely asserted. It says each member returns
+ * void deliberately, and until this file entered `tsc` nothing held it to that.
+ */
+type LogIO = { append: (path: string, text: string) => void,
+            rename: (from: string, to: string) => void,
+            size: (path: string) => number,
+            writeConsole: (text: string) => void };
+
+/**
  * Every side effect the writer has, in one object, so a test can watch all of them and inject no real fs.
  *
  * Each returns void deliberately. `process.stdout.write` answers a boolean about backpressure that nothing
  * here acts on, and letting it into the inferred type makes `typeof REAL_IO` demand that same boolean from
  * every fake -- a test double failing to typecheck over a value the writer never reads.
- *
- * @typedef {{ append: (path: string, text: string) => void,
- *             rename: (from: string, to: string) => void,
- *             size: (path: string) => number,
- *             writeConsole: (text: string) => void }} LogIO
- *
- * DECLARED, so the docstring above is enforced rather than merely asserted. It says each member returns
- * void deliberately, and until this file entered `tsc` nothing held it to that.
  *
  * @type {LogIO}
  */
@@ -117,7 +117,7 @@ export function createLogWriter({ path, maxBytes = MAX_LOG_BYTES, io = REAL_IO }
     } catch (error) {
       // A worker that cannot rotate its log must still serve. Reported on the console only: the file is the
       // thing that is failing, and see the header for why this must never call the logger.
-      writeToConsole(`could not rotate ${path}: ${/** @type {Error} */ (error).message}\n`);
+      writeToConsole(`could not rotate ${path}: ${(error as Error).message}\n`);
     }
   }
 

@@ -8,7 +8,7 @@
  * reaches several — and it has no runtime symptom, so a guard is the only thing that can see it.
  *
  * READ FROM THE SOURCE, which this repo normally forbids for expectations. The exemption is
- * `activation-gates.test.ts`'s and narrow, for the same reason: `capture-probes.mjs` imports guidepup and
+ * `activation-gates.test.ts`'s and narrow, for the same reason: `capture-probes.ts` imports guidepup and
  * throws at module load where no screen reader exists, so no test can call these functions. The
  * alternative is no guard at all.
  */
@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const SOURCE = readFileSync(resolve(import.meta.dirname, "capture-probes.mjs"), "utf8");
+const SOURCE = readFileSync(resolve(import.meta.dirname, "capture-probes.ts"), "utf8");
 const LINES = SOURCE.split("\n");
 
 /** A CALL, not the declaration. `async function operateControl(` must not count as a call site. */
@@ -31,7 +31,7 @@ test("operateControl has exactly ONE call site, and it is inside the budget", ()
 
   assert.equal(sites.length, 1,
     `operateControl is called from ${sites.length} place(s): `
-    + `${sites.map((s) => `capture-probes.mjs:${s.number}`).join(", ")}. A call outside `
+    + `${sites.map((s) => `capture-probes.ts:${s.number}`).join(", ")}. A call outside `
     + "`activationBudgetFor` activates a control the budget never counted and never refused, so the "
     + "budget becomes advisory with no symptom — #677 part 2.");
 

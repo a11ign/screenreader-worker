@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Recent capture outcomes, so a lost RESPONSE does not destroy a finished capture.
  *
@@ -71,7 +70,7 @@ export function isValidCaptureId(id: unknown): id is string {
 /**
  * The HTTP answer for a recall, as data.
  *
- * Separated from the route so it can be tested at all: `server.mjs` needs guidepup and therefore a screen
+ * Separated from the route so it can be tested at all: `server.ts` needs guidepup and therefore a screen
  * reader — it does NOT bind a port on import, which `IS_MAIN` settled and this sentence outlived — so anything
  * decided inside it is decided where no test can reach — and this endpoint's whole value is in three
  * answers that must not collapse into two.
@@ -86,7 +85,7 @@ export function isValidCaptureId(id: unknown): id is string {
  * never arrived, it finished and was EVICTED (`evictOldestDone`, bounded at `RESULT_HISTORY`), or the
  * worker RESTARTED and lost this whole in-memory `Map`. Re-issuing is still correct in all three -- the
  * worst cost is one redundant capture -- but "never started" overclaims what a bounded, non-persisted
- * store can prove. See `server.mjs`'s route doc for the fuller account of why this is named rather than
+ * store can prove. See `server.ts`'s route doc for the fuller account of why this is named rather than
  * closed with payload-fingerprint duplicate suppression.
  *
  * THE SAME DISCRIMINATED UNION THE STORE HOLDS. This read

@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * Rebuild NVDA's speech channel without restarting NVDA.
  *
@@ -43,21 +42,23 @@ import { createRequire } from "node:module";
 
 export const NVDA_REMOTE_PORT = 6837;
 
+type SpeechChannelEvent = { type: string, [key: string]: unknown };
+
 /**
- * Everything this module reports about the channel. Always carries a `type`; the rest varies by event.
- * Guidepup has no debug mode -- two env vars and no logging -- so this stream is the only view there is
- * of a connection that otherwise fails silently.
- *
- * @typedef {{ type: string, [key: string]: unknown }} SpeechChannelEvent
- *
- * @typedef {{ socket: import("node:net").Socket | null, connects: number, resets: number,
- *             errors: number, closes: number, keepAliveFailed: boolean }} SpeechChannelState
- *
  * The state shape was spelled inline twice and the two had already DRIFTED -- `adoptSocket` declared it
  * without `resets`, which `resetSpeechSocket` increments. Nothing could see that while this file was
  * outside `tsc`; the moment it entered, the two spellings stopped agreeing out loud. One typedef, used
  * everywhere, is the remedy this repo reaches for first: delete a copy.
  */
+type SpeechChannelState = { socket: import("node:net").Socket | null, connects: number, resets: number,
+            errors: number, closes: number, keepAliveFailed: boolean };
+
+/**
+ * Everything this module reports about the channel. Always carries a `type`; the rest varies by event.
+ * Guidepup has no debug mode -- two env vars and no logging -- so this stream is the only view there is
+ * of a connection that otherwise fails silently.
+ *
+ * */
 
 /**
  * How often TCP probes a quiet connection. Speech is bursty and long gaps between captures are normal,
@@ -84,7 +85,7 @@ function adoptSocket(socket: import("node:net").Socket, state: SpeechChannelStat
     // Recorded rather than swallowed: a socket we could not configure still works, but the keepalive
     // half of this module is then not doing anything and that should be visible, not assumed.
     state.keepAliveFailed = true;
-    onEvent({ type: "keepalive-failed", detail: /** @type {Error} */ (error)?.message });
+    onEvent({ type: "keepalive-failed", detail: (error as Error)?.message });
   }
   socket.on("error", () => {
     state.errors += 1;
@@ -144,7 +145,7 @@ export function installSpeechChannelShim({ tls, port = NVDA_REMOTE_PORT, onEvent
 
   const handle = {
     state,
-    reset: (/** @type {string} */ reason: string) => resetSpeechSocket(state, reason, onEvent),
+    reset: (reason: string) => resetSpeechSocket(state, reason, onEvent),
     uninstall() {
       tlsModule.connect = originalConnect;
       delete tlsModule[INSTALLED];

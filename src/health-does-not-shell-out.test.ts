@@ -7,7 +7,7 @@
  * after 5 s of quiet cost 0.53 to 0.76 s on twelve workers and 2.8 to 3.1 s on three, and the worker answered
  * nothing on any route meanwhile.
  *
- * WHICH HALF EACH TEST PROVES. `server.mjs` needs guidepup and therefore a screen reader, so no test here can
+ * WHICH HALF EACH TEST PROVES. `server.ts` needs guidepup and therefore a screen reader, so no test here can
  * serve a real `/health`. The BEHAVIOUR is proved on `createDisplaySampler` (guidepup-free, a stub reader that
  * takes one second standing in for `powershell.exe`); the WIRING -- that `/health`'s path reaches the sampler and
  * not the shell-out -- is read off the source. That the real endpoint now answers in milliseconds on a real guest
@@ -196,6 +196,6 @@ test("neither display read can shell out synchronously", () => {
 
 test("the sampler is started only with the listener, and stopped with the process", () => {
   assert.match(server, /if \(IS_MAIN\) displaySampler\.start\(\)/,
-    "a process that merely imports server.mjs must not run a PowerShell timer");
+    "a process that merely imports server.ts must not run a PowerShell timer");
   assert.match(server, /displaySampler\.stop\(\)/, "SIGINT/SIGTERM must stop the timer");
 });

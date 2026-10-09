@@ -8,9 +8,9 @@
  *
  * THIS FILE READS THE SOURCE BECAUSE OF WHAT IT ASSERTS, NOT BECAUSE IMPORTING IS IMPOSSIBLE — corrected
  * 2026-09-23 (#2121). The paragraph here used to read "Neither probe can be driven without real NVDA —
- * `capture-core.mjs` imports guidepup, which throws at module load with no screen reader present — so
+ * `capture-core.ts` imports guidepup, which throws at module load with no screen reader present — so
  * nothing here can import and call them." That was true when it was written and is now false: **#1772 made
- * the guidepup binding lazy**, `capture-probes.mjs` takes `nvda`/`ensureGuidepup` from `capture-setup.mjs`,
+ * the guidepup binding lazy**, `capture-probes.ts` takes `nvda`/`ensureGuidepup` from `capture-setup.ts`,
  * and the file imports clean on a Linux host with no screen reader. `focus-reveal-walk-depth.test.ts` next
  * door imports it and CALLS `walkToReveal`, which is the demonstration.
  *
@@ -72,7 +72,7 @@ function bodyFrom(declarations: { at: number }[], index: number): string {
 function functionBody(name: string): string {
   const declarations = topLevelDeclarations();
   const index = declarations.findIndex((d) => d.isFunction && d.name === name);
-  assert.ok(index >= 0, `${name} not found in capture-probes.mjs -- this test examines nothing until it is`);
+  assert.ok(index >= 0, `${name} not found in capture-probes.ts -- this test examines nothing until it is`);
   return bodyFrom(declarations, index);
 }
 
@@ -122,7 +122,7 @@ test("both probes record startedFrom and focusReset on their own mark, not just 
  * inverted: the guard reached the copies and not the original.
  *
  * SO THIS PINS THE CLASS RATHER THAN A THIRD INSTANCE. The population is DERIVED — every function in
- * `capture-probes.mjs` that presses Tab — because a hand-typed list of three is how the first two came
+ * `capture-probes.ts` that presses Tab — because a hand-typed list of three is how the first two came
  * to be guarded and the third did not. Five functions press Tab today and only two were named here.
  *
  * EVERY MEMBER IS CLASSIFIED AND THE EXEMPTIONS CARRY THEIR REASON, because a walk that resets is not
@@ -142,7 +142,7 @@ test("both probes record startedFrom and focusReset on their own mark, not just 
  */
 const PRESSES_TAB = /nvda\.press\("Tab"\)|\bio\.press\(\)/;
 
-/** Every function in `capture-probes.mjs` whose own body presses Tab, with that body. */
+/** Every function in `capture-probes.ts` whose own body presses Tab, with that body. */
 function tabWalkers(): { name: string; body: string }[] {
   const declarations = topLevelDeclarations();
   return declarations
@@ -178,7 +178,7 @@ test("#1205: every Tab-walking probe is accounted for -- the population is deriv
   // Guard the guard: a regex that stops matching makes every assertion below vacuous, and the walk
   // would still be "finding functions".
   assert.ok(walkers.length >= 5,
-    `only ${walkers.length} Tab-walking function(s) found in capture-probes.mjs; the scan is broken and `
+    `only ${walkers.length} Tab-walking function(s) found in capture-probes.ts; the scan is broken and `
     + "every check below would pass having examined nothing");
   const unaccounted = walkers
     .map((w) => w.name)

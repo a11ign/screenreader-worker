@@ -27,10 +27,10 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { choosePageTarget } from "./browser-session.ts";
 
-const SOURCE = readFileSync(resolve(import.meta.dirname, "browser-session.mjs"), "utf8");
+const SOURCE = readFileSync(resolve(import.meta.dirname, "browser-session.ts"), "utf8");
 
 const navigateExistingBody = () => {
-  const at = SOURCE.indexOf("export async function navigateExisting(url) {");
+  const at = SOURCE.indexOf("export async function navigateExisting(");
   assert.notEqual(at, -1, "navigateExisting is gone or renamed — this guard's subject, not a pass");
   const from = SOURCE.slice(at);
   return from.slice(0, from.indexOf("\n}\n"));

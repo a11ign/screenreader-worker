@@ -16,7 +16,7 @@
  * **There was no guard, and a comment said there was.** The call site named `observation-parity.test.ts`,
  * which tests the corpus-side and rules-side predicates for arrows and Escape and nothing about these
  * flags. A comment naming a guard that guards something else is worse than no comment: it stops the next
- * reader looking. The function moved into `capture-pure.mjs` so a test can reach it at all — `capture-core`
+ * reader looking. The function moved into `capture-pure.ts` so a test can reach it at all — `capture-core`
  * imports guidepup, which throws at module load where no screen reader exists.
  */
 import { test } from "node:test";
@@ -89,7 +89,7 @@ test("a configured form that activated NOTHING is not the same as one that was n
 });
 
 test("the focus-dependent probes still behave exactly as they did", () => {
-  // The move to `capture-pure.mjs` must change nothing else. `probeDialog` without `probeFocus` is the
+  // The move to `capture-pure.ts` must change nothing else. `probeDialog` without `probeFocus` is the
   // case whose `why` was added because a bare `false` sent a reader to the wrong question.
   const withoutFocus = ask({ probeDialog: true, probeFocus: false });
   assert.equal(withoutFocus.dialogEscape.asked, false);

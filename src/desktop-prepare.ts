@@ -1,18 +1,17 @@
-// @ts-check
 /**
  * Clearing the desktop before a capture — no guidepup, no NVDA, no browser.
  *
  * ## Why this file exists
  *
  * `@guidepup/guidepup` throws at import time where no screen reader exists, so merely importing
- * `server.mjs` — which imports `capture-core.mjs` for the real capture path — fails on Linux CI before a
+ * `server.ts` — which imports `capture-core.ts` for the real capture path — fails on Linux CI before a
  * single assertion runs. Invisible on macOS, because VoiceOver satisfies guidepup's availability check;
- * `capture-pure.mjs`'s own header records the same defect costing six test files once already. This is
+ * `capture-pure.ts`'s own header records the same defect costing six test files once already. This is
  * that fix applied here: `prepareDesktop` and the two desktop caches are pure enough to live away from
  * guidepup entirely, so a test can import them directly and `tests-run-without-a-screen-reader.test.ts`
  * (which walks the whole import graph) has nothing to catch.
  *
- * `server.mjs` imports these and uses them exactly as before; every existing caller is unchanged.
+ * `server.ts` imports these and uses them exactly as before; every existing caller is unchanged.
  */
 import { listBlockingDialogs, dismissBlockingDialogs, probeWindowOwner, foregroundBlocker,
   dismissForegroundBlocker } from "./desktop-dialogs.ts";
@@ -29,7 +28,6 @@ import { listBlockingDialogs, dismissBlockingDialogs, probeWindowOwner, foregrou
 // `dialogs: null` means NOT SAMPLED, and every reader below depends on that being distinct from an
 // empty list -- `noBlockingDialog` answers null rather than true when nobody looked. Inferred from this
 // literal the field is `null` forever, so the sample that fills it is the type error.
-/** @type {{ at: number, dialogs: null | { handle: string, title: string, message: string, owner: string }[] }} */
 export let dialogCache: { at: number; dialogs: null | { handle: string; title: string; message: string; owner: string; }[]; } = { at: 0, dialogs: null };
 
 /**
@@ -83,7 +81,7 @@ export async function sampleDesktopDialogs(deps: {
 /**
  * Has `prepareDesktop` been ABANDONED by the time an await returned — and if so, say so and stop.
  *
- * `withTimeoutMs` (`server.mjs`) rejects the RACE at `DESKTOP_PREPARE_TIMEOUT_MS`, but the loser keeps
+ * `withTimeoutMs` (`server.ts`) rejects the RACE at `DESKTOP_PREPARE_TIMEOUT_MS`, but the loser keeps
  * running: nothing in JS cancels an `await` chain because its caller stopped waiting on it. So a
  * `prepareDesktop` call that lost the race is still out there, mid-PowerShell-call, and when it eventually
  * resolves it was ABOUT to write `dialogCache`/`foregroundCache` — module globals `readiness()` reads for
@@ -194,7 +192,7 @@ export async function prepareDesktop(marks: Record<string, unknown>[], signal?: 
  * again. #1815: three real workers sat this way for hours to days, each cleared only by a console reboot.
  *
  * THE FIX IS NOT `readiness()` CALLING `dismissForegroundBlocker` ITSELF (#1815's ruling, refusing that
- * shape). `desktop-dialogs.mjs`'s own header on `probeWindowOwner` says why: wiring a shell-out into the
+ * shape). `desktop-dialogs.ts`'s own header on `probeWindowOwner` says why: wiring a shell-out into the
  * polled `/health` path once already stopped it answering, because `Add-Type` compiles C# on first use.
  * `/health` is polled continuously -- `worker-ctl.sh`, the pool lease, `doctor` -- not once at boot, so
  * that defect would reproduce on every tick rather than once.
@@ -205,7 +203,7 @@ export async function prepareDesktop(marks: Record<string, unknown>[], signal?: 
  * below is a plain cache read on every tick and costs nothing; only when `foregroundCache` already names
  * a blocker does it call PowerShell at all, and even then no more often than `FOREGROUND_CLEAR_MIN_INTERVAL_MS`
  * -- a worker genuinely held by something `dismissForeground` cannot clear must not spin PowerShell
- * forever, the same reasoning `server.mjs`'s own comment gives for why the ORIGINAL 30 s sampling timer
+ * forever, the same reasoning `server.ts`'s own comment gives for why the ORIGINAL 30 s sampling timer
  * loaded a starved 3 GB guest and made the condition it watched for more likely.
  */
 
@@ -236,7 +234,7 @@ export async function foregroundWatchTick(lastAttemptAt: number | null, now: num
   const dismissForeground = deps.dismissForegroundBlocker ?? dismissForegroundBlocker;
   const log = deps.log ?? console.log;
   log(`  background watch: ${holding.owner} (${holding.title}) still holds the foreground -- clearing it`);
-  const handle = /** @type {{handle:string}} */ (foregroundCache.foreground).handle;
+  const handle = (foregroundCache.foreground as {handle:string}).handle;
   const cleared = await dismissForeground(handle,
     (reason) => log(`could not clear the foreground holder: ${reason}`));
   log(cleared ? "  background watch cleared the foreground holder"
@@ -248,7 +246,7 @@ export async function foregroundWatchTick(lastAttemptAt: number | null, now: num
  * Start the background watch as an off-path timer -- `sampleDesktopDialogs`'s own shape, moved from
  * ONCE at boot to a SLOW REPEATING cadence, and gated the identical way `prepareDesktop` already gates
  * its own clear: a shell-out only when a blocker is already known. `unref`'d so a process holding nothing
- * else can still exit; `server.mjs` also stops it explicitly on `SIGINT`/`SIGTERM`.
+ * else can still exit; `server.ts` also stops it explicitly on `SIGINT`/`SIGTERM`.
  *
  * @param {{ dismissForegroundBlocker?: typeof dismissForegroundBlocker, log?: (message: string) => void,
  *           tickMs?: number, now?: () => number }} [deps]
@@ -260,7 +258,7 @@ export function startForegroundWatch(deps: {
 } = {}): NodeJS.Timeout {
   const tickMs = deps.tickMs ?? FOREGROUND_WATCH_TICK_MS;
   const now = deps.now ?? Date.now;
-  let lastAttemptAt = /** @type {number | null} */ (null);
+  let lastAttemptAt = (null as number | null);
   const timer = setInterval(() => {
     void foregroundWatchTick(lastAttemptAt, now(), deps).then((next) => { lastAttemptAt = next; });
   }, tickMs);

@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * A modal dialog on the guest desktop blocks input, and therefore blocks every capture.
  *
@@ -31,7 +30,7 @@
  * wedging a guest.
  *
  * `dismissForegroundBlocker` (below) is the one exception, and it is a narrower one than it looks: #1815
- * added a second caller, `desktop-prepare.mjs`'s background watch, which is off-path in exactly the same
+ * added a second caller, `desktop-prepare.ts`'s background watch, which is off-path in exactly the same
  * sense the dialog SAMPLE is -- a timer, never `/health`'s own request handling -- and gates the shell-out
  * on the identical condition `prepareDesktop` already applies: only when a blocker is already cached. It
  * exists because a foreground holder `prepareDesktop` could not clear otherwise sits until the NEXT
@@ -309,7 +308,7 @@ export async function dismissBlockingDialogs(onError?: (reason: string) => void)
 const SW_MINIMIZE = 6;
 
 // THE CHECK IS THE FOREGROUND HANDLE AFTER THE CALL, NOT `ShowWindow`'S OWN RETURN VALUE -- the identical
-// trap `window-focus.mjs`'s `ACTIVATE_SCRIPT` already documents for `SetForegroundWindow`. `ShowWindow`
+// trap `window-focus.ts`'s `ACTIVATE_SCRIPT` already documents for `SetForegroundWindow`. `ShowWindow`
 // returns whether the window was PREVIOUSLY VISIBLE, not whether this call changed anything: a window
 // already minimised, or one Windows refused to touch, reports exactly the same nonzero/zero either way.
 // Trusting it here would report `cleared: true` for a foreground holder that never moved -- the false

@@ -1,4 +1,3 @@
-// @ts-check
 // Which capture faults can the worker clear by itself, rather than failing the caller's case?
 //
 // Both faults below are the same underlying condition: a guest that has not finished settling, or an
@@ -24,7 +23,7 @@
 // it, which is the right place for a fault that expensive.
 import { FAULT, faultCode } from "./capture-faults.ts";
 
-/** Faults a fresh screen reader fixes. Keyed on FAULT codes, never on message text — see capture-faults.mjs. */
+/** Faults a fresh screen reader fixes. Keyed on FAULT codes, never on message text — see capture-faults.ts. */
 const RECOVERABLE = new Set([FAULT.SCREEN_READER_MUTE, FAULT.SCREEN_READER_START_FAILED]);
 
 /**

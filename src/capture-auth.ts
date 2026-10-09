@@ -1,10 +1,9 @@
-// @ts-check
 /**
  * The seam between a capture and its login (ADR 0038): sign in over the browser protocol BEFORE the transcript
  * begins, and destroy the session AFTER the capture, whatever the capture did.
  *
- * `auth-flow.mjs` is the interpreter and knows nothing of the capture; this file is the only place the two meet,
- * so `capture-core.mjs` gains two calls and no logic. The window was launched at the requested page exactly as an
+ * `auth-flow.ts` is the interpreter and knows nothing of the capture; this file is the only place the two meet,
+ * so `capture-core.ts` gains two calls and no logic. The window was launched at the requested page exactly as an
  * unauthenticated capture launches it (so the launch is the path this worker has always taken); the login then
  * runs in that window, and the requested page is loaded again once signed in, through `navigateExisting` — the same
  * navigation the browser-reuse path makes, which records where redirects landed for the landed-on-the-page check.

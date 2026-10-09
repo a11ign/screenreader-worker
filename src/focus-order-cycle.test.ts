@@ -8,7 +8,7 @@
  * `cantTell` on almost every page as a result. No corpus page has more than 22 focusable elements, so
  * nothing in the corpus could have shown it.
  *
- * `capture-core.mjs` needs real NVDA on Windows and has no local test. This function is pure, which is
+ * `capture-core.ts` needs real NVDA on Windows and has no local test. This function is pure, which is
  * exactly the part that can be tested here — and the ambiguity it resolves is one this project has
  * already paid for once, in a sweep that reported 5 graphics of 66 because four avatars announced
  * identically.

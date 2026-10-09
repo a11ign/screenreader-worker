@@ -1,6 +1,5 @@
-// @ts-check
-// capture-core.mjs — drive NVDA through a page and return what it announced.
-// Shared by the standalone CLI (capture.mjs) and the HTTP worker (server.mjs).
+// capture-core.ts — drive NVDA through a page and return what it announced.
+// Shared by the standalone CLI (capture.ts) and the HTTP worker (server.ts).
 // MUST run in an interactive desktop session.
 //
 // Every phase records a structured diagnostic (returned as `diagnostics`)
@@ -17,17 +16,17 @@
 // captureWithNvda reads as a top-down narrative; each phase below it is one
 // level of abstraction down (the "stepdown rule").
 //
-// SPLIT 2026-09-05: this file used to hold the whole pipeline. `capture-setup.mjs` now owns
+// SPLIT 2026-09-05: this file used to hold the whole pipeline. `capture-setup.ts` now owns
 // bringing the browser and NVDA up, keeping them healthy, reading the page, and tearing them
-// down; `capture-probes.mjs` owns the structural-navigation sweep and the ~30 probes that
+// down; `capture-probes.ts` owns the structural-navigation sweep and the ~30 probes that
 // observe interaction. What is left here is the narrative itself -- `captureWithNvda` and
 // `runCapturePhases` sequence phases from both of those files, which is why this file depends
 // on each of them and neither depends back: that is what keeps the import graph a DAG.
 import { browserFor } from "./browsers.ts";
 // Moved to its own dependency-free file so portable/host-side code can IMPORT this number instead of
-// regex-scraping this file's text for it — architecture-audit.md §5, item 3. See protocol-version.mjs.
+// regex-scraping this file's text for it — architecture-audit.md §5, item 3. See protocol-version.ts.
 export { CAPTURE_PROTOCOL_VERSION } from "./protocol-version.ts";
-// The pure half of this module. Moved to `capture-pure.mjs` so tests can reach it without importing
+// The pure half of this module. Moved to `capture-pure.ts` so tests can reach it without importing
 // guidepup, which THROWS at import time where no screen reader exists — that is why CI was red on six
 // files. Imported and re-exported here, so every existing caller of `capture-core` is unchanged and
 // there is still exactly one definition of each.
@@ -62,31 +61,38 @@ import {
 import { navigateByStructureThenAudit } from "./capture-probes.ts";
 import { beginAuthentication } from "./capture-auth.ts";
 
+// JSON from the browser or the page (a CDP reply, a `page.evaluate` result, a request body): its shape is the other end's, and
+// modelling it is a job of its own. Named once here so the boundary is greppable and `no-explicit-any` still bites everywhere else.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Untyped = any;
+
 /**
- * @typedef {import("./capture-pure.ts").CaptureDiagnostics} Diag
- *   The mark log, threaded through almost every function here. Aliased rather than re-described: this
- *   file passes it to forty of them, and forty inline shapes is forty chances to disagree.
- *
- * @typedef {{ asked: boolean, complete?: boolean, why?: string, activated?: number,
- *             stop?: { prev: string, next: string } }} Observation
- *   Whether this capture ASKED about a channel, and what it can support if it did — capture-protocol 9.
- *
- *   Every channel except `media` is a bare array, and a bare array cannot say why it is empty. `media` has
- *   been alone in getting this right for the whole project, with a comment saying so. Measured over 6,467
- *   corpus captures: `formChanges` empty on 4,830 with **3,006 never asked**, `postSubmitFields` 55%, and
- *   `tableCells` empty on 6,095 with NOT ONE where the tool could say the page has no table. Ten of the 28
- *   model features read only such channels, so a `0` they treat as a fact about the page is usually a fact
- *   about the request.
- *
- *   A RELOCATION rather than new instrumentation: the probe flags decide what runs and `collectByType`
- *   already records why every sweep stopped. Both went to `diagnostics`, a FORBIDDEN_INPUT_KEY — the
- *   capture's own record of its method, filed as debugging output. This makes it evidence.
- *
- *   ADDITIVE: every existing channel keeps its exact type, so the 28 files that read them are untouched and
- *   an older consumer ignores this entirely — the same shape as `fault` and `captureId`.
- *
- *   Named once because six sites write one — the eight-call-site lesson the browser preset records.
+ * The mark log, threaded through almost every function here. Aliased rather than re-described: this
+ * file passes it to forty of them, and forty inline shapes is forty chances to disagree.
  */
+type Diag = import("./capture-pure.ts").CaptureDiagnostics;
+
+/**
+ * Whether this capture ASKED about a channel, and what it can support if it did — capture-protocol 9.
+ *
+ * Every channel except `media` is a bare array, and a bare array cannot say why it is empty. `media` has
+ * been alone in getting this right for the whole project, with a comment saying so. Measured over 6,467
+ * corpus captures: `formChanges` empty on 4,830 with **3,006 never asked**, `postSubmitFields` 55%, and
+ * `tableCells` empty on 6,095 with NOT ONE where the tool could say the page has no table. Ten of the 28
+ * model features read only such channels, so a `0` they treat as a fact about the page is usually a fact
+ * about the request.
+ *
+ * A RELOCATION rather than new instrumentation: the probe flags decide what runs and `collectByType`
+ * already records why every sweep stopped. Both went to `diagnostics`, a FORBIDDEN_INPUT_KEY — the
+ * capture's own record of its method, filed as debugging output. This makes it evidence.
+ *
+ * ADDITIVE: every existing channel keeps its exact type, so the 28 files that read them are untouched and
+ * an older consumer ignores this entirely — the same shape as `fault` and `captureId`.
+ *
+ * Named once because six sites write one — the eight-call-site lesson the browser preset records.
+ */
+type Observation = { asked: boolean, complete?: boolean, why?: string, activated?: number,
+            stop?: { prev: string, next: string } };
 
 // Re-exported for callers that had these from `capture-core` before the split.
 export {
@@ -105,7 +111,7 @@ export {
 };
 
 // Re-exported for callers that had these from `capture-core` before the split into
-// `capture-setup.mjs` -- same reason and same shape as the block above.
+// `capture-setup.ts` -- same reason and same shape as the block above.
 export {
   screenReaderReady,
   browserAvailable,
@@ -121,18 +127,22 @@ const DEFAULT_BROWSER_WAIT_MS = 12_000; // UPPER BOUND on waiting for Edge, not 
 // remaining wait in this file either checks a condition or is the interval between two such checks.
 const NVDA_READY_BUDGET_MS = 3_000;   // how long a cold NVDA gets to answer at all
 
+type CapturedStructure = { headings: string[], landmarks: string[], formFields: string[], graphics: string[], links: string[], lists: string[], tableCells: string[], frames: string[] };
+
+type AnnouncedChange = { control: string, after: string, afterUnresolved?: boolean };
+
+type CapturedInteraction = { controls: string[], stateChanges: AnnouncedChange[], formChanges: AnnouncedChange[], postSubmitFields: string[], focusOrder: string[], routeChange?: unknown, navigatedOnSubmit?: unknown, postSubmitNames?: string[], leftSite?: unknown };
+
 /**
- * @typedef {{ headings: string[], landmarks: string[], formFields: string[], graphics: string[], links: string[], lists: string[], tableCells: string[], frames: string[] }} CapturedStructure
- * @typedef {{ control: string, after: string, afterUnresolved?: boolean }} AnnouncedChange
- * @typedef {{ controls: string[], stateChanges: AnnouncedChange[], formChanges: AnnouncedChange[], postSubmitFields: string[], focusOrder: string[], routeChange?: unknown, navigatedOnSubmit?: unknown, postSubmitNames?: string[], leftSite?: unknown }} CapturedInteraction
- * @typedef {{ url: string, screenReader: string, capturedAt: string, transcript: string[], structure: CapturedStructure, interaction: CapturedInteraction, media?: Record<string, unknown>[] | null, formInputs?: Record<string, unknown>[] | null, observed?: Record<string, Observation>, diagnostics: object[] }} Capture
- *
  * THE EVIDENCE SHAPE, named once. It was written out inline in this `@returns` and then built by three
  * separate object literals whose inferred types disagreed with it and with each other -- so the one
  * description that was accurate was the one nothing checked. The three optional fields are optional on
  * purpose and each has a recorded reason: absent and "we looked and found nothing" must stay
  * distinguishable, because the second IS the finding for 2.4.2, 3.3.1 and 1.4.2 respectively.
- *
+ */
+type Capture = { url: string, screenReader: string, capturedAt: string, transcript: string[], structure: CapturedStructure, interaction: CapturedInteraction, media?: Record<string, unknown>[] | null, formInputs?: Record<string, unknown>[] | null, observed?: Record<string, Observation>, diagnostics: object[] };
+
+/**
  * @returns {Promise<Capture>}
  *
  * @param {string} url
@@ -151,7 +161,7 @@ const NVDA_READY_BUDGET_MS = 3_000;   // how long a cold NVDA gets to answer at 
  * REQUEST (`{"url": "...", "browser": "chrome"}`), and typechecking is what noticed. Deriving a contract
  * from how it is READ finds the fields that are read.
  *
- * DERIVED from every `opts.` this file reads, not from memory. `captureOptions` in `server.mjs` reads
+ * DERIVED from every `opts.` this file reads, not from memory. `captureOptions` in `server.ts` reads
  * KNOWN FIELDS ONLY -- which is what lets an older worker ignore a `captureId` it has never heard of --
  * so this list and that one are the same contract stated in two places, and the wire is the thing that
  * has to keep working across a deploy.
@@ -165,7 +175,7 @@ export async function captureWithNvda(url: string, opts: {
     browserWaitMs?: number; diagnosticsSink?: object[];
     browser?: string;
 } = {}): Promise<Capture> {
-  const diag = createDiagnostics(/** @type {{ event: string }[] | undefined} */ (opts.diagnosticsSink));
+  const diag = createDiagnostics((opts.diagnosticsSink as { event: string }[] | undefined));
   const reuseBrowser = reuseBrowserFor(opts);
   // Which browser this capture drives. Resolved from an allow-list, so an unknown name fails the request
   // here rather than reaching a shell; and recorded on the result, because the browser is evidence — the
@@ -183,7 +193,7 @@ export async function captureWithNvda(url: string, opts: {
     await assertPageWasServed(url, diag);
     await waitForPageToSettle(diag);
     // #1513: the CSS viewport this capture is read at, once the page has settled and before any probe can move or
-    // resize anything. `server.mjs` merges it into this capture's environment (`viewportFromMarks`).
+    // resize anything. `server.ts` merges it into this capture's environment (`viewportFromMarks`).
     viewport = await viewportMeasure();
     diag.mark("viewport", viewport);
   } catch (error) {
@@ -201,7 +211,7 @@ export async function captureWithNvda(url: string, opts: {
     // title verifier will reject the result, but cleanup must make the worker recoverable
     // before that verifier gets a chance to retry.
     const documentReady = (result.diagnostics || []).some(
-      (/** @type {Record<string, unknown>} */ event: Record<string, unknown>) => event.event === "documentReady" && event.ok === true,
+      (event: Record<string, unknown>) => event.event === "documentReady" && event.ok === true,
     );
     succeeded = documentReady && Array.isArray(result.transcript) && result.transcript.length > 0;
     return result;
@@ -262,7 +272,7 @@ export function loginMarkOverride({ diag, env = process.env }: { diag: Diag; env
  * @param {{ opts: any, url: string, diag: Diag, browser: any, reuseBrowser: boolean }} ctx
  * @returns {Promise<{ end: () => Promise<void> } | null>}
  */
-async function signInIfAsked({ opts, url, diag, browser, reuseBrowser }: { opts: any; url: string; diag: Diag; browser: any; reuseBrowser: boolean; }): Promise<{ end: () => Promise<void>; } | null> {
+async function signInIfAsked({ opts, url, diag, browser, reuseBrowser }: { opts: Untyped; url: string; diag: Diag; browser: Untyped; reuseBrowser: boolean; }): Promise<{ end: () => Promise<void>; } | null> {
   if (!opts.auth) return null;
   try {
     return await beginAuthentication({ plan: opts.auth, url, diag, ...loginMarkOverride({ diag }) });
@@ -278,7 +288,7 @@ async function signInIfAsked({ opts, url, diag, browser, reuseBrowser }: { opts:
  * The session's end for a capture that failed after signing in but before its own try/finally: purge, then close.
  * @param {{ authentication: { end: () => Promise<void> }, diag: Diag, browser: any, reuseBrowser: boolean }} ctx
  */
-async function abandonAuthenticated({ authentication, diag, browser, reuseBrowser }: { authentication: { end: () => Promise<void>; }; diag: Diag; browser: any; reuseBrowser: boolean; }) {
+async function abandonAuthenticated({ authentication, diag, browser, reuseBrowser }: { authentication: { end: () => Promise<void>; }; diag: Diag; browser: Untyped; reuseBrowser: boolean; }) {
   await authentication.end();
   endCaptureUrls();
   await stopAndCleanup(diag, browser, { keepScreenReader: false, reuseBrowser })
@@ -299,8 +309,8 @@ async function bringUpCaptureEnvironment({ browserWaitMs, reuse, diag }: { brows
   await focusBrowserWindow(browserWaitMs, diag);
   // Own the pointer before anything sends a keystroke. It is a capture INPUT, not a bystander: it holds
   // hover state over whatever it rests on, and guidepup prefixes every captured action with Ctrl, which
-  // Edge turns into a magnifier overlay when an image is underneath. See pointer.mjs.
-  await parkPointer(/** @type {any} */ (diag));
+  // Edge turns into a magnifier overlay when an image is underneath. See pointer.ts.
+  await parkPointer((diag as Untyped));
   const coldStart = await startScreenReader(diag, { reuse: !!reuse });
   // Wait for NVDA to answer, rather than for a fixed three seconds.
   //
@@ -333,29 +343,29 @@ async function bringUpCaptureEnvironment({ browserWaitMs, reuse, diag }: { brows
  * function's own first `anchorToTop()` call, two lines after this one runs, is a real paired event if the
  * page autofocused something on load.
  *
- * Gated on `shouldInstallFocusEventListenerEarly` (capture-pure.mjs), not called unconditionally: without
+ * Gated on `shouldInstallFocusEventListenerEarly` (capture-pure.ts), not called unconditionally: without
  * `probeFocus` nothing downstream ever walks the tab order or reads this log, so installing would be a CDP
  * round trip and a page-level listener paid by every capture for evidence nothing will consume. Idempotent
  * either way -- `probeFocusOrderWithEventLog` still installs again immediately before its own walk, and
  * the page-side script's `already: true` branch makes the second call a no-op.
  *
- * INSTALLING THIS EARLY IS ALSO WHAT PUT `resetFocusToDocumentStart` (`browser-session.mjs`) AT RISK.
+ * INSTALLING THIS EARLY IS ALSO WHAT PUT `resetFocusToDocumentStart` (`browser-session.ts`) AT RISK.
  * `probeFocusReveal` (`§43`) blurs whatever an earlier probe left focused, before this listener existed
  * that blur's `focusout` had no watcher and could not be misread; now it does, and an unbracketed blur
  * would be F55's exact signature against a page that did nothing wrong. See that function's own comment
- * for the bracket that closes it — this file, `rules.ts`'s `focusLossEvidence` and `browser-session.mjs`
+ * for the bracket that closes it — this file, `rules.ts`'s `focusLossEvidence` and `browser-session.ts`
  * are the three points of one interaction, and none of the three names the other two on its own.
  *
  * @param {Record<string, any>} opts @param {Diag} diag
  */
-async function installFocusEventListenerBeforeFirstFocus(opts: Record<string, any>, diag: Diag) {
+async function installFocusEventListenerBeforeFirstFocus(opts: Record<string, Untyped>, diag: Diag) {
   if (!shouldInstallFocusEventListenerEarly(opts)) return;
   const install = await installFocusEventLog();
   diag.mark("focusEventListenerEarlyInstall", install);
 }
 
 /** @param {string} url @param {Record<string, any>} opts @param {Diag} diag */
-async function runCapturePhases(url: string, opts: Record<string, any>, diag: Diag) {
+async function runCapturePhases(url: string, opts: Record<string, Untyped>, diag: Diag) {
   const steps = Number(opts.steps || DEFAULT_STEPS);
   const browserWaitMs = Number(opts.browserWaitMs || DEFAULT_BROWSER_WAIT_MS);
   const navStrategy = opts.nav === "object" ? "object" : "line";

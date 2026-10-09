@@ -555,7 +555,7 @@ test("purgeSession clears the ORIGIN of the requested page", async () => {
   assert.deepEqual(seen, ["https://app.example.test:8443"]);
 });
 
-// ---- the decisions server.mjs would otherwise make inline (it needs a screen reader to import, so it has no test) ----
+// ---- the decisions server.ts would otherwise make inline (it needs a screen reader to import, so it has no test) ----
 
 test("an authenticated request FORCES reuseBrowser off, whatever the request or the fleet default says", () => {
   const parsed = { url: URL_UNDER_TEST, auth: { login: LOGIN }, reuseBrowser: true };
