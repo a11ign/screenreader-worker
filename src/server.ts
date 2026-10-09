@@ -619,6 +619,39 @@ async function bootConstantAsync(script: string) {
 }
 
 /**
+ * The registry reading behind `windowsBuild` (#4433): `CurrentBuild` and `UBR` under `CurrentVersion`.
+ * `windowsVersion` (`Win32_OperatingSystem.Version`, `10.0.<build>`) does not move when a monthly cumulative
+ * update lands and the revision, `UBR`, does -- so two boxes one update apart read as the SAME
+ * `windowsVersion` and the fleet read as consistent.
+ */
+const WINDOWS_BUILD_SCRIPT =
+  "$k = Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion'; \"$($k.CurrentBuild).$($k.UBR)\"";
+
+/**
+ * `"<build>.<ubr>"` or `"unknown"`, never a guess. A key without a `UBR` value makes the script print
+ * `"26100."`, and that must not be reported as a build: `fleetConsistency` compares strings, so a half
+ * reading would read as DRIFT against every box that answered properly.
+ */
+function windowsBuildFrom(raw: string): string {
+  const reading = raw.trim();
+  return /^\d+\.\d+$/.test(reading) ? reading : "unknown";
+}
+
+/**
+ * `windowsBuild` is a SEPARATE field from `windowsVersion` on purpose: `windowsVersion` is half of the
+ * capture cache's `os` key, and appending the revision to it would invalidate every cached capture. This
+ * one is REPORTED, never keyed (`fleet-consistency`'s `REPORTED_ONLY`), and is read beside `windowsVersion`
+ * in the same sample, so it is also off `/health`'s request path. Memoised like `windowsVersion`, and
+ * only on a real answer: a cumulative update takes effect at a reboot, which restarts this process.
+ */
+let windowsBuild = "unknown";
+async function refreshWindowsBuild() {
+  if (bootConstants.has(WINDOWS_BUILD_SCRIPT)) return;
+  windowsBuild = windowsBuildFrom(await sampledValue(WINDOWS_BUILD_SCRIPT).catch(() => "unknown"));
+  if (windowsBuild !== "unknown") bootConstants.set(WINDOWS_BUILD_SCRIPT, windowsBuild);
+}
+
+/**
  * `windowsVersion`, `screenReaderVersion` and `browserVersion`: the #2673 stall again, for the other three
  * PowerShell reads (#2684). `runtimeEnvironment`'s 5 s rebuild called `bootConstant`/`fileProductVersion`
  * straight from `/health`'s request path, and a read that had not yet succeeded -- or a binary that had
@@ -628,7 +661,11 @@ async function bootConstantAsync(script: string) {
  * are all this process's own state.
  */
 const versionSampler = createVersionSampler({
-  readWindowsVersion: () => bootConstantAsync(WINDOWS_VERSION_SCRIPT),
+  readWindowsVersion: async () => {
+    // `windowsBuild` rides the same timer tick (#4433); `refreshWindowsBuild` never rejects.
+    const [version] = await Promise.all([bootConstantAsync(WINDOWS_VERSION_SCRIPT), refreshWindowsBuild()]);
+    return version;
+  },
   readScreenReaderVersion: () => {
     const { nvdaPath } = discoverExecutables();
     return nvdaPath ? fileProductVersion(nvdaPath, { log }) : Promise.resolve("unknown");
@@ -650,7 +687,7 @@ function currentEnvironment() {
   }
   // Merged on EVERY call and never cached with the rest: the age of a sample is a property of the moment it
   // is read, so a value frozen into the 5 s cache would overstate how fresh the sample is by up to 5 s.
-  return { ...environmentCache, ...displaySampler.current(), ...versionSampler.current() };
+  return { ...environmentCache, ...displaySampler.current(), ...versionSampler.current(), windowsBuild };
 }
 
 /**
