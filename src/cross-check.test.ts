@@ -9,7 +9,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 
-import { crossCheckStructure, elementsListRowName } from "./capture-pure.mjs";
+import { crossCheckStructure, elementsListRowName } from "./capture-pure.ts";
 
 test("a row's name is read out of NVDA's tree-view chrome", () => {
   assert.equal(elementsListRowName("main, tree view item, focused, selected, expanded, 1 of 1, level 0"), "main");
@@ -145,7 +145,7 @@ test("distinct covering every compared type is reported as distinct-names", () =
 
 // --- #737: `distinct` counts an UNNAMED element individually (#699, correct -- an unnamed graphic has no
 // name to collapse toward another one under), which makes it an ELEMENT count for any type carrying
-// unnamed members, not the "distinct NAMES" `oracleDistinctNames` claims to be. `capture-probes.mjs` now
+// unnamed members, not the "distinct NAMES" `oracleDistinctNames` claims to be. `capture-probes.ts` now
 // passes `${type}Unnamed` alongside `distinct` for exactly the one type that has it (`graphic`), and
 // `authoritativeCount` subtracts it -- the identical correction `conformance.ts`'s `reachableCountOf`
 // already applies to the coverage denominator, done here for the cross-check's own reported number. ---
@@ -184,7 +184,7 @@ test("#737: the subtraction never goes negative -- a nonsense count is clamped, 
 });
 
 test("#737: THE CALL SITE'S OWN CONTRIBUTION -- without `graphicUnnamed` in `elementsList` (the exact "
-  + "shape `capture-probes.mjs` produced before this fix), the cross-check has no way to tell an unnamed "
+  + "shape `capture-probes.ts` produced before this fix), the cross-check has no way to tell an unnamed "
   + "element from a named one, and reports the inflated element count as though it were 61 distinct "
   + "names. The function-level fix alone cannot help a caller that never supplies the count to subtract "
   + "-- both halves of #737 are load-bearing", () => {

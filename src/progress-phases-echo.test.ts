@@ -5,18 +5,18 @@
  * real capture's `structureCensus` mark (fired before the sweep can be trapped by anything) has always
  * carried the full census in memory. `respondWithProgress` threw it away at the very last step.
  *
- * The first test below used to assert that by matching `capture-core.mjs`'s SOURCE, and #854 broke it by
- * moving `createDiagnostics` to `capture-pure.mjs` -- correctly, and the regex could not tell a move from
- * a deletion. It drives the real recorder now: `capture-pure.mjs` imports no guidepup, so the property
+ * The first test below used to assert that by matching `capture-core.ts`'s SOURCE, and #854 broke it by
+ * moving `createDiagnostics` to `capture-pure.ts` -- correctly, and the regex could not tell a move from
+ * a deletion. It drives the real recorder now: `capture-pure.ts` imports no guidepup, so the property
  * this fix depends on can be OBSERVED rather than pattern-matched, which is what it should always have
- * been. The `respondWithProgress` half below still reads source, because `server.mjs` cannot be imported.
+ * been. The `respondWithProgress` half below still reads source, because `server.ts` cannot be imported.
  *
  * This is the specific, offline-buildable first half of #426: the route now echoes what was OBSERVED,
  * never a verdict computed from it -- deciding what a heading count MEANS (an early "contained"
  * heuristic) is #426's own separate, fleet-validated next step, and belongs where it can be argued with
  * rather than baked into this endpoint's wire format.
  *
- * `server.mjs` needs guidepup and therefore a screen reader, so -- same reasoning `in-flight-clears.test.ts`
+ * `server.ts` needs guidepup and therefore a screen reader, so -- same reasoning `in-flight-clears.test.ts`
  * already gives for the identical constraint -- this asserts the property against the SOURCE rather than
  * by running a capture.
  */
@@ -25,9 +25,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { createDiagnostics } from "./capture-pure.mjs";
+import { createDiagnostics } from "./capture-pure.ts";
 
-const server = readFileSync(fileURLToPath(new URL("./server.mjs", import.meta.url)), "utf8");
+const server = readFileSync(fileURLToPath(new URL("./server.ts", import.meta.url)), "utf8");
 
 /** `respondWithProgress`'s own body, extracted the same way `in-flight-clears.test.ts` reads `runCapture`. */
 function respondWithProgressBody(): string {

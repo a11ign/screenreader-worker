@@ -15,15 +15,15 @@
  * Half of this file READS THE SOURCE — the `activation-gates.test.ts` exemption, because this package
  * imports guidepup and throws at module load where no screen reader exists, so nothing can call
  * `censusBeforeNavigating`. The other half does not need to: `createDiagnostics` now lives in
- * `capture-pure.mjs` and is driven directly, which is the point of moving it.
+ * `capture-pure.ts` and is driven directly, which is the point of moving it.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createDiagnostics } from "./capture-pure.mjs";
+import { createDiagnostics } from "./capture-pure.ts";
 
-const PROBES = readFileSync(resolve(import.meta.dirname, "capture-probes.mjs"), "utf8");
+const PROBES = readFileSync(resolve(import.meta.dirname, "capture-probes.ts"), "utf8");
 
 /** The body of a named function, to the first line that closes it at column 0. */
 const bodyOf = (source: string, declaration: string) => {
@@ -92,11 +92,11 @@ test("the moment is NESTED, because the census counts are read off a denylist", 
     "a flat numeric field on a census mark is read as an element count");
 });
 
-test("there is ONE diagnostics recorder, and `capture-setup.mjs` no longer keeps a copy", () => {
+test("there is ONE diagnostics recorder, and `capture-setup.ts` no longer keeps a copy", () => {
   // It was duplicated deliberately — "a pure, dependency-free 5-line function" — to avoid an import edge
-  // that does not exist: both files already import `capture-pure.mjs`. Adding `sinceStart` to one copy
+  // that does not exist: both files already import `capture-pure.ts`. Adding `sinceStart` to one copy
   // and not the other would have been a sixth instance of the shape that cost five incidents in a day.
-  for (const file of ["capture-core.mjs", "capture-setup.mjs"]) {
+  for (const file of ["capture-core.ts", "capture-setup.ts"]) {
     const source = readFileSync(resolve(import.meta.dirname, file), "utf8");
     assert.doesNotMatch(source, /function createDiagnostics\(/,
       `${file} must import the recorder, not define a second one`);
@@ -107,8 +107,8 @@ test("there is ONE diagnostics recorder, and `capture-setup.mjs` no longer keeps
 test("`sinceStart` is required on the recorder, so a caller cannot silently record nothing", () => {
   // Optional would typecheck everywhere and quietly leave `readAt` off every mark — the field would be
   // absent, every downstream gate would stay closed, and nothing would say why.
-  const pure = readFileSync(resolve(import.meta.dirname, "capture-pure.mjs"), "utf8");
-  assert.match(pure, /sinceStart: \(\) => number \}\} CaptureDiagnostics/,
+  const pure = readFileSync(resolve(import.meta.dirname, "capture-pure.ts"), "utf8");
+  assert.match(pure, /type CaptureDiagnostics = [^;]*sinceStart: \(\) => number \}/,
     "the recorder's type must require the clock");
   assert.doesNotMatch(pure, /sinceStart\?/);
 });

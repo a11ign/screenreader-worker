@@ -8,9 +8,9 @@
  * capture does.
  *
  * Two halves, both tested here, because either alone could pass with nothing recorded:
- *   - the PAGE side: `focusFrame` in the DOM census every sweep already reads (`browser-session.mjs`), run the
+ *   - the PAGE side: `focusFrame` in the DOM census every sweep already reads (`browser-session.ts`), run the
  *     way the page receives it;
- *   - the RECORD side: `focusInFrameOf` (`capture-pure.mjs`), nested into the sweep's own `observed` entry at
+ *   - the RECORD side: `focusInFrameOf` (`capture-pure.ts`), nested into the sweep's own `observed` entry at
  *     the one call site every sweep reaches (`collectByType`).
  */
 import { test } from "node:test";
@@ -18,8 +18,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { focusInFrameOf, sweepObservation } from "./capture-pure.mjs";
-import { DOM_CENSUS_EXPRESSION } from "./browser-session.mjs";
+import { focusInFrameOf, sweepObservation } from "./capture-pure.ts";
+import { DOM_CENSUS_EXPRESSION } from "./browser-session.ts";
 import { probeStates } from "@a11ign/evidence/verify";
 
 const source = (file: string) => readFileSync(fileURLToPath(new URL(`./${file}`, import.meta.url)), "utf8");
@@ -136,8 +136,8 @@ test("#953 NESTED under the sweep's own observed record, at the one call site ev
   assert.deepEqual(Object.keys(unknown).sort(), ["asked", "complete", "focusInFrameUnknown", "stop"]);
   assert.equal(record.complete, true, "the sweep's own verdict is untouched");
   // Wired, not only defined: without this, every assertion above passes and no capture records anything.
-  const probes = source("capture-probes.mjs");
-  const start = probes.indexOf("async function collectByType(commands, ctx) {");
+  const probes = source("capture-probes.ts");
+  const start = probes.indexOf("async function collectByType(");
   assert.ok(start >= 0, "collectByType must be findable by name");
   const body = probes.slice(start, probes.indexOf("\n}\n", start));
   assert.match(body, /ctx\.observed\[ctx\.observedAs \?\? ctx\.label\] = \{ \.\.\.sweepObservation\(prevOutcome, nextOutcome\), \.\.\.focusInFrameOf\(scopeAt\) \}/,
@@ -146,7 +146,7 @@ test("#953 NESTED under the sweep's own observed record, at the one call site ev
   // No second home: the field lives in `observed[channel]` and nowhere at the capture's top level. The
   // worker only ever SETS it through the derivation above, never by name.
   assert.equal([...probes.matchAll(/\bfocusInFrame(?:Unknown)?\s*[:=]/g)].length, 0,
-    "capture-probes.mjs never assigns the field by name -- only the derivation that nests it");
+    "capture-probes.ts never assigns the field by name -- only the derivation that nests it");
 });
 
 test("#953: focus moving into a frame between probes is NOT the page changing", () => {

@@ -15,7 +15,7 @@
  * `/progress` directly on a loaded guest to answer "is this box actually stuck?", would be misled exactly
  * the way `fleet-status.mjs`'s comment describes.
  *
- * `server.mjs` needs guidepup and therefore a screen reader, so — same reasoning `busy-claim.test.ts`
+ * `server.ts` needs guidepup and therefore a screen reader, so — same reasoning `busy-claim.test.ts`
  * already gives for the identical constraint — this asserts the property against the SOURCE rather than
  * by running a capture.
  */
@@ -24,7 +24,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const server = readFileSync(fileURLToPath(new URL("./server.mjs", import.meta.url)), "utf8");
+const server = readFileSync(fileURLToPath(new URL("./server.ts", import.meta.url)), "utf8");
 
 /** `runCapture`'s own body — `busy`'s claim/release partner, and where `inFlight` is set. */
 function runCaptureBody(): string {

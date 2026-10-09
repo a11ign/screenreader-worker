@@ -17,8 +17,8 @@ import { createServer as createTcpServer, type AddressInfo, type Socket } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { openCdpDriver, purgeSession, runSteps, signIn, validateAuthRequest, withLoadedState } from "./auth-flow.mjs";
-import { faultCode, FAULT } from "./capture-faults.mjs";
+import { openCdpDriver, purgeSession, runSteps, signIn, validateAuthRequest, withLoadedState } from "./auth-flow.ts";
+import { faultCode, FAULT } from "./capture-faults.ts";
 
 const FAKE_USER = "canaryuser6d3f2a";
 const FAKE_SECRET = "canarysecretb81c94";

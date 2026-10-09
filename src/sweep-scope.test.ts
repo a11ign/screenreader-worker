@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const PROBES = readFileSync(resolve(import.meta.dirname, "capture-probes.mjs"), "utf8");
+const PROBES = readFileSync(resolve(import.meta.dirname, "capture-probes.ts"), "utf8");
 
 const bodyOf = (declaration: string) => {
   const at = PROBES.indexOf(declaration);
@@ -27,7 +27,7 @@ test("the scope is read BEFORE either direction walks", () => {
   // After the walk it would name wherever the sweep ended up — which for the sweep that ENTERS a dialog
   // is a different answer from the one that describes what it examined. Same ordering argument as
   // `censusBeforeNavigating`, and as `walkedUrl` in the tab walk.
-  const body = bodyOf("async function collectByType(commands, ctx) {");
+  const body = bodyOf("async function collectByType(");
   const read = body.indexOf("markPageState(`sweep:${ctx.label}`");
   const walks = body.indexOf("sweepInDirection(commands.prev");
   assert.ok(read >= 0, "collectByType must fingerprint the document before walking it");
@@ -37,16 +37,16 @@ test("the scope is read BEFORE either direction walks", () => {
 test("it costs NO extra round trip — the same read that already happened", () => {
   // A per-sweep NVDA query would be ~2 trips × 8 sweeps on a phase that is already the largest on a real
   // page (#397). `markPageState` returns the census it had already fetched, so this adds none.
-  const mark = bodyOf("async function markPageState(beforeProbe, diag) {");
+  const mark = bodyOf("async function markPageState(");
   assert.match(mark, /return dom;/,
     "markPageState must return what it read, so its caller needs no second census");
-  const body = bodyOf("async function collectByType(commands, ctx) {");
+  const body = bodyOf("async function collectByType(");
   assert.equal((body.match(/domCensus\(|markPageState\(/g) ?? []).length, 1,
     "exactly one census read per sweep — a second would double the fingerprint's cost");
 });
 
 test("the sweep mark carries the scope, not just the adjacent pageState mark", () => {
-  const body = bodyOf("async function collectByType(commands, ctx) {");
+  const body = bodyOf("async function collectByType(");
   assert.match(body, /scope: scopeAt \? \{ openDialog: scopeAt\.openDialog \?\? null \} : undefined/,
     "a reader of `sweep` must not have to know `pageState` exists to know what was examined");
 });
@@ -54,13 +54,13 @@ test("the sweep mark carries the scope, not just the adjacent pageState mark", (
 test("`undefined` and `null` stay different answers all the way to the mark", () => {
   // "The census failed" and "there was no modal" are different facts. Collapsing them is the shape this
   // project pays most for — an absent measurement read as the measurement zero.
-  const body = bodyOf("async function collectByType(commands, ctx) {");
+  const body = bodyOf("async function collectByType(");
   assert.match(body, /scopeAt \?/,
     "a census that could not be read must leave the scope absent, never report `no dialog`");
 });
 
 test("the census reports the dialog's NAME, and only a MODAL one", () => {
-  const session = readFileSync(resolve(import.meta.dirname, "browser-session.mjs"), "utf8");
+  const session = readFileSync(resolve(import.meta.dirname, "browser-session.ts"), "utf8");
   const expression = /const DOM_CENSUS_EXPRESSION = `([\s\S]*?)`;/.exec(session);
   assert.ok(expression, "the census expression must be findable by name");
   assert.match(expression[1], /aria-modal='true'/,

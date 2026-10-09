@@ -3,7 +3,7 @@
  *
  * `environmentKey` keys on the screen reader, the driver, the browser, the OS, the protocol and the NVDA
  * settings — each because it changes what NVDA says before this project ever sees it. The Edge profile
- * belongs to that class and was not in it. `browser-profile.mjs`'s own header states the mechanism: a
+ * belongs to that class and was not in it. `browser-profile.ts`'s own header states the mechanism: a
  * fresh `--user-data-dir` shows Edge's first-run welcome surface, and on a page with no headings NVDA's
  * quick-nav escapes the empty document into that surface and records it as PHANTOM PAGE CONTENT. The
  * U+FFFC incident measured the same variable from the other end — the autofill icon reached 3%, then 8%,
@@ -30,7 +30,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { profileIdentity, readOrStampProfileIdentity, ADOPTED_PROFILE, USED_MARKER, STAMP_FILE,
   ORIGIN_FILE, ORIGIN_ADOPTED, ORIGIN_FRESH, originDisagreement }
-  from "./browser-profile.mjs";
+  from "./browser-profile.ts";
 
 /** A fake filesystem: a set of paths that exist, plus the contents of any read. */
 function fakeDisk(files: Record<string, string>) {

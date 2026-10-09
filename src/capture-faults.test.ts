@@ -1,7 +1,7 @@
 /**
  * A fault must carry a classifiable CODE and a message that says what happened.
  *
- * `capture-faults.mjs` exists because recovery keyed on `error.message` could not discriminate — reword a
+ * `capture-faults.ts` exists because recovery keyed on `error.message` could not discriminate — reword a
  * message and recovery stops working in production while the unit tests keep passing, because the string
  * they assert on lives in the test file rather than at the throw site. Codes fixed that.
  *
@@ -11,7 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { stripComments } from "@a11ign/evidence/source-text";
-import { captureFault, faultCode, FAULT } from "./capture-faults.mjs";
+import { captureFault, faultCode, FAULT } from "./capture-faults.ts";
 
 
 test("a swapped code/message is refused at the throw site", () => {
@@ -21,12 +21,12 @@ test("a swapped code/message is refused at the throw site", () => {
   // question the fault exists to answer.
   //
   // The second consequence is worse and was silent: `faultCode()` returned an Error OBJECT, so nothing
-  // keyed on codes — `worker-recovery.mjs`, `capture-decisions.mjs` — could classify these two faults.
+  // keyed on codes — `worker-recovery.ts`, `capture-decisions.mjs` — could classify these two faults.
   // This repo chose codes over message-matching so recovery could not be broken by a reworded string; a
   // swap that turns the code into an object defeats that from the other end.
   // Cast because the JSDoc types DO declare (code: string, message: string) — TypeScript rejects this
   // call outright. That is the finding, not a nuisance: the types knew, and could not help, because
-  // `capture-core.mjs` is .mjs and nothing typechecks it. The runtime guard is what covers that gap.
+  // `capture-core.ts` is .mjs and nothing typechecks it. The runtime guard is what covers that gap.
   assert.throws(() => captureFault(new Error("the browser is showing X") as never, FAULT.WRONG_PAGE),
     /arguments are swapped/, "an Error as the first argument is always the swap");
   assert.throws(() => captureFault("not-a-declared-fault", "message"),
@@ -41,14 +41,14 @@ test("the message survives and the code is classifiable", () => {
 
 test("every captureFault call site passes the code first", () => {
   // The guard above catches it at runtime, on a Windows worker, mid-capture. This catches it here.
-  // `capture-setup.mjs` had every call site until #336 (2026-09-07) added one to `server.mjs`, for the
+  // `capture-setup.ts` had every call site until #336 (2026-09-07) added one to `server.ts`, for the
   // hard timeout -- so this now scans BOTH rather than one file whose own comment claimed to be all of
-  // them. `capture-core.mjs` and `capture-probes.mjs` still import neither FAULT nor captureFault.
-  const files = ["capture-setup.mjs", "server.mjs"];
+  // them. `capture-core.ts` and `capture-probes.ts` still import neither FAULT nor captureFault.
+  const files = ["capture-setup.ts", "server.ts"];
   const sources = files.map((f) => readFileSync(new URL(`./${f}`, import.meta.url), "utf8"));
   // This asserts an ABSENCE, so a moved file, an empty read, or a broken regex all produce the identical
   // "0 swapped" pass -- proving the population it is checking is real, not merely that nothing bad was
-  // found in it. 6 real call sites (5 in capture-setup.mjs, 1 in server.mjs) at the time this guard was
+  // found in it. 6 real call sites (5 in capture-setup.ts, 1 in server.ts) at the time this guard was
   // last updated; a floor, not a pin.
   const realCallSites = sources.flatMap((s) => [...s.matchAll(/captureFault\(/g)]);
   assert.ok(realCallSites.length >= 4,
@@ -72,8 +72,8 @@ test("the settle wait is a CONDITION, not a duration, and cannot hang on an empt
   // Comments stripped before matching -- unbounded to end of file, and this file discusses
   // headings/census logic extensively in prose elsewhere, so a bare regex here risks matching a LATER,
   // unrelated comment rather than this function's own code. See `@a11ign/evidence/source-text`.
-  // `waitForPageToSettle` lives in `capture-setup.mjs` since the 2026-09-05 split.
-  const source = stripComments(readFileSync(new URL("./capture-setup.mjs", import.meta.url), "utf8"));
+  // `waitForPageToSettle` lives in `capture-setup.ts` since the 2026-09-05 split.
+  const source = stripComments(readFileSync(new URL("./capture-setup.ts", import.meta.url), "utf8"));
   const settle = source.slice(source.indexOf("async function waitForPageToSettle"));
   assert.match(settle, /shape === previous/,
     "it must wait for the tree to STOP CHANGING — waiting for content would hang the whole budget on a "

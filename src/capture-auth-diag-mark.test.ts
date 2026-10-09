@@ -2,7 +2,7 @@
 //
 // `A11Y_DIAG_SKIP_LOGIN_MARK=1` in the worker process's environment makes `signInIfAsked` hand `beginAuthentication` a `markNavigated` that
 // only records `loginMarkSuppressed`. Every other value, or none, changes nothing. These tests drive the REAL `beginAuthentication` on a fake
-// driver with the override `capture-core.mjs` builds, so the switch is observed at the seam it acts on; the call site's use of the override
+// driver with the override `capture-core.ts` builds, so the switch is observed at the seam it acts on; the call site's use of the override
 // is READ FROM SOURCE (comments stripped), because `signInIfAsked` is private and its driver is a real Chromium.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -10,9 +10,9 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { stripComments } from "@a11ign/evidence/source-text";
 
-import { validateAuthRequest } from "./auth-flow.mjs";
-import { beginAuthentication } from "./capture-auth.mjs";
-import { loginMarkOverride } from "./capture-core.mjs";
+import { validateAuthRequest } from "./auth-flow.ts";
+import { beginAuthentication } from "./capture-auth.ts";
+import { loginMarkOverride } from "./capture-core.ts";
 
 const APP = "https://app.example.test";
 const ACCOUNT_URL = `${APP}/account`;
@@ -76,8 +76,8 @@ test("the real default is what runs when the override is silent: beginAuthentica
 });
 
 test("the capture's call site passes the override, and nothing else can reach the switch", () => {
-  const core = stripComments(readFileSync(resolve(import.meta.dirname, "capture-core.mjs"), "utf8"));
+  const core = stripComments(readFileSync(resolve(import.meta.dirname, "capture-core.ts"), "utf8"));
   assert.match(core, /beginAuthentication\(\{[^}]*\.\.\.loginMarkOverride\(\{ diag \}\)/);
-  const protocol = readFileSync(resolve(import.meta.dirname, "auth-flow.mjs"), "utf8");
+  const protocol = readFileSync(resolve(import.meta.dirname, "auth-flow.ts"), "utf8");
   assert.ok(!protocol.includes(SWITCH), "the request protocol's validator must not know the switch");
 });

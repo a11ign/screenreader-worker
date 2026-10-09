@@ -8,7 +8,7 @@
  * `cantTell` on almost every page as a result. No corpus page has more than 22 focusable elements, so
  * nothing in the corpus could have shown it.
  *
- * `capture-core.mjs` needs real NVDA on Windows and has no local test. This function is pure, which is
+ * `capture-core.ts` needs real NVDA on Windows and has no local test. This function is pure, which is
  * exactly the part that can be tested here — and the ambiguity it resolves is one this project has
  * already paid for once, in a sweep that reported 5 graphics of 66 because four avatars announced
  * identically.
@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 // capture-core is plain .mjs, deliberately: it runs under bare node on the worker.
 // capture-pure, not capture-core — see known-gaps §12: capture-core imports guidepup, which throws at
 // module scope on any host without a screen reader, so this file died on CI while passing on a Mac.
-import { focusOrderCycled } from "./capture-pure.mjs";
+import { focusOrderCycled } from "./capture-pure.ts";
 
 const stops = (...phrases: string[]) => phrases;
 

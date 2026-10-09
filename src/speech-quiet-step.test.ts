@@ -8,14 +8,14 @@
  * names as this project's single most expensive fault class, recurring here in a spot that bypasses
  * `ensureSpeechChannel`'s fix.
  *
- * `speechQuietStep` is the isolated per-iteration decision, extracted to `capture-pure.mjs` so it is
+ * `speechQuietStep` is the isolated per-iteration decision, extracted to `capture-pure.ts` so it is
  * directly testable without guidepup -- `tests-run-without-a-screen-reader.test.ts` refuses any test
  * that reaches it.
  */
 import { strict as assert } from "node:assert";
 import test from "node:test";
 
-import { speechQuietStep } from "./capture-pure.mjs";
+import { speechQuietStep } from "./capture-pure.ts";
 
 const QUIET_WINDOW_MS = 300;
 

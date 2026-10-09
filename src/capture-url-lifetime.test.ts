@@ -29,16 +29,16 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { stripComments } from "@a11ign/evidence/source-text";
 import { setExpectedPageUrl, expectedPageUrlForTest, lastResolvedPageUrl, endCaptureUrls }
-  from "./browser-session.mjs";
+  from "./browser-session.ts";
 
-const SESSION = readFileSync(resolve(import.meta.dirname, "browser-session.mjs"), "utf8");
+const SESSION = readFileSync(resolve(import.meta.dirname, "browser-session.ts"), "utf8");
 // COMMENTS STRIPPED, and this guard caught its own author doing it. The first version matched
 // `setExpectedPageUrl(null)` in the COMMENT I wrote at the new call site explaining what used to stand
 // there -- so the check went red against correct code, for prose. It is the #1197 defect (a guard reading
 // its own paragraph) reproduced the same night by the person who had just fixed it, which is the argument
 // for the shared helper over remembering. `SESSION` is deliberately NOT stripped: its assertions are about
 // declarations and the literal record, where a comment cannot produce a false pass.
-const CORE = stripComments(readFileSync(resolve(import.meta.dirname, "capture-core.mjs"), "utf8"));
+const CORE = stripComments(readFileSync(resolve(import.meta.dirname, "capture-core.ts"), "utf8"));
 
 test("#1200: endCaptureUrls clears the EXPECTED url, driven, with the survivor named", () => {
   const url = "https://example.com/capture-A/search?q=1";
@@ -76,7 +76,7 @@ test("#1200: neither url is a bare module-level binding -- one record, so neithe
   assert.deepEqual(bare, [],
     `${bare.length} capture URL(s) are back as bare module-level bindings, so each has its own lifetime `
     + `again and one can be cleared while the other is forgotten:\n  ${bare.join("\n  ")}`);
-  assert.match(SESSION, /const captureUrls = \{ expected: null, resolved: null \};/,
+  assert.match(SESSION, /const captureUrls: [^\n]* = \{ expected: null, resolved: null \};/,
     "the single record is gone -- if it was replaced, this guard needs rewriting rather than deleting");
 });
 

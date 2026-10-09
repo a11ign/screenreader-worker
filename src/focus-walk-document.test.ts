@@ -45,7 +45,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { focusOrderCycled, focusWalkTruncated } from "./capture-pure.mjs";
+import { focusOrderCycled, focusWalkTruncated } from "./capture-pure.ts";
 
 const fixture = JSON.parse(readFileSync(
   resolve(import.meta.dirname, "fixtures-focus-863.json"), "utf8")) as {
@@ -143,7 +143,7 @@ test("the ONLY thing separating the two calendly readings is the document", () =
 
 /** THE WIRING, read from source — this package throws at import where no screen reader exists. */
 const PROBES = readFileSync(
-  resolve(import.meta.dirname, "capture-probes.mjs"), "utf8");
+  resolve(import.meta.dirname, "capture-probes.ts"), "utf8");
 
 const probeFocusOrderBody = () => {
   const at = PROBES.indexOf("async function probeFocusOrder({");
@@ -172,7 +172,7 @@ test("every loop exit names itself, so no two endings share a record", () => {
     assert.ok(body.includes(marker), `the ${exit} exit does not record its reason`);
   }
   // `cap` is the fall-out-of-the-loop ending, so it is the initial value rather than a break.
-  assert.match(body, /let stop = [^\n]*\("cap"\)/,
+  assert.match(body, /let stop[^\n]* = "cap";/,
     "`cap` must be the initial value — an ending reached by NOT breaking cannot assign itself");
   assert.match(body, /stop,\n\s*walkedUrl,/, "both must reach the mark");
 });

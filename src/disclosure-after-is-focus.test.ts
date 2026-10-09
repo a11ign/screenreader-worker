@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const SOURCE = readFileSync(resolve(import.meta.dirname, "capture-probes.mjs"), "utf8");
+const SOURCE = readFileSync(resolve(import.meta.dirname, "capture-probes.ts"), "utf8");
 const PROBE = SOURCE.slice(SOURCE.indexOf("async function probeDisclosure"));
 const BODY = PROBE.slice(0, PROBE.indexOf("\n}\n"));
 

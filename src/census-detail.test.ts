@@ -18,18 +18,19 @@
  * responses and the count could not tell them apart.
  *
  * Tested against a synthetic CDP tree because the real one needs a browser: the shape is what matters,
- * and `browser-session.mjs` cannot be imported into a test that runs anywhere (it drives a live page).
+ * and `browser-session.ts` cannot be imported into a test that runs anywhere (it drives a live page).
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import ts from "typescript";
 
 // A NAMESPACE import, so a missing export reads `undefined` in the test that needs it instead of failing the whole
 // file at link time -- which is what lets the #1507 tests below be run, one red each, against the code before them.
-import * as session from "./browser-session.mjs";
+import * as session from "./browser-session.ts";
 
-const SOURCE = readFileSync(resolve(import.meta.dirname, "browser-session.mjs"), "utf8");
+const SOURCE = readFileSync(resolve(import.meta.dirname, "browser-session.ts"), "utf8");
 
 /**
  * The three source pieces every reconstruction below needs: the role set, the per-ancestor folder, and the
@@ -39,28 +40,37 @@ const SOURCE = readFileSync(resolve(import.meta.dirname, "browser-session.mjs"),
  */
 function ancestorSource(): { roles: string; noteAncestor: string; nearestNamedAncestor: string } {
   const roles = /const CONTROL_ROLES = new Set\(\[([\s\S]*?)\]\);/.exec(SOURCE)?.[1];
-  const noteAncestor = /function noteAncestor\(found, ancestor\) \{([\s\S]*?)\n\}/.exec(SOURCE)?.[1];
-  const nearestNamedAncestor = /function nearestNamedAncestor\(node, byId\) \{([\s\S]*?)\n\}/.exec(SOURCE)?.[1];
+  const noteAncestor = functionSource("noteAncestor");
+  const nearestNamedAncestor = functionSource("nearestNamedAncestor");
   assert.ok(roles && noteAncestor && nearestNamedAncestor,
-    "CONTROL_ROLES, noteAncestor or nearestNamedAncestor is gone from browser-session.mjs — this test "
+    "CONTROL_ROLES, noteAncestor or nearestNamedAncestor is gone from browser-session.ts — this test "
     + "examines nothing");
   return { roles, noteAncestor, nearestNamedAncestor };
 }
 
 /**
+ * A whole function declaration, types stripped, so `new Function` can run it. The source is TypeScript now, and the page-side code
+ * has to be plain JavaScript once it is inside `page.evaluate`; `transpileModule` removes the annotations and nothing else.
+ */
+function functionSource(name: string): string | undefined {
+  const declaration = new RegExp(`function ${name}\\([\\s\\S]*?\\n\\}`).exec(SOURCE)?.[0];
+  return declaration && ts.transpileModule(declaration, { compilerOptions: { target: ts.ScriptTarget.ESNext } }).outputText;
+}
+
+/**
  * The census runs inside `page.evaluate`, so the test rebuilds it from the source's own functions.
  *
- * `noteAncestor` is extracted alongside it and given its own name in scope, not inlined, because
- * `nearestNamedAncestor`'s source calls it BY NAME -- see `nearestNamedAncestor`'s own comment on why the
- * per-ancestor decision was split out (the complexity gate, not a second concept). `CONTROL_ROLES` is
- * needed one level further in: `noteAncestor` is what actually reads it.
+ * `noteAncestor` is extracted alongside it, not inlined, because `nearestNamedAncestor`'s source calls it BY NAME -- see
+ * `nearestNamedAncestor`'s own comment on why the per-ancestor decision was split out (the complexity gate, not a second concept).
+ * `CONTROL_ROLES` is needed one level further in: `noteAncestor` is what actually reads it.
  */
 function nearestNamedAncestor(node: unknown, byId: Map<string, unknown>): Record<string, unknown> {
   const src = ancestorSource();
   return new Function("node", "byId", `
     const CONTROL_ROLES = new Set([${src.roles}]);
-    function noteAncestor(found, ancestor) {${src.noteAncestor}}
+    ${src.noteAncestor}
     ${src.nearestNamedAncestor}
+    return nearestNamedAncestor(node, byId);
   `)(node, byId) as Record<string, unknown>;
 }
 
@@ -130,14 +140,15 @@ test("the census carries the detail, bounded", () => {
  * link named "The Care Quality Commission" — the site logo, marked up exactly as it should be.
  */
 function recordUnnamedGraphic(census: Record<string, unknown>, node: unknown, byId: Map<string, unknown>) {
-  const body = /function recordUnnamedGraphic\(census, node, byId\) \{([\s\S]*?)\n\}/.exec(SOURCE)?.[1];
-  assert.ok(body, "recordUnnamedGraphic is gone — this test examines nothing");
+  const recorder = functionSource("recordUnnamedGraphic");
+  assert.ok(recorder, "recordUnnamedGraphic is gone — this test examines nothing");
   const src = ancestorSource();
   new Function("census", "node", "byId", `
     const CONTROL_ROLES = new Set([${src.roles}]);
-    function noteAncestor(found, ancestor) {${src.noteAncestor}}
-    function nearestNamedAncestor(node, byId) {${src.nearestNamedAncestor}}
-    ${body}
+    ${src.noteAncestor}
+    ${src.nearestNamedAncestor}
+    ${recorder}
+    recordUnnamedGraphic(census, node, byId);
   `)(census, node, byId);
 }
 
@@ -152,7 +163,7 @@ test("the extraction found every piece it depends on, or this whole file proves 
   assert.ok(src.roles.length > 0, "CONTROL_ROLES extracted but empty");
   assert.ok(src.noteAncestor.length > 0, "noteAncestor extracted but empty");
   assert.ok(src.nearestNamedAncestor.length > 0, "nearestNamedAncestor extracted but empty");
-  assert.match(SOURCE, /function recordUnnamedGraphic\(census, node, byId\) \{[\s\S]*?\n\}/,
+  assert.ok(functionSource("recordUnnamedGraphic"),
     "recordUnnamedGraphic is gone or its signature changed — every test using it below examines nothing");
 });
 

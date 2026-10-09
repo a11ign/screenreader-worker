@@ -1,4 +1,4 @@
-// THE SEAM BETWEEN A CAPTURE AND ITS LOGIN (`capture-auth.mjs`), against a real Chromium on the worker's OWN DevTools
+// THE SEAM BETWEEN A CAPTURE AND ITS LOGIN (`capture-auth.ts`), against a real Chromium on the worker's OWN DevTools
 // port (ADR 0038, PR 4): sign in, land on the requested page through `navigateExisting` (the navigation the capture
 // path uses), and destroy the session afterwards — including when the login failed.
 //
@@ -13,10 +13,10 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { CDP_PORT } from "./browser-session.mjs";
-import { validateAuthRequest } from "./auth-flow.mjs";
-import { beginAuthentication } from "./capture-auth.mjs";
-import { faultCode, FAULT } from "./capture-faults.mjs";
+import { CDP_PORT } from "./browser-session.ts";
+import { validateAuthRequest } from "./auth-flow.ts";
+import { beginAuthentication } from "./capture-auth.ts";
+import { faultCode, FAULT } from "./capture-faults.ts";
 
 const FAKE_USER = "canaryuser6d3f2a";
 const FAKE_SECRET = "canarysecretb81c94";

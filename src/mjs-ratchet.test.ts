@@ -1,9 +1,10 @@
-// THIS REPOSITORY'S COUNT OF .js/.mjs/.cjs SOURCE FILES MAY ONLY GO DOWN (a11ign/a11ign#4263; the rule and its check are
-// `@a11ign/toolchain/mjs-ratchet`, ADR 0043). The standard is TypeScript source and `.mjs` only as build output.
+// THIS REPOSITORY HAS NO .js/.mjs/.cjs SOURCE FILE, AND THE BASELINE IS EMPTY, SO A NEW ONE FAILS (a11ign/a11ign#4263, #4279; the rule
+// and its check are `@a11ign/toolchain/mjs-ratchet`, ADR 0043). The standard is TypeScript source and `.mjs` only as build output.
 //
 // This is the test `pnpm test` already runs, so no workflow file carries the check. The baseline is found by walking up from THIS FILE,
 // so the layout flatten (#4214) moves the test and edits nothing. The cases below run the same function over copies of the tree, so
-// each states what a failure looks like rather than trusting that the real tree never fails.
+// each states what a failure looks like rather than trusting that the real tree never fails: with nothing left to count, the real tree
+// can no longer show the check biting, so the synthetic trees below are the positive control for the first case.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -25,6 +26,10 @@ const sourcePaths = execFileSync("git", ["-C", root, "ls-files", "-z", "--cached
 const scratch = mkdtempSync(join(tmpdir(), "mjs-ratchet-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
+/** A tree with files in it and none of them a script source: an empty tree is RED by the check's own rule, and is not what these cases test. */
+const TYPESCRIPT_TREE = ["src/server.ts", "package.json"];
+const EMPTY_BASELINE = JSON.stringify({ files: [], exceptions: [] });
+
 let copies = 0;
 /** A directory with no `.git`, holding an empty file at each of `paths` and the given baseline: the check reads it by walking. */
 function copyOfTree({ paths, baselineText }: { paths: string[]; baselineText: string }): string {
@@ -37,46 +42,45 @@ function copyOfTree({ paths, baselineText }: { paths: string[]; baselineText: st
   return join(dir, BASELINE_FILE);
 }
 
-test("the repository's real tree passes against the committed baseline, and the read found files", () => {
+test("the repository's real tree passes against the committed baseline, which is EMPTY: the end state", () => {
   const result = checkMjsRatchet({ from: here });
   assert.equal(result.ok, true, result.message);
-  // The positive control for every case below: 'ok' on a read that found nothing would be a pass for the wrong reason.
-  assert.ok(result.count > 0, `the ratchet counted ${result.count} files in ${result.root}`);
-  assert.equal(result.count, sourcePaths.length - baseline.exceptions.length, "the test's own listing and the check's agree on the population");
-  assert.equal(result.baselineCount, baseline.files.length);
+  assert.equal(result.count, 0, `script sources are back in ${result.root}:\n${sourcePaths.join("\n")}`);
+  assert.equal(result.baselineCount, 0);
+  assert.equal(sourcePaths.length - baseline.exceptions.length, result.count, "the test's own listing and the check's agree on the population");
 });
 
-test("the committed baseline lists BASENAMES (never paths), and every exception states why", () => {
-  assert.ok(baseline.files.length > 0, "an empty baseline is the end state, and this repository is not there yet");
-  assert.ok(baseline.files.every((name) => !name.includes("/")), "a path in `files` would make a move edit the baseline");
+test("the committed baseline allows nothing, and every exception states why", () => {
+  assert.deepEqual(baseline.files, [], "the baseline is the end state: a file listed here is a file that was not converted");
   for (const entry of baseline.exceptions) assert.ok(entry.why.trim() !== "", `exception ${entry.path} has no why`);
 });
 
-test("a baseline with one name removed fails and NAMES the file", () => {
-  const removed = baseline.files[0];
-  const reduced = { ...baseline, files: baseline.files.slice(1) };
-  const result = checkMjsRatchet({ from: copyOfTree({ paths: sourcePaths, baselineText: JSON.stringify(reduced) }) });
+test("a tree that has a script source the baseline does not list fails and NAMES it (the RED run, and the control for the case above)", () => {
+  const added = "src/arrived-later.mjs";
+  const result = checkMjsRatchet({ from: copyOfTree({ paths: [...TYPESCRIPT_TREE, added], baselineText: EMPTY_BASELINE }) });
   assert.equal(result.ok, false);
-  assert.ok(result.message.includes(removed), `the failure does not name ${removed}:\n${result.message}`);
+  assert.ok(result.message.includes("arrived-later.mjs"), `the failure does not name ${added}:\n${result.message}`);
+  assert.equal(result.count, 1, "the read counted the one file, so the empty real tree above is 'nothing there' and not 'nothing read'");
 });
 
-test("an emptied baseline names EVERY file of the tree (the RED run)", () => {
-  const result = checkMjsRatchet({ from: copyOfTree({ paths: sourcePaths, baselineText: JSON.stringify({ files: [], exceptions: [] }) }) });
-  assert.equal(result.ok, false);
-  const unnamed = baseline.files.filter((name) => !result.message.includes(name));
-  assert.deepEqual(unnamed, [], "files the failure did not name");
+test("the same holds for .js and .cjs, which are the other two kinds the rule names", () => {
+  for (const added of ["scripts/helper.js", "tool.cjs"]) {
+    const result = checkMjsRatchet({ from: copyOfTree({ paths: [...TYPESCRIPT_TREE, added], baselineText: EMPTY_BASELINE }) });
+    assert.equal(result.ok, false, `${added} passed against an empty baseline`);
+    assert.ok(result.message.includes(added.split("/").pop() as string), result.message);
+  }
 });
 
-test("a tree that has dropped a file passes and says the baseline can be lowered", () => {
-  const result = checkMjsRatchet({ from: copyOfTree({ paths: sourcePaths.slice(1), baselineText: JSON.stringify(baseline) }) });
+test("a tree that has dropped a listed file passes and says the baseline can be lowered", () => {
+  const stale = JSON.stringify({ files: ["converted-since.mjs"], exceptions: [] });
+  const result = checkMjsRatchet({ from: copyOfTree({ paths: TYPESCRIPT_TREE, baselineText: stale }) });
   assert.equal(result.ok, true, result.message);
   assert.match(result.message, /can be lowered/);
-  assert.equal(result.count, result.baselineCount - 1);
 });
 
 test("an exception with no `why` fails", () => {
-  const withoutWhy = { files: baseline.files.slice(1), exceptions: [{ path: sourcePaths[0], why: "" }] };
-  const result = checkMjsRatchet({ from: copyOfTree({ paths: sourcePaths, baselineText: JSON.stringify(withoutWhy) }) });
+  const withoutWhy = { files: [], exceptions: [{ path: ".pnpmfile.cjs", why: "" }] };
+  const result = checkMjsRatchet({ from: copyOfTree({ paths: [...TYPESCRIPT_TREE, ".pnpmfile.cjs"], baselineText: JSON.stringify(withoutWhy) }) });
   assert.equal(result.ok, false);
   assert.match(result.message, /has no `why`/);
 });

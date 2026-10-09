@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { stripComments } from "@a11ign/evidence/source-text";
-import { isUnresolvedDocumentTitle } from "./capture-pure.mjs";
+import { isUnresolvedDocumentTitle } from "./capture-pure.ts";
 
 test("#1105: isUnresolvedDocumentTitle recognises NVDA's bare placeholder", () => {
   assert.equal(isUnresolvedDocumentTitle("unknown"), true);
@@ -33,7 +33,7 @@ test("#1105 CONTROL: a real document announcement, or anything else, is not the 
 });
 
 test("#1105 WIRING: activateAndCaptureDelta retries past an unresolved title before finalising `after`", () => {
-  const source = stripComments(readFileSync(resolve(import.meta.dirname, "capture-probes.mjs"), "utf8"));
+  const source = stripComments(readFileSync(resolve(import.meta.dirname, "capture-probes.ts"), "utf8"));
   const at = source.indexOf("async function activateAndCaptureDelta");
   assert.notEqual(at, -1, "activateAndCaptureDelta no longer exists under that name");
   const body = source.slice(at);

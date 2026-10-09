@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateRawSync } from "node:zlib";
 
-import { screenReaderDefaults } from "./diagnostics.mjs";
+import { screenReaderDefaults } from "./diagnostics.ts";
 
 /** Real lines from NVDA's `configSpec.py`, including the one that started this. */
 const SPEC = `
@@ -117,7 +117,7 @@ test("a zip WITHOUT the spec is not-found, not empty", () => {
 /**
  * Build a real zip with node's zlib — central directory, local headers and raw deflate.
  *
- * In the test rather than in `diagnostics.mjs` on purpose: the worker only ever READS a zip, and adding a
+ * In the test rather than in `diagnostics.ts` on purpose: the worker only ever READS a zip, and adding a
  * writer to the capture path to make a test easier is how a module grows a second job.
  */
 function zipOf(files: Record<string, string>): Buffer {

@@ -1,7 +1,7 @@
 /**
  * AN ABANDONED `prepareDesktop` KEEPS RUNNING, and until now it kept WRITING.
  *
- * `server.mjs` races `prepareDesktop` against a 60 s timeout and continues the capture either way — the
+ * `server.ts` races `prepareDesktop` against a 60 s timeout and continues the capture either way — the
  * right call, since a desktop we could not tidy is not a reason to refuse a page. But losing that race does
  * not cancel the underlying promise: nothing in JS stops an `await` chain because its caller gave up on it.
  * So a `prepareDesktop` call that overran kept running in the background, and when it eventually finished it
@@ -24,7 +24,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { prepareDesktop, desktopCachesForTest } from "./desktop-prepare.mjs";
+import { prepareDesktop, desktopCachesForTest } from "./desktop-prepare.ts";
 
 /** A mark array, typed loosely to match what `prepareDesktop` actually pushes. */
 const marks = (): Record<string, unknown>[] => [];

@@ -9,7 +9,7 @@
  * call site the §40 fix did not reach, found by `docs/probe-side-effects.md`'s audit.
  *
  * SOURCE TEXT, deliberately, and with the anti-vacuity guards that requires. `navigateByStructure` cannot be
- * imported: `capture-core.mjs` pulls in guidepup, which throws at module load where no screen reader exists
+ * imported: `capture-core.ts` pulls in guidepup, which throws at module load where no screen reader exists
  * (`pure-graph.test.ts` records this), so there is nothing to call. `focus-reveal.test.ts`'s own sequencing
  * test and `forbidden-input-keys-parity.test.ts` document the same exception for the same reason. Every
  * marker below is asserted to EXIST before it is compared, so a rename makes this test fail loudly rather
@@ -25,13 +25,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const SOURCE = readFileSync(resolve(import.meta.dirname, "./capture-probes.mjs"), "utf8");
+const SOURCE = readFileSync(resolve(import.meta.dirname, "./capture-probes.ts"), "utf8");
 
 /** The body of `navigateByStructure`, up to the next top-level function declaration. */
 function navigateByStructureBody(): string {
   const start = SOURCE.indexOf("async function navigateByStructure({");
   assert.ok(start >= 0,
-    "navigateByStructure not found in capture-probes.mjs -- this test examines nothing until it is");
+    "navigateByStructure not found in capture-probes.ts -- this test examines nothing until it is");
   const rest = SOURCE.slice(start + 1);
   const nextFn = rest.search(/\n(?:async )?function /);
   return rest.slice(0, nextFn >= 0 ? nextFn : rest.length);

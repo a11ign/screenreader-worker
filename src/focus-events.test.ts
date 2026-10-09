@@ -1,6 +1,6 @@
 /**
- * `focusEventVerdict` (`capture-pure.mjs`) is a PASSTHROUGH as of 2026-09-06: it reports the bounded
- * `focusin`/`focusout` log `probeFocusOrder` installs (via `browser-session.mjs`'s `installFocusEventLog`)
+ * `focusEventVerdict` (`capture-pure.ts`) is a PASSTHROUGH as of 2026-09-06: it reports the bounded
+ * `focusin`/`focusout` log `probeFocusOrder` installs (via `browser-session.ts`'s `installFocusEventLog`)
  * and decides nothing about F55. The pairing/orphan/destination analysis that used to live here moved to
  * `addFocusEventFindings` (`packages/judge/src/rules.ts`) — see that function's own doc comment for why,
  * including the two real captures (one conformant, one a genuine positive) that refuted two capture-side
@@ -12,7 +12,7 @@
  */
 import { test as focusEventTest } from "node:test";
 import focusEventAssert from "node:assert/strict";
-import { focusEventVerdict, shouldInstallFocusEventListenerEarly } from "./capture-pure.mjs";
+import { focusEventVerdict, shouldInstallFocusEventListenerEarly } from "./capture-pure.ts";
 
 focusEventTest("no event log at all reads 'cannot say', never as zero findings", () => {
   const v = focusEventVerdict({ events: null, error: "not installed" });
@@ -64,7 +64,7 @@ focusEventTest("a log under the cap reports truncated: false, not merely an abse
 // -- the Cookiebot-iframe shape `censusTargetIsSuspect` exists for -- reaches this detector through the
 // same `pageTarget()` machinery, and until now nothing here checked it: a mistargeted capture correctly
 // suppressed a census finding while still reporting a real-looking F55 finding computed from focus events
-// on the wrong document. See `focusTargetIsSuspect`'s own comment in `capture-pure.mjs` for the full trace.
+// on the wrong document. See `focusTargetIsSuspect`'s own comment in `capture-pure.ts` for the full trace.
 const SOME_EVENTS = [
   { type: "focusin", id: 0, name: "Coupon", atMs: 10 },
   { type: "focusout", id: 0, name: "Coupon", atMs: 11 },
@@ -122,7 +122,7 @@ focusEventTest("an options object missing probeFocus entirely reads as false, no
 });
 
 focusEventTest("a truthy non-boolean probeFocus (a stray string from a lax caller) still reads as installing", () => {
-  // `Boolean(...)`, not `=== true` -- the request boundary (`PROBE_FLAGS`, capture-pure.mjs) already
+  // `Boolean(...)`, not `=== true` -- the request boundary (`PROBE_FLAGS`, capture-pure.ts) already
   // coerces every probe flag to a real boolean before this is reached, but the predicate itself does not
   // assume that has happened, the same defensive shape `focusTargetIsSuspect` uses one function up.
   focusEventAssert.equal(shouldInstallFocusEventListenerEarly({ probeFocus: "yes" as unknown as boolean }), true);
@@ -130,7 +130,7 @@ focusEventTest("a truthy non-boolean probeFocus (a stray string from a lax calle
 
 // #1918: `formChanges[].submitted`. The same absent-versus-false rule as the focus log above, and the same
 // target gate, because a count read from the wrong document says nothing about this one.
-import { submittedVerdict } from "./capture-pure.mjs";
+import { submittedVerdict } from "./capture-pure.ts";
 
 focusEventTest("#1918 submittedVerdict: a counted submit is true, a counted zero is false", () => {
   focusEventAssert.equal(submittedVerdict({ installed: true, submits: 1, targetMatch: "matched" }), true);

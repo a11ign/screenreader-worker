@@ -38,7 +38,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const SOURCE = readFileSync(fileURLToPath(new URL("./capture-probes.mjs", import.meta.url)), "utf8");
+const SOURCE = readFileSync(fileURLToPath(new URL("./capture-probes.ts", import.meta.url)), "utf8");
 
 /** `navigateByStructure`'s own body, isolated so a match elsewhere in the file (a comment, another
  * function) cannot be mistaken for the real call sites. */

@@ -3,7 +3,7 @@
 // So the decision of WHAT to remove is a pure function, and these are its boundaries.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { prunablePaths, reportBrowserPolicyDrift } from "./browser-profile.mjs";
+import { prunablePaths, reportBrowserPolicyDrift } from "./browser-profile.ts";
 
 const ROOT = "C:\\Users\\witness\\AppData\\Local\\a11y-witness\\edge-profile";
 const everythingExists = () => true;

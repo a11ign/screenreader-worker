@@ -16,8 +16,8 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { AuthRequestError, openCdpDriver, signIn, validateAuthRequest } from "./auth-flow.mjs";
-import { beginAuthentication } from "./capture-auth.mjs";
+import { AuthRequestError, openCdpDriver, signIn, validateAuthRequest } from "./auth-flow.ts";
+import { beginAuthentication } from "./capture-auth.ts";
 
 const APP = "https://app.example.test";
 const IDP = "https://idp.example.test";
@@ -264,7 +264,7 @@ test("the CDP driver's url() is the page's full address, query and all, and move
   }
 });
 
-// ---- the seam: the window is marked navigated whether or not the requested page was loaded again (`capture-auth.mjs`) -----------------
+// ---- the seam: the window is marked navigated whether or not the requested page was loaded again (`capture-auth.ts`) -----------------
 
 const noDiag = { mark: () => undefined };
 

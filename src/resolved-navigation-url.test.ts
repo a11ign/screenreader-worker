@@ -18,9 +18,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { choosePageTarget } from "./browser-session.mjs";
+import { choosePageTarget } from "./browser-session.ts";
 
-import { resolvedNavigationUrl } from "./capture-pure.mjs";
+import { resolvedNavigationUrl } from "./capture-pure.ts";
 
 const REQUESTED = "http://203.0.113.79:5050/focus-panel/bad.html";
 
@@ -165,7 +165,7 @@ test("the resolved URL is CLEARED before each navigation, so it can never be a p
   // Asserted on SOURCE ORDER because the behaviour needs a live CDP socket: the reset must precede the
   // navigate, not merely follow the load. A reset placed after `Page.navigate` would leave the window
   // between the two calls holding the old value, which is the moment `pageTarget()` reads it.
-  const src = readFileSync(new URL("./browser-session.mjs", import.meta.url), "utf8");
+  const src = readFileSync(new URL("./browser-session.ts", import.meta.url), "utf8");
   // SCOPED TO THE FUNCTION rather than anchored on an indent. This searched for
   // `"\n    resolvedPageUrl = null;"` — four spaces, i.e. inside the `try` — which pinned the statement's
   // INDENTATION as though that were the property. It is not: the property is that nothing can read the

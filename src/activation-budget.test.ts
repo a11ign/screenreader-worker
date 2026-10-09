@@ -8,7 +8,7 @@
  * `deadline` having examined nothing. Two structural types out of eight, and `postSubmit` is where 3.3.1
  * and 4.1.3 live.
  *
- * These are the PURE half. `capture-probes.mjs` cannot be unit-tested at all — it imports guidepup and
+ * These are the PURE half. `capture-probes.ts` cannot be unit-tested at all — it imports guidepup and
  * throws at module load where no screen reader exists — so everything decidable lives here and the wiring
  * is guarded by reading the source, the `activation-gates.test.ts` exemption.
  */
@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 
 import {
   ACTIVATION_SHARE_OF_REMAINING, activationBudgetMark, activationDeadline,
-} from "./capture-pure.mjs";
+} from "./capture-pure.ts";
 
 test("the activation may take at most its share, and the sweeps after it keep the rest", () => {
   const now = 1_000_000;

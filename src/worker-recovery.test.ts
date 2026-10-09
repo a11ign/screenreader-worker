@@ -4,13 +4,13 @@
 // The first version of these tests asserted against a copy of the error MESSAGE. That is a test that
 // cannot discriminate: reword the message in capture-core and recovery stops working in production
 // while this file keeps passing, because the string it checks lives here rather than there. The fix is
-// twofold — capture-core tags faults with codes (capture-faults.mjs), and the test below drives the
+// twofold — capture-core tags faults with codes (capture-faults.ts), and the test below drives the
 // real gate instead of a paraphrase of it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isLocallyRecoverable } from "./worker-recovery.mjs";
-import { captureFault, FAULT } from "./capture-faults.mjs";
-import { failIfScreenReaderIsMute } from "./capture-pure.mjs";
+import { isLocallyRecoverable } from "./worker-recovery.ts";
+import { captureFault, FAULT } from "./capture-faults.ts";
+import { failIfScreenReaderIsMute } from "./capture-pure.ts";
 
 /** The shape capture-core's diagnostics have, with only what this gate reads. */
 const diagnostics = (lastSpoken: string | undefined) => ({
@@ -56,7 +56,7 @@ test("a failed screen-reader start is recoverable — the guest is still settlin
 });
 
 test("a hard timeout is NOT retried locally — it has already spent the whole budget", () => {
-  // #336 gave this a real fault code (server.mjs's `withHardTimeout` now throws via `captureFault`), so
+  // #336 gave this a real fault code (server.ts's `withHardTimeout` now throws via `captureFault`), so
   // this is excluded by NAME from RECOVERABLE, not because it carries no code at all -- the shape a
   // plain, untagged Error tests below covers that different case.
   assert.equal(

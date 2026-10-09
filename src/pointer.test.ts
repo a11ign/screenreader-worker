@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { parkPointForTest as parkPoint, parkPointer } from "./pointer.mjs";
+import { parkPointForTest as parkPoint, parkPointer } from "./pointer.ts";
 
 /** The override is read per call, so each case sets and clears it rather than relying on order. */
 function withOverride<T>(value: string | undefined, fn: () => T): T {
@@ -75,7 +75,7 @@ test("parkPointer gives up after two attempts and never throws", async () => {
 });
 
 /**
- * WHICH FAILURE IT WAS, recorded rather than inferred. `pointer.mjs` asserted for weeks that "the observed
+ * WHICH FAILURE IT WAS, recorded rather than inferred. `pointer.ts` asserted for weeks that "the observed
  * failures are transient spawn failures" and built its retry on that; the 11 `pointerParkFailed` marks on
  * disk all read 5,032-9,134 ms against a 5,000 ms ceiling, which is the other candidate entirely.
  */

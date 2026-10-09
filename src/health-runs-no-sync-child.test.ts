@@ -11,11 +11,11 @@
  * loop for the whole call, so the worker answered nothing on any route meanwhile. Filed on top of #2678,
  * which fixed the same defect for `displayMode`/`displayAdapter` and left these three, found on the same row.
  *
- * WHICH HALF EACH TEST PROVES, exactly as `health-does-not-shell-out.test.ts` states it: `server.mjs` needs
+ * WHICH HALF EACH TEST PROVES, exactly as `health-does-not-shell-out.test.ts` states it: `server.ts` needs
  * guidepup and therefore a screen reader, so no test here can serve a real `/health`. The BEHAVIOUR is
- * proved on `createVersionSampler` (`file-version.mjs`, guidepup-free, with stub readers standing in for
+ * proved on `createVersionSampler` (`file-version.ts`, guidepup-free, with stub readers standing in for
  * `powershell.exe`); the WIRING -- that `/health`'s path reaches the sampler and not the shell-out -- is
- * read off `server.mjs`'s source. That the real endpoint answers in milliseconds on a real guest is
+ * read off `server.ts`'s source. That the real endpoint answers in milliseconds on a real guest is
  * `orchestrator`'s to read on the fleet, the same way #2673's was.
  */
 import { test } from "node:test";
@@ -23,7 +23,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
-import { createVersionSampler } from "./file-version.mjs";
+import { createVersionSampler } from "./file-version.ts";
 
 /** The stub `powershell.exe`: it answers, but only after the time a box that cannot read a value takes. */
 const ONE_SECOND_MS = 1_000;
@@ -189,7 +189,7 @@ test("a reader that throws is contained: the other two survive and the failed on
 
 // ---- the wiring: what `/health`'s path reaches, read off the source ----
 
-const server = readFileSync(fileURLToPath(new URL("./server.mjs", import.meta.url)), "utf8");
+const server = readFileSync(fileURLToPath(new URL("./server.ts", import.meta.url)), "utf8");
 const bodyOf = (name: string) =>
   new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n}\\n`).exec(server)?.[0] ?? "";
 
@@ -211,7 +211,7 @@ test("currentEnvironment merges the version sampler's reading in on every call, 
 });
 
 test("windowsVersion's own read cannot shell out synchronously", () => {
-  // `powershellValue`/`execFileSync` DO still appear in server.mjs -- `foregroundLockTimeout` uses them,
+  // `powershellValue`/`execFileSync` DO still appear in server.ts -- `foregroundLockTimeout` uses them,
   // deliberately, because it reads exactly once, ever, and is not this row's subject. Scoped to
   // `bootConstantAsync`'s own body so that read does not make this test meaningless.
   const body = bodyOf("bootConstantAsync");
@@ -223,6 +223,6 @@ test("windowsVersion's own read cannot shell out synchronously", () => {
 
 test("the version sampler is started only with the listener, and stopped with the process", () => {
   assert.match(server, /if \(IS_MAIN\) versionSampler\.start\(\)/,
-    "a process that merely imports server.mjs must not run a PowerShell timer");
+    "a process that merely imports server.ts must not run a PowerShell timer");
   assert.match(server, /versionSampler\.stop\(\)/, "SIGINT/SIGTERM must stop the timer");
 });

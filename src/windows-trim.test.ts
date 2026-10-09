@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   packagesToRemove, trimSummary, trimAlreadyDone, REMOVABLE_APPX, KEEP_PATTERNS, DISABLEABLE_SERVICES,
-} from "./windows-trim.mjs";
+} from "./windows-trim.ts";
 
 test("the keep-list beats the removable list, always", () => {
   // The precedence that makes this safe to run unattended. If a package is somehow on both lists,

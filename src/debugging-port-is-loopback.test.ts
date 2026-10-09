@@ -11,8 +11,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { BROWSERS, browserArgs } from "./browsers.mjs";
-import { CDP_PORT, reusableArgs } from "./browser-session.mjs";
+import { BROWSERS, browserArgs } from "./browsers.ts";
+import { CDP_PORT, reusableArgs } from "./browser-session.ts";
 
 const URL_UNDER_TEST = "https://app.example.test/orders";
 

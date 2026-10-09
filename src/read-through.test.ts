@@ -7,7 +7,7 @@
 // existing rules need a regression net proving the refactor around it changed nothing.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { phraseAction } from "./capture-pure.mjs";
+import { phraseAction } from "./capture-pure.ts";
 
 /** A fresh read-through's running state. `silentAtStart` is what NVDA did before the walk began. */
 const tracker = (silentAtStart = false) => ({

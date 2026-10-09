@@ -1,17 +1,17 @@
 /**
- * `titleSourceVerdict` (`capture-pure.mjs`) — known-gaps.md §44. NVDA's spoken report of the page title
+ * `titleSourceVerdict` (`capture-pure.ts`) — known-gaps.md §44. NVDA's spoken report of the page title
  * (`reportedTitle`) is the LAST THING NVDA SAID, which on a page whose focus lands in a live region is
  * that region's announcement, not the title. Measured on `design-system.service.gov.uk/components/
  * checkboxes/`: `titleAfter` read `"No search results"`, missing the ` - Profile 1 - Microsoft Edge`
  * suffix a real window title always carries.
  *
  * These are the three states `probeFocusContext`/`probeTypedFeedback`/`probeRouteChange` need out of
- * `currentTitle` (capture-probes.mjs): a trusted document read, an untrusted one falling back to NVDA's
+ * `currentTitle` (capture-probes.ts): a trusted document read, an untrusted one falling back to NVDA's
  * report, and the divergence flag that only means something when the document read WAS trusted.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { titleSourceVerdict } from "./capture-pure.mjs";
+import { titleSourceVerdict } from "./capture-pure.ts";
 
 test("a confirmed CDP target: the document's own title wins, even when it differs from what NVDA said", () => {
   // This is the exact defect: NVDA said the live region, not the title.

@@ -2,7 +2,7 @@
 // the boundaries of the only function that writes to it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { withLogLevel, withIniSetting } from "./nvda-logging.mjs";
+import { withLogLevel, withIniSetting } from "./nvda-logging.ts";
 
 const INI = "[general]\n\tlanguage = Windows\n\tshowSpeechViewerAtStartup = False\n\n[speech]\n\tsynth = oneCore\n";
 

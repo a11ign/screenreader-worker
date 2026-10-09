@@ -4,7 +4,7 @@
  * "What a container prefix looks like" exists in THREE places today, not four:
  *
  *   `CONTAINER_ROLES`   announcement.ts            the grammar, TypeScript, read by the judge
- *   `CONTAINER_PREFIX`  capture-pure.mjs           the worker, plain Node, runs on Windows
+ *   `CONTAINER_PREFIX`  capture-pure.ts           the worker, plain Node, runs on Windows
  *   `CONTAINER_PREFIX`  screenreader_features.py   the featurizer, Python, runs in the lab
  *
  * A fourth used to be here — "the 2.4.3 counter" in `rules.ts` — and this docstring named it as a
@@ -46,7 +46,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { CONTAINER_ROLES } from "@a11ign/evidence";
-import { CONTAINER_PREFIX } from "./capture-pure.mjs";
+import { CONTAINER_PREFIX } from "./capture-pure.ts";
 
 /**
  * Container roles the GRAMMAR parses and the WORKER deliberately does not strip.
@@ -95,7 +95,7 @@ test("no container role joins the grammar without someone deciding what the work
   assert.deepEqual(surprises, [],
     `these container roles are in the grammar and are NOT stripped by the worker, so the prefix survives `
     + `into a swept announcement and becomes part of the control's NAME: ${surprises.join(", ")}. `
-    + `Add them to CONTAINER_PREFIX in capture-pure.mjs AND to the Python copy in `
+    + `Add them to CONTAINER_PREFIX in capture-pure.ts AND to the Python copy in `
     + `screenreader_features.py — or to GRAMMAR_ONLY_CONTAINERS above, with the reason.`);
 
   // BOTH DIRECTIONS. A ledger entry that is no longer true is a phantom, and a ledger nobody prunes stops

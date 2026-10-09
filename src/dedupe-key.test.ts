@@ -20,7 +20,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 
-import { dedupeKey } from "./capture-pure.mjs";
+import { dedupeKey } from "./capture-pure.ts";
 
 test("a space-separated container prefix is stripped", () => {
   // Real: the container's role follows its name with a SPACE ("main landmark"), not a comma.

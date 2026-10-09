@@ -1,0 +1,452 @@
+// capture-core.ts — drive NVDA through a page and return what it announced.
+// Shared by the standalone CLI (capture.ts) and the HTTP worker (server.ts).
+// MUST run in an interactive desktop session.
+//
+// Every phase records a structured diagnostic (returned as `diagnostics`)
+// instead of swallowing errors. When a capture comes back empty, read them in this
+// order: `documentReady` (did NVDA ever name the document? ok:false means it was
+// reading a blank or not-yet-rendered window), then `windowsActivate` (did Edge reach
+// the foreground, and how long did it take), then `afterStart.lastSpoken`.
+//
+// Do NOT treat an empty `afterStart.lastSpoken` as the smoking gun on its own. It used
+// to be sampled before anchoring, when NVDA legitimately had not spoken yet: across 13
+// healthy captures it was empty 13 times, so it diagnosed nothing. It is now sampled
+// after the document is anchored and named, which makes it meaningful.
+//
+// captureWithNvda reads as a top-down narrative; each phase below it is one
+// level of abstraction down (the "stepdown rule").
+//
+// SPLIT 2026-09-05: this file used to hold the whole pipeline. `capture-setup.ts` now owns
+// bringing the browser and NVDA up, keeping them healthy, reading the page, and tearing them
+// down; `capture-probes.ts` owns the structural-navigation sweep and the ~30 probes that
+// observe interaction. What is left here is the narrative itself -- `captureWithNvda` and
+// `runCapturePhases` sequence phases from both of those files, which is why this file depends
+// on each of them and neither depends back: that is what keeps the import graph a DAG.
+import { browserFor } from "./browsers.ts";
+// Moved to its own dependency-free file so portable/host-side code can IMPORT this number instead of
+// regex-scraping this file's text for it — architecture-audit.md §5, item 3. See protocol-version.ts.
+export { CAPTURE_PROTOCOL_VERSION } from "./protocol-version.ts";
+// The pure half of this module. Moved to `capture-pure.ts` so tests can reach it without importing
+// guidepup, which THROWS at import time where no screen reader exists — that is why CI was red on six
+// files. Imported and re-exported here, so every existing caller of `capture-core` is unchanged and
+// there is still exactly one definition of each.
+import {
+  addressesSamePage,
+  createDiagnostics,
+  phraseAction,
+  failIfScreenReaderIsMute,
+  dedupeKey,
+  sweepStepFromSpeech,
+  elementsListRowName,
+  crossCheckStructure,
+  focusOrderCycled,
+  isBrowserErrorTitle,
+  samePath,
+  landedVerdict,
+  pageServedRefusal,
+  DEFAULT_BUDGET_MS,
+  screenReaderWasSilentAtStart,
+  shouldInstallFocusEventListenerEarly,
+} from "./capture-pure.ts";
+import { endCaptureUrls, installFocusEventLog, viewportMeasure } from "./browser-session.ts";
+import { parkPointer } from "./pointer.ts";
+import {
+  reuseBrowserFor, openPage, assertLandedOnRequestedPage, assertPageWasServed, waitForPageToSettle,
+  stopAndCleanup, waitForDocument, refreshBrowseBuffer, anchorToTop, recordStartupHealth, readWithRetry,
+  focusBrowserWindow, startScreenReader, waitForScreenReader, ensureSpeechChannel, resetSpeechLogs,
+  errMsg,
+  screenReaderReady, browserAvailable, warmUpScreenReader, screenReaderSettings, forgetScreenReader,
+  shutdownScreenReader,
+} from "./capture-setup.ts";
+import { navigateByStructureThenAudit } from "./capture-probes.ts";
+import { beginAuthentication } from "./capture-auth.ts";
+
+// JSON from the browser or the page (a CDP reply, a `page.evaluate` result, a request body): its shape is the other end's, and
+// modelling it is a job of its own. Named once here so the boundary is greppable and `no-explicit-any` still bites everywhere else.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Untyped = any;
+
+/**
+ * The mark log, threaded through almost every function here. Aliased rather than re-described: this
+ * file passes it to forty of them, and forty inline shapes is forty chances to disagree.
+ */
+type Diag = import("./capture-pure.ts").CaptureDiagnostics;
+
+/**
+ * Whether this capture ASKED about a channel, and what it can support if it did — capture-protocol 9.
+ *
+ * Every channel except `media` is a bare array, and a bare array cannot say why it is empty. `media` has
+ * been alone in getting this right for the whole project, with a comment saying so. Measured over 6,467
+ * corpus captures: `formChanges` empty on 4,830 with **3,006 never asked**, `postSubmitFields` 55%, and
+ * `tableCells` empty on 6,095 with NOT ONE where the tool could say the page has no table. Ten of the 28
+ * model features read only such channels, so a `0` they treat as a fact about the page is usually a fact
+ * about the request.
+ *
+ * A RELOCATION rather than new instrumentation: the probe flags decide what runs and `collectByType`
+ * already records why every sweep stopped. Both went to `diagnostics`, a FORBIDDEN_INPUT_KEY — the
+ * capture's own record of its method, filed as debugging output. This makes it evidence.
+ *
+ * ADDITIVE: every existing channel keeps its exact type, so the 28 files that read them are untouched and
+ * an older consumer ignores this entirely — the same shape as `fault` and `captureId`.
+ *
+ * Named once because six sites write one — the eight-call-site lesson the browser preset records.
+ */
+type Observation = { asked: boolean, complete?: boolean, why?: string, activated?: number,
+            stop?: { prev: string, next: string } };
+
+// Re-exported for callers that had these from `capture-core` before the split.
+export {
+  addressesSamePage,
+  phraseAction,
+  failIfScreenReaderIsMute,
+  dedupeKey,
+  sweepStepFromSpeech,
+  elementsListRowName,
+  crossCheckStructure,
+  focusOrderCycled,
+  isBrowserErrorTitle,
+  samePath,
+  landedVerdict,
+  pageServedRefusal,
+};
+
+// Re-exported for callers that had these from `capture-core` before the split into
+// `capture-setup.ts` -- same reason and same shape as the block above.
+export {
+  screenReaderReady,
+  browserAvailable,
+  warmUpScreenReader,
+  screenReaderSettings,
+  forgetScreenReader,
+  shutdownScreenReader,
+};
+
+const DEFAULT_STEPS = 150; // read-through line count cap
+const DEFAULT_BROWSER_WAIT_MS = 12_000; // UPPER BOUND on waiting for Edge, not a fixed sleep
+// Deadlines for POLLS, not durations to sleep. Named as budgets so the distinction survives: every
+// remaining wait in this file either checks a condition or is the interval between two such checks.
+const NVDA_READY_BUDGET_MS = 3_000;   // how long a cold NVDA gets to answer at all
+
+type CapturedStructure = { headings: string[], landmarks: string[], formFields: string[], graphics: string[], links: string[], lists: string[], tableCells: string[], frames: string[] };
+
+type AnnouncedChange = { control: string, after: string, afterUnresolved?: boolean };
+
+type CapturedInteraction = { controls: string[], stateChanges: AnnouncedChange[], formChanges: AnnouncedChange[], postSubmitFields: string[], focusOrder: string[], routeChange?: unknown, navigatedOnSubmit?: unknown, postSubmitNames?: string[], leftSite?: unknown };
+
+/**
+ * THE EVIDENCE SHAPE, named once. It was written out inline in this `@returns` and then built by three
+ * separate object literals whose inferred types disagreed with it and with each other -- so the one
+ * description that was accurate was the one nothing checked. The three optional fields are optional on
+ * purpose and each has a recorded reason: absent and "we looked and found nothing" must stay
+ * distinguishable, because the second IS the finding for 2.4.2, 3.3.1 and 1.4.2 respectively.
+ */
+type Capture = { url: string, screenReader: string, capturedAt: string, transcript: string[], structure: CapturedStructure, interaction: CapturedInteraction, media?: Record<string, unknown>[] | null, formInputs?: Record<string, unknown>[] | null, observed?: Record<string, Observation>, diagnostics: object[] };
+
+/**
+ * @returns {Promise<Capture>}
+ *
+ * @param {string} url
+ * @param {{
+ *   task?: string, steps?: number, maxMs?: number, nav?: string,
+ *   probeForms?: boolean, probeTables?: boolean, probeFocus?: boolean,
+ *   probeNavigation?: boolean, probeElementsList?: boolean, probeOrder?: string,
+ *   reuseBrowser?: boolean, reuseScreenReader?: boolean,
+ *   auth?: import("./auth-flow.ts").AuthPlan,
+ *   browserWaitMs?: number, diagnosticsSink?: object[],
+ *   browser?: string,
+ * }} [opts]
+ *
+ * `browser` is on that list and is NOT read as `opts.browser` anywhere here -- it goes to `browserFor(opts)`
+ * whole. So a list derived by grepping `opts.` missed the one option CLAUDE.md documents as arriving per
+ * REQUEST (`{"url": "...", "browser": "chrome"}`), and typechecking is what noticed. Deriving a contract
+ * from how it is READ finds the fields that are read.
+ *
+ * DERIVED from every `opts.` this file reads, not from memory. `captureOptions` in `server.ts` reads
+ * KNOWN FIELDS ONLY -- which is what lets an older worker ignore a `captureId` it has never heard of --
+ * so this list and that one are the same contract stated in two places, and the wire is the thing that
+ * has to keep working across a deploy.
+ */
+export async function captureWithNvda(url: string, opts: {
+    task?: string; steps?: number; maxMs?: number; nav?: string;
+    probeForms?: boolean; probeTables?: boolean; probeFocus?: boolean;
+    probeNavigation?: boolean; probeElementsList?: boolean; probeOrder?: string;
+    reuseBrowser?: boolean; reuseScreenReader?: boolean;
+    auth?: import("./auth-flow.ts").AuthPlan;
+    browserWaitMs?: number; diagnosticsSink?: object[];
+    browser?: string;
+} = {}): Promise<Capture> {
+  const diag = createDiagnostics((opts.diagnosticsSink as { event: string }[] | undefined));
+  const reuseBrowser = reuseBrowserFor(opts);
+  // Which browser this capture drives. Resolved from an allow-list, so an unknown name fails the request
+  // here rather than reaching a shell; and recorded on the result, because the browser is evidence — the
+  // host's cache key already reserves a slot for it.
+  const app = browserFor(opts);
+  diag.mark("browserSelected", { id: app.id, name: app.name });
+  const browser = await openPage(url, diag, { reuse: reuseBrowser, app });
+  // ADR 0038: an authenticated capture signs in HERE, in the window just launched and before anything reads the
+  // page, so the transcript cannot begin during the login. `null` for every capture that asked for none, which
+  // leaves everything below byte-for-byte what it was.
+  const authentication = await signInIfAsked({ opts, url, diag, browser, reuseBrowser });
+  let viewport;
+  try {
+    await assertLandedOnRequestedPage(url, diag);
+    await assertPageWasServed(url, diag);
+    await waitForPageToSettle(diag);
+    // #1513: the CSS viewport this capture is read at, once the page has settled and before any probe can move or
+    // resize anything. `server.ts` merges it into this capture's environment (`viewportFromMarks`).
+    viewport = await viewportMeasure();
+    diag.mark("viewport", viewport);
+  } catch (error) {
+    // A signed-in session must not outlive a capture that failed before it began, and the browser holding it
+    // must close. An unauthenticated capture rethrows exactly as before.
+    if (authentication) await abandonAuthenticated({ authentication, diag, browser, reuseBrowser });
+    throw error;
+  }
+  let succeeded = false;
+  try {
+    const result = await runCapturePhases(url, opts, diag);
+    // A request can complete without throwing while NVDA is silent or still attached to a
+    // blank document. Never preserve that state for the next capture: reusing it turns one
+    // transient readiness failure into a whole run of confident empty captures. The host-side
+    // title verifier will reject the result, but cleanup must make the worker recoverable
+    // before that verifier gets a chance to retry.
+    const documentReady = (result.diagnostics || []).some(
+      (event: Record<string, unknown>) => event.event === "documentReady" && event.ok === true,
+    );
+    succeeded = documentReady && Array.isArray(result.transcript) && result.transcript.length > 0;
+    return result;
+  } finally {
+    // A worker is long-lived and serves many captures, so an expectation set by THIS capture and never
+    // cleared is not an edge case, it is the normal state between requests -- every `pageTarget()` call
+    // outside a capture (`/diagnostics`, a `bringPageToFront` between cases) would otherwise compare the
+    // live target against the PREVIOUS capture's URL. That mostly reads as a wrong "fallback" where
+    // "no-expected-url" is the truth, and two same-path pages on different hosts would make it a false
+    // "matched" -- this repo's most-repeated defect, a stale value read as a current one, in a new place.
+    // #1200: BOTH urls, not just the expectation. `setExpectedPageUrl(null)` used to stand here and
+    // cleared half the pair -- `resolvedPageUrl` kept the previous capture's landing URL, and its only
+    // reset was the first statement of `navigateExisting`, which is per-NAVIGATION and does not run on a
+    // capture that never navigates. Everything the paragraph above says about a stale expectation was
+    // true of the value beside it, with nothing clearing it at this boundary.
+    endCaptureUrls();
+    // The session is destroyed BEFORE the browser is closed (ADR 0038): the purge needs the protocol connection,
+    // and a profile that persists on disk would otherwise carry the login into the next capture.
+    if (authentication) await authentication.end();
+    // Cleanup MUST be unconditional, and it was not.
+    //
+    // Edge is launched before NVDA is started, and every phase in between can throw. When
+    // `nvda.start` timed out, the throw skipped the cleanup call entirely and left the browser
+    // running -- so each failed capture leaked one Edge. Measured on a stuck worker: EIGHT
+    // orphaned msedge processes in the logged-on session, on a 4 GB guest, which is exactly
+    // the load that makes the NEXT nvda.start time out. Failures compounded until the worker
+    // could not capture at all, and all three workers reached that state.
+    //
+    // On failure the screen reader is NOT kept, whatever the reuse setting says: a capture that
+    // died mid-flight can leave NVDA running but unresponsive, and reusing that is how one bad
+    // capture poisons every capture after it.
+    await stopAndCleanup(diag, browser, {
+      keepScreenReader: !!opts.reuseScreenReader && succeeded, reuseBrowser,
+    })
+      .catch((e) => diag.mark("cleanupFailed", { error: errMsg(e) }));
+  }
+}
+
+/**
+ * DIAGNOSTIC ONLY: `A11Y_DIAG_SKIP_LOGIN_MARK=1` in the worker PROCESS's environment makes the login NOT mark the window navigated, so
+ * a control run can show whether that mark is what makes NVDA read the signed-in page (a11ign #4107). Read per capture, so whoever
+ * drives the worker sets it on the server process for the control run and unsets it after. Nothing in the request protocol, the CLI
+ * or the Action can set it. **A capture taken with it set is not a product reading**: the record says so with `loginMarkSuppressed`.
+ * Only the exact value `1` turns it on; unset, empty or `0` returns nothing, and `beginAuthentication` marks exactly as it always has.
+ *
+ * @param {{ diag: Diag, env?: Record<string, string | undefined> }} ctx
+ * @returns {{ markNavigated?: () => void }}
+ */
+export function loginMarkOverride({ diag, env = process.env }: { diag: Diag; env?: Record<string, string | undefined>; }): { markNavigated?: () => void; } {
+  if (env.A11Y_DIAG_SKIP_LOGIN_MARK !== "1") return {};
+  return { markNavigated: () => diag.mark("loginMarkSuppressed") };
+}
+
+/**
+ * Sign in when the request carries `auth`; otherwise nothing. A login that fails closes the browser it opened:
+ * nothing else can, because the capture never reached its own cleanup.
+ *
+ * @param {{ opts: any, url: string, diag: Diag, browser: any, reuseBrowser: boolean }} ctx
+ * @returns {Promise<{ end: () => Promise<void> } | null>}
+ */
+async function signInIfAsked({ opts, url, diag, browser, reuseBrowser }: { opts: Untyped; url: string; diag: Diag; browser: Untyped; reuseBrowser: boolean; }): Promise<{ end: () => Promise<void>; } | null> {
+  if (!opts.auth) return null;
+  try {
+    return await beginAuthentication({ plan: opts.auth, url, diag, ...loginMarkOverride({ diag }) });
+  } catch (error) {
+    endCaptureUrls();
+    await stopAndCleanup(diag, browser, { keepScreenReader: false, reuseBrowser })
+      .catch((e) => diag.mark("cleanupFailed", { error: errMsg(e) }));
+    throw error;
+  }
+}
+
+/**
+ * The session's end for a capture that failed after signing in but before its own try/finally: purge, then close.
+ * @param {{ authentication: { end: () => Promise<void> }, diag: Diag, browser: any, reuseBrowser: boolean }} ctx
+ */
+async function abandonAuthenticated({ authentication, diag, browser, reuseBrowser }: { authentication: { end: () => Promise<void>; }; diag: Diag; browser: Untyped; reuseBrowser: boolean; }) {
+  await authentication.end();
+  endCaptureUrls();
+  await stopAndCleanup(diag, browser, { keepScreenReader: false, reuseBrowser })
+    .catch((e) => diag.mark("cleanupFailed", { error: errMsg(e) }));
+}
+
+// The capture proper. Split out so captureWithNvda is nothing but "launch, run, always clean
+// up" -- the guarantee is the point, and it should be readable at a glance.
+/**
+ * Bring the machine to a state where a capture can start: window focused, pointer parked, NVDA speaking.
+ *
+ * One job -- everything here is setup that must succeed before the first keystroke means anything, and
+ * every step of it is a condition being waited for rather than a duration being slept.
+ *
+ * @param {{ browserWaitMs: number, reuse: boolean, diag: Diag }} ctx
+ */
+async function bringUpCaptureEnvironment({ browserWaitMs, reuse, diag }: { browserWaitMs: number; reuse: boolean; diag: Diag; }) {
+  await focusBrowserWindow(browserWaitMs, diag);
+  // Own the pointer before anything sends a keystroke. It is a capture INPUT, not a bystander: it holds
+  // hover state over whatever it rests on, and guidepup prefixes every captured action with Ctrl, which
+  // Edge turns into a magnifier overlay when an image is underneath. See pointer.ts.
+  await parkPointer((diag as Untyped));
+  const coldStart = await startScreenReader(diag, { reuse: !!reuse });
+  // Wait for NVDA to answer, rather than for a fixed three seconds.
+  //
+  // This was `sleep(NVDA_SETTLE_MS)` and its own comment conceded the point: "dead time when NVDA was
+  // already running... waitForDocument below is what actually establishes readiness either way." A
+  // fixed sleep is the wrong shape in both directions -- it burns the full 3s when NVDA answers in 200ms,
+  // and it still expires too early when NVDA is genuinely slow.
+  //
+  // It cannot simply be deleted, which is the trap: `ensureSpeechChannel` runs next and treats an
+  // unresponsive NVDA as a dead channel, so removing the wait would turn a slow start into a spurious
+  // ~23s screen-reader restart. Polling keeps the protection and stops paying for it when it is not
+  // needed. The constant is the deadline, which is why it is named as a budget.
+  if (coldStart) await waitForScreenReader(NVDA_READY_BUDGET_MS, diag);
+  // Before anything expensive: prove speech actually comes back. A dead channel discovered here costs one
+  // round trip; discovered after the read-through it costs the whole capture and a retry.
+  await ensureSpeechChannel(diag);
+  await resetSpeechLogs(diag);
+}
+
+/**
+ * Install the focus-event listener before the capture's OWN first `anchorToTop()`, rather than
+ * immediately before `probeFocusOrder` where it used to attach — `known-gaps.md` §42's fix.
+ *
+ * The listener used to install well after the sweep, `probeFocusContext` and `probeFocusReveal`, any of
+ * which can move real DOM focus first (a sweep activating a control under `probeForms`;
+ * `probeFocusContext`/`probeFocusReveal` each walking the tab order themselves). `probeFocusOrder`'s own
+ * `anchorToTop()` then blurred whatever was left focused, and that blur was the log's first event — a
+ * `focusout` with no matching `focusin`, byte-for-byte 2.4.7's F55 signature and nothing of the kind, on
+ * all 37 conformant real pages measured (`not-working.md` §22). Installing here means even THIS
+ * function's own first `anchorToTop()` call, two lines after this one runs, is a real paired event if the
+ * page autofocused something on load.
+ *
+ * Gated on `shouldInstallFocusEventListenerEarly` (capture-pure.ts), not called unconditionally: without
+ * `probeFocus` nothing downstream ever walks the tab order or reads this log, so installing would be a CDP
+ * round trip and a page-level listener paid by every capture for evidence nothing will consume. Idempotent
+ * either way -- `probeFocusOrderWithEventLog` still installs again immediately before its own walk, and
+ * the page-side script's `already: true` branch makes the second call a no-op.
+ *
+ * INSTALLING THIS EARLY IS ALSO WHAT PUT `resetFocusToDocumentStart` (`browser-session.ts`) AT RISK.
+ * `probeFocusReveal` (`§43`) blurs whatever an earlier probe left focused, before this listener existed
+ * that blur's `focusout` had no watcher and could not be misread; now it does, and an unbracketed blur
+ * would be F55's exact signature against a page that did nothing wrong. See that function's own comment
+ * for the bracket that closes it — this file, `rules.ts`'s `focusLossEvidence` and `browser-session.ts`
+ * are the three points of one interaction, and none of the three names the other two on its own.
+ *
+ * @param {Record<string, any>} opts @param {Diag} diag
+ */
+async function installFocusEventListenerBeforeFirstFocus(opts: Record<string, Untyped>, diag: Diag) {
+  if (!shouldInstallFocusEventListenerEarly(opts)) return;
+  const install = await installFocusEventLog();
+  diag.mark("focusEventListenerEarlyInstall", install);
+}
+
+/** @param {string} url @param {Record<string, any>} opts @param {Diag} diag */
+async function runCapturePhases(url: string, opts: Record<string, Untyped>, diag: Diag) {
+  const steps = Number(opts.steps || DEFAULT_STEPS);
+  const browserWaitMs = Number(opts.browserWaitMs || DEFAULT_BROWSER_WAIT_MS);
+  const navStrategy = opts.nav === "object" ? "object" : "line";
+  const maxMs = Number(opts.maxMs || DEFAULT_BUDGET_MS);
+
+  await bringUpCaptureEnvironment({ browserWaitMs, reuse: !!opts.reuseScreenReader, diag });
+
+  const deadline = Date.now() + maxMs;
+
+  // Start from a known state (browse mode + document top). Safe now that --app
+  // gives a chromeless single-page window — earlier this surfaced the browser
+  // start page because the window was not controlled. Also cancels NVDA's
+  // auto-say-all so it can't race the read.
+  // Anchor ONCE, after the gate rather than either side of it.
+  //
+  // There used to be an anchor here too, from when the read-through followed immediately.
+  // The gate does not care where the cursor is -- reporting the document title is
+  // position-independent -- and the anchor below re-establishes browse mode and the top
+  // regardless, so the earlier one was pure cost: measured at ~3s of a 15.8s capture, since
+  // each anchorToTop is two keystroke round trips plus a settle.
+  const documentTitle = await waitForDocument(diag);
+  // BEFORE the first `anchorToTop()` below -- `known-gaps.md` §42's fix. See
+  // `installFocusEventListenerBeforeFirstFocus`'s own comment for why here, specifically.
+  await installFocusEventListenerBeforeFirstFocus(opts, diag);
+  // Anchor AFTER the gate. waitForDocument asks NVDA to report the document title, which
+  // leaves that title as `lastSpokenPhrase` -- and the read-through deliberately reads the
+  // current line in place before its first move, so it captured the TITLE instead of the
+  // page's first line. Measured: the h1's "heading, level 1, ..." announcement disappeared
+  // from every page ("heading, level N" phrases fell from 105 to 15 across 90 captures) and
+  // was replaced by the <title>. Ctrl+Home moves the caret back to the top, which makes the
+  // first line the last thing spoken again.
+  //
+  // I first blamed this on reusing NVDA between captures. It was not: the same loss happens
+  // with reuse off. Both changes landed in one run, and the phrase COUNT was unchanged, so
+  // neither the benchmark nor capture-check saw it.
+  // Rebuild the buffer BEFORE anchoring, so Ctrl+Home lands in the new document rather than moving to the
+  // top of the previous one — which is what made the fault produce a first line from the page before.
+  await refreshBrowseBuffer(diag);
+  await anchorToTop();
+  await recordStartupHealth(diag);
+  const transcript = await readWithRetry({
+    steps, navStrategy, deadline, diag,
+    title: documentTitle,
+    silentAtStart: screenReaderWasSilentAtStart(diag),
+  });
+  failIfScreenReaderIsMute(transcript, diag);
+  const { structure, interaction, media, formInputs, observed } = await navigateByStructureThenAudit({
+    deadline, diag,
+    probeForms: !!opts.probeForms, probeFocus: !!opts.probeFocus, probeTables: !!opts.probeTables,
+    probeNavigation: !!opts.probeNavigation,
+    probeDialog: !!opts.probeDialog,
+    probeFocusReveal: !!opts.probeFocusReveal,
+    probeArrows: !!opts.probeArrows,
+    probeTyping: !!opts.probeTyping,
+    probeFocusContext: !!opts.probeFocusContext,
+    // NOT a boolean, and the only capture option that is not: it carries the author's values. Passed
+    // through rather than normalised here because the CLI validated it against the schema before it was
+    // sent — a second, looser validation at this boundary is how two spellings of one contract begin.
+    formState: opts.formState,
+    probeElementsList: !!opts.probeElementsList,
+    probeOrder: opts.probeOrder === "focus-first" ? "focus-first" : undefined,
+    task: opts.task,
+  });
+
+  diag.mark("done", { transcript: transcript.length });
+  return {
+    url,
+    screenReader: "NVDA",
+    capturedAt: new Date().toISOString(),
+    transcript,
+    structure,
+    interaction,
+    // 1.4.2 evidence, from the DOM. `null` means the probe did not run and is NOT the same as an empty
+    // array, which means the page declares no media — the rule reading this makes no claim on null.
+    media,
+    // 1.3.5 evidence, from the DOM -- #170: each form control's `autocomplete` ATTRIBUTE, `{ tag, type,
+    // autocomplete }`. The same contract as `media`: `null` means the census did not run, `[]` means the page
+    // has no form control, and `autocomplete: null` on an entry means that control has no attribute.
+    formInputs,
+    // What this capture ASKED, beside what it heard. See the `Observation` typedef.
+    observed,
+    diagnostics: diag.entries,
+  };
+}

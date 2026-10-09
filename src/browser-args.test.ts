@@ -12,7 +12,7 @@ import {
   ALL_BROWSER_IMAGES, BROWSERS, CAPTURE_WINDOW, CAPTURE_WINDOW_SIZE, DEFAULT_BROWSER, MAGNIFY_FEATURE,
   SHARED_SUPPRESSED_FEATURES,
   browserArgs, browserFor, browserProfileDir, configuredBrowser, resolveBrowser,
-} from "./browsers.mjs";
+} from "./browsers.ts";
 
 const URL_UNDER_TEST = "http://pages/case/good";
 
@@ -82,7 +82,7 @@ test("#1561: the pinned size is 1024x768, and it is the string /health reports a
   // 1024x768 at all as recently as 2026-09-22 (#1955).
   assert.deepEqual(CAPTURE_WINDOW, { width: 1024, height: 768 });
 
-  // ONE FACT, ONE SPELLING. `CAPTURE_WINDOW_SIZE` is what `server.mjs` puts on /health and what
+  // ONE FACT, ONE SPELLING. `CAPTURE_WINDOW_SIZE` is what `server.ts` puts on /health and what
   // `environmentKey` hashes; if it could drift from the flag, every capture would be keyed by a width it
   // was not taken at. Derived rather than written out, and asserted to be derived.
   assert.equal(CAPTURE_WINDOW_SIZE, `${CAPTURE_WINDOW.width}x${CAPTURE_WINDOW.height}`);
@@ -121,7 +121,7 @@ test("Edge's image magnifier is suppressed", () => {
   // guidepup sends Ctrl before EVERY captured action. On gov.uk the overlay took the foreground and the
   // capture read "Image Magnify, document" instead of the page — so the run reported that it could not
   // read the site at all. Microsoft documents no policy for this, only a per-profile toggle, which is
-  // why it is a flag: `pointer.mjs` is the second, independent guard.
+  // why it is a flag: `pointer.ts` is the second, independent guard.
   assert.match(features("edge"), new RegExp(MAGNIFY_FEATURE));
 });
 
@@ -204,7 +204,7 @@ test("the request wins over the guest's setting, which wins over the default", (
 });
 
 test("a typo in A11Y_BROWSER does not stop the worker booting", () => {
-  // `server.mjs` and `capture-core.mjs` both read this at MODULE LOAD. Throwing there means the process
+  // `server.ts` and `capture-core.ts` both read this at MODULE LOAD. Throwing there means the process
   // never binds its port — no /health, no /diagnostics, nothing to read — which is indistinguishable from
   // a dead machine, and this project has already spent two days on that misdiagnosis once. So a bad guest
   // setting falls back and REPORTS. Asserted rather than assumed, because the failure it prevents is

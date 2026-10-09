@@ -10,7 +10,9 @@
     "skipLibCheck": true,
     "noEmit": true,
     "types": ["node"],
-    "allowJs": true
+    "allowJs": true,
+    // `js-to-ts` writes `./x.ts` specifiers (ADR 0043, Decision 8); without this the checker refuses them (TS5097). Rslib, not `tsc`, emits.
+    "rewriteRelativeImportExtensions": true
   },
   "include": ["src/**/*.ts", "scripts/**/*.ts"]
 }

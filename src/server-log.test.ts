@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 
-import { createLogWriter, MAX_LOG_BYTES, silenceStreamErrors } from "./server-log.mjs";
+import { createLogWriter, MAX_LOG_BYTES, silenceStreamErrors } from "./server-log.ts";
 
 /** A fake for every side effect the writer has, so a test can watch all of them and touch no real disk. */
 function spyIo(overrides = {}) {

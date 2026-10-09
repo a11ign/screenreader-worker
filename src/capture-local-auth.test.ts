@@ -1,13 +1,13 @@
 // THE WORKER-LOCAL AUTHENTICATED CAPTURE (a11y-witness #4171, #4084 outcome 1, prerequisite of #4107).
 //
-// `node capture.mjs <url> <outFile> [steps] --auth <plan.json>` runs on the worker's own machine, reads the plan's `fromEnv` credentials from THAT
+// `node capture.ts <url> <outFile> [steps] --auth <plan.json>` runs on the worker's own machine, reads the plan's `fromEnv` credentials from THAT
 // process's environment, and prints the heading NVDA announced. These tests drive `runLocalCapture` on a fake `captureWithNvda`, so no browser,
 // NVDA or worker is touched. Two controls: the plan reaches the capture as `auth` (unfixed, none does and the login never happens), and a missing
 // variable stops the run before the capture is called (unfixed, an empty credential would be submitted).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { runLocalCapture } from "./capture.mjs";
+import { runLocalCapture } from "./capture.ts";
 
 const URL_ = "http://127.0.0.1:5050/";
 const PLAN_FILE = "/plans/login.json";

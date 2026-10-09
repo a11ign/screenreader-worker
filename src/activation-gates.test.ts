@@ -21,7 +21,7 @@
  * module load where no screen reader exists, so no test can call these functions; the alternative is no
  * guard at all, and the two misses cost a corpus row each.
  *
- * Reads `capture-probes.mjs`, not `capture-core.mjs`: both call sites this guards
+ * Reads `capture-probes.ts`, not `capture-core.ts`: both call sites this guards
  * (`rescanFormFieldsAfterSubmit`, `probeConfiguredForm`) live there since the 2026-09-05 split.
  */
 import { test } from "node:test";
@@ -30,7 +30,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const CORE = readFileSync(
-  resolve(import.meta.dirname, "capture-probes.mjs"), "utf8").split("\n");
+  resolve(import.meta.dirname, "capture-probes.ts"), "utf8").split("\n");
 
 /**
  * Evidence that only exists AFTER something was operated. A gate on `probeForms` in the same expression
@@ -54,7 +54,7 @@ test("no post-activation evidence is gated on `probeForms`", () => {
     // number, and the test below pins the configured path's mark so this exclusion cannot hide a gap.
     .filter(({ line }) => !/\bdiag\.mark\(/.test(line));
 
-  assert.deepEqual(offenders.map((o) => `capture-probes.mjs:${o.number}  ${o.line}`), [],
+  assert.deepEqual(offenders.map((o) => `capture-probes.ts:${o.number}  ${o.line}`), [],
     "A branch gates post-activation evidence on `probeForms`. That flag says whether the OPPORTUNISTIC\n"
     + "probe is on; it does not say whether a control was activated, because a declared `formState`\n"
     + "activates one with `probeForms` false. Gate on `interaction.formChanges.length > 0` instead — an\n"

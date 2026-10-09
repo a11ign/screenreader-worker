@@ -15,7 +15,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 
-import { censusFromAXTree, truncatedAnnouncements } from "./browser-session.mjs";
+import { censusFromAXTree, truncatedAnnouncements } from "./browser-session.ts";
 
 // A real element always has a backing DOM node, and the census now requires one: a node WITHOUT
 // `backendDOMNodeId` is CSS-generated content, which the oracle must not count. `generated()` below is the

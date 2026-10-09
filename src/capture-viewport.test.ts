@@ -6,7 +6,7 @@
  * caselaw's two captures matched <768px and >=992px layouts and yielded different findings (#1043), and the Met
  * Office page hides its h1 below 1280px (#1522). Nothing recorded which width produced which evidence.
  *
- * Imports only `capture-pure.mjs`: `capture-core.mjs` imports `@guidepup/guidepup`, which throws at import where no
+ * Imports only `capture-pure.ts`: `capture-core.ts` imports `@guidepup/guidepup`, which throws at import where no
  * screen reader exists, so the decision lives in the pure module and the wiring is pinned by source text below.
  *
  * NOT a key, and STILL not one after #1561 pinned the window: what that row keys is `windowSize`, the width the
@@ -18,7 +18,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { stripComments } from "@a11ign/evidence/source-text";
-import { viewportFromMarks } from "./capture-pure.mjs";
+import { viewportFromMarks } from "./capture-pure.ts";
 
 const mark = (fields: Record<string, unknown>): Record<string, unknown> =>
   ({ event: "viewport", atMs: 1200, targetMatch: "matched", ...fields });
@@ -74,7 +74,7 @@ function positions(text: string, anchors: string[]): number[] {
 }
 
 test("#1513: capture-core reads the viewport after the page settles and BEFORE any probe, and marks it", () => {
-  const core = source("capture-core.mjs");
+  const core = source("capture-core.ts");
   const [settled, read, marked, phases] = positions(core,
     ["await waitForPageToSettle(diag);", "await viewportMeasure()", 'diag.mark("viewport"', "await runCapturePhases("]);
   assert.ok(settled < read && read < marked && marked < phases, "settle -> read -> mark -> probes, in that order");
@@ -90,7 +90,7 @@ function runtimeEnvironmentBody(text: string): string {
 
 /**
  * THE RULE, as a function of source TEXT rather than of a file, so the two controls below can hand it
- * fixtures instead of the live `server.mjs` (#2145): a control anchored to a real file stops being a
+ * fixtures instead of the live `server.ts` (#2145): a control anchored to a real file stops being a
  * control the day somebody edits that file.
  *
  * COMMENTS ARE STRIPPED BEFORE MATCHING, and that is the whole of #2145. What must not enter the cached
@@ -108,7 +108,7 @@ function assertNoPageWidthInRuntimeEnvironment(text: string): void {
     "the cached object is also /health's answer, and a page's width is not the worker's");
 }
 
-/** A minimal `server.mjs` carrying both markers, so a fixture body can be read by the real slicer. */
+/** A minimal `server.ts` carrying both markers, so a fixture body can be read by the real slicer. */
 const serverFixture = (body: string): string => [
   "function runtimeEnvironment() {",
   "  return {",
@@ -120,7 +120,7 @@ const serverFixture = (body: string): string => [
 ].join("\n");
 
 test("#1513: server merges the read into THAT capture's environment, never into the cached runtime environment", () => {
-  const server = source("server.mjs");
+  const server = source("server.ts");
   positions(server, ["environment: { ...environment, ...viewportFromMarks(result.diagnostics) }"]);
   // The stripper ran on the LIVE slice and did not eat it: shorter than the raw slice means comments went,
   // and the returned object still being there means code did not. Without this pair the assertion below
@@ -150,7 +150,7 @@ test("#2145 NEGATIVE CONTROL: a comment NAMING the token is prose, and the guard
 });
 
 test("#1513: browser-session exports the page read, and the PAGE evaluates all three values", () => {
-  const session = source("browser-session.mjs");
+  const session = source("browser-session.ts");
   // The expression the page runs, not the names in the return object: a read that dropped one value from the
   // expression would still MENTION it below, and report null for it on every capture.
   const [exported, evaluated] = positions(session,

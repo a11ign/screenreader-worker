@@ -13,7 +13,7 @@
  * Reachable despite the pool sending one case per worker at a time: CLAUDE.md records that two shells or two
  * agents drive this worker, and a `--no-cache` rerun beside a live run is exactly that shape.
  *
- * `server.mjs` needs guidepup and therefore a screen reader, so this asserts the ORDERING PROPERTY against the
+ * `server.ts` needs guidepup and therefore a screen reader, so this asserts the ORDERING PROPERTY against the
  * (It does NOT bind a port on import: `IS_MAIN` guards `server.listen`, and the older claim outlived that
  * guard in six files. Verified 2026-09-05. The guidepup half is the real constraint.)
  * 
@@ -25,7 +25,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const server = readFileSync(fileURLToPath(new URL("./server.mjs", import.meta.url)), "utf8");
+const server = readFileSync(fileURLToPath(new URL("./server.ts", import.meta.url)), "utf8");
 
 test("the busy check and the busy claim are in one synchronous step", () => {
   const accept = /function acceptCaptureRequest\([\s\S]*?\n}/.exec(server)?.[0];

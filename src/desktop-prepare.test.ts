@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { prepareDesktop, desktopCachesForTest, sampleDesktopDialogs, foregroundWatchTick,
-  FOREGROUND_CLEAR_MIN_INTERVAL_MS } from "./desktop-prepare.mjs";
+  FOREGROUND_CLEAR_MIN_INTERVAL_MS } from "./desktop-prepare.ts";
 
 /** A mark array, typed loosely to match what `prepareDesktop` actually pushes. */
 const marks = (): Record<string, unknown>[] => [];
@@ -162,12 +162,12 @@ test("past the cooldown, the watch tries again", async () => {
 });
 
 test("#1815: readiness() itself never reaches the foreground-clearing path", () => {
-  // `readiness()` lives in `server.mjs`, which imports guidepup transitively and cannot be imported here
+  // `readiness()` lives in `server.ts`, which imports guidepup transitively and cannot be imported here
   // -- this module's own header explains why. So this reads the function's OWN source text instead of
   // importing it, sliced between its declaration and the next top-level function, exactly the boundary a
   // reader would use to answer "what does readiness() call".
   const serverSource = readFileSync(
-    fileURLToPath(new URL("./server.mjs", import.meta.url)), "utf8",
+    fileURLToPath(new URL("./server.ts", import.meta.url)), "utf8",
   );
   const start = serverSource.indexOf("async function readiness()");
   assert.ok(start >= 0, "readiness() must still exist under that name for this slice to mean anything");

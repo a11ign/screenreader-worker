@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 
 import {
   AUTHENTICATED_RESULT_TTL_MS, createResultStore, isValidCaptureId, RESULT_HISTORY, storedResultResponse,
-} from "./capture-results.mjs";
+} from "./capture-results.ts";
 
 test("a finished capture is replayed with its original status and body", () => {
   const store = createResultStore();
@@ -108,7 +108,7 @@ test("the default history is small on purpose", () => {
   assert.ok(RESULT_HISTORY <= 16, `${RESULT_HISTORY} is more history than recovery can use`);
 });
 
-// The route's own decision, tested here because `server.mjs` needs guidepup — which refuses to import
+// The route's own decision, tested here because `server.ts` needs guidepup — which refuses to import
 // without a screen reader — and nothing inside it
 // can be reached from a test. This is the endpoint's entire contract.
 

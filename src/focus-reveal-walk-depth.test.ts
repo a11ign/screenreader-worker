@@ -12,9 +12,9 @@
  * a ~4.5 h recapture). A driven walk reaches the whole bound in milliseconds with no fleet at all.
  *
  * AND THE OBSTACLE THAT SAID IT COULD NOT BE DONE IS GONE. `tab-probe-start-position.test.ts` next door
- * read, until this PR corrected it, "Neither probe can be driven without real NVDA — `capture-core.mjs`
+ * read, until this PR corrected it, "Neither probe can be driven without real NVDA — `capture-core.ts`
  * imports guidepup, which throws at module load with no screen reader present". #1772 made that binding
- * lazy (`capture-probes.mjs` imports `nvda`/`ensureGuidepup` from `capture-setup.mjs` instead), and this
+ * lazy (`capture-probes.ts` imports `nvda`/`ensureGuidepup` from `capture-setup.ts` instead), and this
  * file importing and CALLING the walk on a screen-reader-free Linux host is the demonstration. A
  * source-read guard was the right tool while the import threw; it is not the right tool now.
  *
@@ -27,8 +27,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { walkToReveal } from "./capture-probes.mjs";
-import { censusGrowth, focusRevealVerdict } from "./capture-pure.mjs";
+import { walkToReveal } from "./capture-probes.ts";
+import { censusGrowth, focusRevealVerdict } from "./capture-pure.ts";
 
 /** The bound under test, restated so a mutation of `FOCUS_REVEAL_STOPS` shows up as a DISAGREEMENT here. */
 const STOPS = 8;
