@@ -20,9 +20,18 @@
 # write token. That trigger is unsafe only when the job checks out or runs the pull request's code, and this job has no
 # checkout and runs nothing from the pull request: it reads labels through the API and calls `gh pr merge`.
 #
-# `A11IGN_BOT_TOKEN` (an org secret, visible to every repository) when set, `GITHUB_TOKEN` when not, with a printed
-# warning. A merge completed with `GITHUB_TOKEN` fires no workflow events (a11ign/a11ign#416), so the PAT is what
-# makes `release.yml`'s `push` trigger fire after a merge this job armed. The secret goes through `env:`, never an argument.
+# THE ARMING TOKEN IS AN OCTO STS APP TOKEN, NOT A STORED ONE (a11ign/a11ign#4199; a11ign/a11ign#4198 did a11ign/a11ign). A merge
+# completed with `GITHUB_TOKEN` fires no workflow events (a11ign/a11ign#416), so `release.yml`'s `push` trigger would not fire after a merge
+# this job armed; a merge armed with an app installation token is attributed to that identity and does. `octo-sts/action` mints one per
+# run against `.github/chainguard/auto-arm.sts.yaml` and revokes it in its post step, so nothing is stored. There is NO fallback to
+# `GITHUB_TOKEN`: a fallback arms with the token that fires nothing, which is #416's defect restored quietly, and a failed mint is a step
+# that names itself (this job is `continue-on-error`, so it is an annotation). A policy is read from the DEFAULT branch (octo-sts/app
+# v0.11.2), so a pull request that adds or changes it takes effect when it merges.
+#
+# THIS JOB RUNS `main`'s COPY OF THIS FILE, NEVER A BRANCH'S. `pull_request` would run the branch's copy (`job_workflow_ref` =
+# `...@refs/pull/N/merge`, measured on a11ign/a11ign#4191), so no policy could bind it to `main`; `pull_request_target`, `push` and
+# `workflow_dispatch` on `main` all run `main`'s, and the policy pins `job_workflow_ref` to `@refs/heads/main`. The token goes through
+# `env:` into `GH_TOKEN`, never an argument.
 name: auto-arm
 
 on:
@@ -31,10 +40,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-
-permissions:
-  pull-requests: write
-  contents: write
 
 concurrency:
   group: auto-arm
@@ -45,6 +50,11 @@ jobs:
     # It acts on pull requests other than the one whose event woke it, and gates nothing (`main` requires `gate` only),
     # so a failure is an annotation and never a red check charged to a diff that did not earn it.
     continue-on-error: true
+    # The job's own `GITHUB_TOKEN` holds only what the job itself needs: a checkout (`contents: read`) and the OIDC request Octo STS needs (`id-token: write`).
+    # The writes come from the minted token, whose grant is `auto-arm.sts.yaml`'s.
+    permissions:
+      contents: read
+      id-token: write
     runs-on: ubuntu-latest
     steps:
       # The base branch's own copy of `.github/auto-arm.jq`: on `pull_request_target` a checkout WITHOUT `ref:` is `main`,
@@ -53,18 +63,17 @@ jobs:
         with:
           persist-credentials: false
           sparse-checkout: .github/auto-arm.jq
+      - name: Mint the arming token (Octo STS, `auto-arm.sts.yaml`) -- no fallback to `GITHUB_TOKEN`, see the header (a11ign/a11ign#4199)
+        id: octo-sts
+        uses: octo-sts/action@f603d3be9d8dd9871a265776e625a27b00effe05 # v1.1.1
+        with:
+          scope: ${{ github.repository }}
+          identity: auto-arm
       - name: Arm every open, non-draft, unheld pull request against main that nothing has armed
         env:
-          A11IGN_BOT_TOKEN: ${{ secrets.A11IGN_BOT_TOKEN }}
-          FALLBACK_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.octo-sts.outputs.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          if [ -n "$A11IGN_BOT_TOKEN" ]; then
-            export GH_TOKEN="$A11IGN_BOT_TOKEN"
-          else
-            echo "::warning::A11IGN_BOT_TOKEN is not set -- arming with GITHUB_TOKEN instead. A merge completed with it fires no workflow events, so release.yml's push trigger will not fire after it (a11ign/a11ign#416)."
-            export GH_TOKEN="$FALLBACK_TOKEN"
-          fi
           # `--limit 200` and not the default 30: a list that silently stops at 30 is a sweep that quietly arms 30.
           # The selection is `.github/auto-arm.jq`, which `scripts/auto-arm-filter.test.ts` runs in the gate.
           numbers=$(gh pr list --state open --base main --limit 200 \
@@ -80,42 +89,3 @@ jobs:
           done
           [ -n "$numbers" ] || echo "nothing to arm: every open, non-draft, unheld pull request is already armed"
           exit "$failed"
-
-  token-reach:
-    # Does `A11IGN_BOT_TOKEN` reach THIS repository on the write side? (a11ign/a11ign#3710, #3754). Copied from a11ign's
-    # `token-reach` job (`release.yml` at a11ign sha e701fbdfd): the `run:` block is byte for byte the same, so the two can
-    # be diffed. `layer-repository-protection.test.ts` in a11ign reads the LATEST run of a job NAMED `token-reach` in the
-    # file `docs/code-repository-protection.json` names (`tokenProbe: "auto-arm.yml"` for this repository), so the job's
-    # name is a contract and is the same in every code repository.
-    #
-    # The probe WRITES NOTHING: the push service's advertisement (`git-receive-pack`, 200 for a token that pushes) and
-    # `POST /pulls` with an empty body (422 when authorised, so no pull request is created). A read of a ref is not the
-    # instrument, since every code repository is public and answers 200 with no credential.
-    #
-    # IT GATES NOTHING: no job `needs` it, and `arm` keeps its documented `GITHUB_TOKEN` fallback, because stopping every
-    # arm for a token problem is worse than the degradation this reports. It runs on EVERY push to `main` (this workflow has
-    # no `paths:` filter) and on a `workflow_dispatch`, which is the reading on demand. A reading at a moment, per run.
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    permissions: {}
-    steps:
-      - name: Probe the token's reach on the write side, failing with a TOKEN-REACH line that names the cause
-        env:
-          A11IGN_BOT_TOKEN: ${{ secrets.A11IGN_BOT_TOKEN }}
-        run: |
-          repo="$GITHUB_REPOSITORY"
-          say() { echo "::error::TOKEN-REACH $repo: $1"; exit 1; }
-          [ -n "$A11IGN_BOT_TOKEN" ] || say "A11IGN_BOT_TOKEN is not set, so nothing here can push, open or arm a pull request with it"
-          status() { curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$@" || true; }
-          basic=$(printf 'x-access-token:%s' "$A11IGN_BOT_TOKEN" | base64 -w0)
-          push=$(status -H "Authorization: Basic $basic" "https://github.com/$repo.git/info/refs?service=git-receive-pack")
-          pulls=$(status -X POST -H "Authorization: Bearer $A11IGN_BOT_TOKEN" -d '{}' "https://api.github.com/repos/$repo/pulls")
-          if [ "$push/$pulls" = "200/422" ]; then
-            echo "TOKEN-REACH $repo: ok (push service 200; POST /pulls 422, authorised, nothing created)"
-            exit 0
-          fi
-          for s in "$push" "$pulls"; do
-            case "$s" in 000|5??) say "CANNOT_TELL the probe could not ask (push $push, pulls $pulls); this is not a reading of the token" ;; esac
-          done
-          [ "$push" = 200 ] || say "the token cannot push here: the push service answered HTTP $push (401: rejected, expired or revoked; 403 or 404: it does not reach this repository, or only reads it)"
-          say "the token pushes but cannot open or arm pull requests here: POST /pulls answered HTTP $pulls where 422 was wanted (403: it lacks pull-requests: write)"
