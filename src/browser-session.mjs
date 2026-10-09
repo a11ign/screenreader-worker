@@ -1936,6 +1936,13 @@ export const FORM_INPUT_CAP = 1000;
  * controls `autocomplete` applies to. `type` is the attribute lower-cased, "text" when absent (the
  * browser's own default), and `null` for `select`/`textarea`, which have no type attribute.
  *
+ * `pasteCancelled`, ON PASSWORD FIELDS ONLY -- #4314, the evidence 3.3.8's `addPasteCancelledPassword` (#4259) reads.
+ * A cancelable `paste` event is dispatched at the field and `defaultPrevented` is the answer: that reads the
+ * OUTCOME of `onpaste="return false"` and of `addEventListener("paste", ...)` alike, where a markup scan sees
+ * only the first. `dispatchEvent` returns false exactly when a listener cancelled it. The event carries no
+ * clipboard data and inserts no text. Every other control has NO `pasteCancelled` key: absent means not
+ * examined, and is never `false`. A listener the page registers still runs, so a page that logs pastes logs one.
+ *
  * THE TOP DOCUMENT ONLY, like `domCensus`: a control inside a frame or a shadow root is not in
  * `querySelectorAll`'s reach. Named rather than discovered later.
  *
@@ -1949,11 +1956,11 @@ export const FORM_INPUT_CENSUS_EXPRESSION = `(() => {
     total: controls.length,
     elements: controls.slice(0, ${FORM_INPUT_CAP}).map((el) => {
       const tag = el.tagName.toLowerCase();
-      return {
-        tag,
-        type: tag === "input" ? ((el.getAttribute("type") || "").trim().toLowerCase() || "text") : null,
-        autocomplete: el.getAttribute("autocomplete"),
-      };
+      const type = tag === "input" ? ((el.getAttribute("type") || "").trim().toLowerCase() || "text") : null;
+      const entry = { tag, type, autocomplete: el.getAttribute("autocomplete") };
+      if (type === "password") entry.pasteCancelled = !el.dispatchEvent(
+        new ClipboardEvent("paste", { cancelable: true, bubbles: true }));
+      return entry;
     }),
   };
 })()`;

@@ -158,4 +158,13 @@
  * must never disagree about whether the first event was witnessed, so this is a bump and not an additive
  * field. Why, and the cost: docs/capture-protocol-version-history.md.
  */
-export const CAPTURE_PROTOCOL_VERSION = 22;
+/**
+ * 22 -> 23 on 2026-10-09, #4314 (follows #4259): `formInputs[].pasteCancelled`, whether a cancelable `paste`
+ * event dispatched at a password field was cancelled. 3.3.8's `addPasteCancelledPassword` reads it, and with
+ * no capture carrying it the rule reads `untested` on every real page. Present on password fields only.
+ *
+ * #170's shape again: a v22 capture lacks the field and a reader takes that as "not asked", which is
+ * correct, but the cache would keep serving v22 captures so a page captured before reads blind while any
+ * captured later reads the field. The recapture is `orchestrator`'s window and rides any other pending bump.
+ */
+export const CAPTURE_PROTOCOL_VERSION = 23;
