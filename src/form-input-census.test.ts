@@ -17,7 +17,10 @@ import { fileURLToPath } from "node:url";
 import { FORM_INPUT_CAP, FORM_INPUT_CENSUS_EXPRESSION } from "./browser-session.mjs";
 import { oracleCounts } from "@a11ign/evidence/verify";
 
-type Control = { tagName: string, getAttribute: (k: string) => string | null, autocomplete?: string };
+type Control = {
+  tagName: string, getAttribute: (k: string) => string | null, autocomplete?: string,
+  dispatchEvent?: (event: { type: string, cancelable: boolean, bubbles: boolean }) => boolean,
+};
 /** A control as page script sees it. `autocomplete` the PROPERTY is what the browser normalises -- see below. */
 const control = (tag: string, attrs: Record<string, string> = {}, property?: string): Control => ({
   tagName: tag.toUpperCase(),
@@ -25,7 +28,19 @@ const control = (tag: string, attrs: Record<string, string> = {}, property?: str
   ...(property !== undefined ? { autocomplete: property } : {}),
 });
 
-type Census = { total: number, elements: { tag: string, type: string | null, autocomplete: string | null }[] };
+type Census = {
+  total: number,
+  elements: { tag: string, type: string | null, autocomplete: string | null, pasteCancelled?: boolean }[],
+};
+/** The page's `ClipboardEvent`, reduced to what the expression passes it: a type and its init. */
+class FakeClipboardEvent {
+  cancelable: boolean;
+  bubbles: boolean;
+  constructor(readonly type: string, init: { cancelable?: boolean, bubbles?: boolean } = {}) {
+    this.cancelable = init.cancelable ?? false;
+    this.bubbles = init.bubbles ?? false;
+  }
+}
 /** Run the census against a page whose `input, select, textarea` are `controls`. */
 function censusOf(controls: Control[]): Census {
   const document = {
@@ -34,7 +49,8 @@ function censusOf(controls: Control[]): Census {
       return controls;
     },
   };
-  return new Function("document", `return ${FORM_INPUT_CENSUS_EXPRESSION}`)(document) as Census;
+  return new Function("document", "ClipboardEvent", `return ${FORM_INPUT_CENSUS_EXPRESSION}`)(
+    document, FakeClipboardEvent) as Census;
 }
 
 test("#170: one entry per control, in the shape verify.ts already declares -- { tag, type, autocomplete }", () => {
@@ -103,4 +119,39 @@ test("#170 WIRED: read beside mediaCensus, put on the capture as `formInputs`, a
   const { elements } = censusOf([control("input", { type: "text", autocomplete: "fname" })]);
   const counts = oracleCounts({ transcript: [], structure: {}, interaction: {}, formInputs: elements } as never);
   assert.deepEqual(counts.formInputs, elements, "what the census wrote is what 1.3.5's rule reads");
+});
+
+/** A password field whose `paste` listener cancels (`cancels`) or does not; `seen` collects what it was dispatched. */
+function passwordField(cancels: boolean, seen: { type: string, cancelable: boolean, bubbles: boolean }[] = []): Control {
+  return {
+    ...control("input", { type: "password" }),
+    // `dispatchEvent` is false exactly when a listener called preventDefault on a cancelable event.
+    dispatchEvent: (event) => { seen.push({ type: event.type, cancelable: event.cancelable, bubbles: event.bubbles }); return !(cancels && event.cancelable); },
+  };
+}
+
+test("#4314 THE DISCRIMINATING PAIR: a password field that cancels paste reads true, one that does not reads false", () => {
+  const seen: { type: string, cancelable: boolean, bubbles: boolean }[] = [];
+  const { elements } = censusOf([passwordField(true, seen), passwordField(false)]);
+  assert.equal(elements[0]?.pasteCancelled, true, "onpaste=\"return false\" or a paste listener that preventDefaults");
+  assert.equal(elements[1]?.pasteCancelled, false, "paste is allowed: false, which is a measurement and not 'absent'");
+  assert.deepEqual(seen, [{ type: "paste", cancelable: true, bubbles: true }],
+    "the event is a cancelable, bubbling `paste` -- a non-cancelable one could never read as cancelled");
+});
+
+test("#4314: only a password field is examined -- every other control has NO pasteCancelled key", () => {
+  const noDispatch = (tag: string, attrs: Record<string, string> = {}) => ({
+    ...control(tag, attrs),
+    dispatchEvent: () => assert.fail("a control that is not a password field must not be sent a paste event"),
+  });
+  const { elements } = censusOf([
+    noDispatch("input", { type: "text" }),
+    noDispatch("input"),
+    noDispatch("select"),
+    noDispatch("textarea"),
+    { ...passwordField(true), getAttribute: (k: string) => ({ type: " PassWord " })[k as "type"] ?? null },
+  ]);
+  for (const entry of elements.slice(0, 4)) assert.equal("pasteCancelled" in entry, false, `${entry.tag}/${entry.type}`);
+  assert.equal(elements[4]?.pasteCancelled, true, "type is read as the lower-cased trimmed attribute, like `type` itself");
+  assert.deepEqual(Object.keys(elements[4] ?? {}), ["tag", "type", "autocomplete", "pasteCancelled"]);
 });
