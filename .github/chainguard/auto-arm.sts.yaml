@@ -1,0 +1,20 @@
+# Trust policy for `.github/workflows/auto-arm.yml`'s `arm` job (a11ign/a11ign#4199), Octo STS v0.11.2 syntax; the same shape as a11ign/a11ign's
+# (#4198), which carries the reasoning and the measurements (#4191). Every pattern is matched against the WHOLE claim, so none is anchored here.
+#
+# WHAT IT HOLDS: pull-request write (enable auto-merge) and contents write (the merge itself), on THIS repository only: the server forces
+# `repositories` to the repository the file sits in. Nothing else.
+#
+# WHAT BINDS IT TO `main`: `pull_request` runs the workflow as it is on the BRANCH's merge ref and presents the same `sub` as
+# `pull_request_target`, so `sub` alone cannot tell a branch's edited copy from `main`'s. `job_workflow_ref` pinned to `@refs/heads/main`
+# can, with `event_name` naming the three triggers `auto-arm.yml` runs on. A `pull_request` run, a dispatch on another branch and every
+# other workflow are refused.
+#
+# `sub` carries IMMUTABLE ids (`repo:<owner>@<id>/<repo>@<id>`), so `repo:a11ign/screenreader-worker:...` never matches.
+issuer: https://token.actions.githubusercontent.com
+subject_pattern: repo:a11ign@320310787/screenreader-worker@1388747982:(pull_request|ref:refs/heads/main)
+claim_pattern:
+  job_workflow_ref: a11ign/screenreader-worker/\.github/workflows/auto-arm\.yml@refs/heads/main
+  event_name: pull_request_target|push|workflow_dispatch
+permissions:
+  pull_requests: write
+  contents: write
