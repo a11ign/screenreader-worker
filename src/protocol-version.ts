@@ -166,4 +166,14 @@
  * correct, but the cache would keep serving v22 captures so a page captured before reads blind while any
  * captured later reads the field. The recapture is `orchestrator`'s window and rides any other pending bump.
  */
-export const CAPTURE_PROTOCOL_VERSION = 23;
+/**
+ * 23 -> 24 on 2026-10-09, #4361 (follows #4355): `formInputs[].form`, `.required` on every control and
+ * `.populatedFromEarlier` on an email field with an earlier email in its form. 3.3.7's `addRedundantEntry` reads
+ * all three, and with no capture carrying them the rule reads `untested` on every real page. `populatedFromEarlier`
+ * is the first census key that WRITES to the page (a sentinel in the earlier field, restored).
+ *
+ * #170's shape again: a v23 capture lacks the keys and a reader takes that as "not asked", which is correct, but
+ * the cache would keep serving v23 captures so a page captured before reads blind while any captured later reads
+ * them. The recapture is `orchestrator`'s window and rides any other pending bump.
+ */
+export const CAPTURE_PROTOCOL_VERSION = 24;

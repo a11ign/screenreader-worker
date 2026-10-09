@@ -1943,6 +1943,19 @@ export async function launchReusable({ exe, args, onEvent = () => {} }: { exe: s
  */
 export const FORM_INPUT_CAP = 1000;
 
+/** One control as `FORM_INPUT_CENSUS_EXPRESSION` reports it; the optional keys are absent, never `false`, when not examined. */
+export type FormInputEntry = {
+  tag: string; type: string | null; autocomplete: string | null;
+  form?: number; required: boolean; pasteCancelled?: boolean; populatedFromEarlier?: boolean;
+};
+
+/**
+ * The value `populatedFromEarlier` writes into the earlier email field. Not a plausible address, so a page that
+ * validates or autocorrects on `input` has no reason to keep it, and a copy of it into the later field is
+ * recognisable. It is written, announced and then put back (`FORM_INPUT_CENSUS_EXPRESSION`).
+ */
+export const FORM_INPUT_SENTINEL = JSON.stringify("a11ign-census-sentinel@invalid");
+
 /**
  * EVERY FORM CONTROL'S `autocomplete` ATTRIBUTE -- #170, the census 1.3.5's rule has been waiting for.
  *
@@ -1972,26 +1985,69 @@ export const FORM_INPUT_CAP = 1000;
  * clipboard data and inserts no text. Every other control has NO `pasteCancelled` key: absent means not
  * examined, and is never `false`. A listener the page registers still runs, so a page that logs pastes logs one.
  *
+ * `form`, `required` AND `populatedFromEarlier` -- #4361, the evidence 3.3.7's `addRedundantEntry` (#4355) reads.
+ * `form` is the index of the control's owning form in `document.forms`, ABSENT (never -1) for a control with none: absent
+ * is not known, and the rule then pairs nothing. `required` is the `required` property, which reflects the attribute
+ * and nothing else (not `aria-required`, not script). `populatedFromEarlier` is on an `input[type=email]` that has an
+ * earlier one in the SAME form, and nowhere else (absent = not examined, never `false`): the earlier field is given
+ * `FORM_INPUT_SENTINEL` through the native value setter (a framework's controlled input only notices that route),
+ * `input` and `change` are dispatched, one task passes, and the answer is whether the later field's value became
+ * non-empty and differs from what it held. A field the server pre-filled does not count: it was not populated FROM
+ * the earlier one. `true` is the criterion's "auto-populated" branch, `false` a field that stayed empty. Both fields
+ * are restored afterwards.
+ *
+ * THIS ONE WRITES to the page's fields, which `autocomplete` and `pasteCancelled` do not (the paste event inserts
+ * nothing). It is confined to email pairs in one form, restores in a `finally`, and presses no button
+ * (`probeForms` does). A page listener runs on the sentinel: a page that logs input events logs two.
+ * The expression is therefore ASYNC and `formInputCensus` evaluates it with `awaitPromise`.
+ *
  * THE TOP DOCUMENT ONLY, like `domCensus`: a control inside a frame or a shadow root is not in
  * `querySelectorAll`'s reach. Named rather than discovered later.
  *
  * EXPORTED so `form-input-census.test.ts` runs the very string the page receives -- the evaluated literal,
  * not its source text with escapes undone by hand (#969's shape).
  */
-export const FORM_INPUT_CENSUS_EXPRESSION = `(() => {
+export const FORM_INPUT_CENSUS_EXPRESSION = `(async () => {
   const controls = [...document.querySelectorAll("input, select, textarea")]
     .filter((el) => (el.getAttribute("type") || "").trim().toLowerCase() !== "hidden");
-  return {
-    total: controls.length,
-    elements: controls.slice(0, ${FORM_INPUT_CAP}).map((el) => {
-      const tag = el.tagName.toLowerCase();
-      const type = tag === "input" ? ((el.getAttribute("type") || "").trim().toLowerCase() || "text") : null;
-      const entry = { tag, type, autocomplete: el.getAttribute("autocomplete") };
-      if (type === "password") entry.pasteCancelled = !el.dispatchEvent(
-        new ClipboardEvent("paste", { cancelable: true, bubbles: true }));
-      return entry;
-    }),
+  const typeOf = (el) => el.tagName.toLowerCase() === "input"
+    ? ((el.getAttribute("type") || "").trim().toLowerCase() || "text") : null;
+  const listed = controls.slice(0, ${FORM_INPUT_CAP});
+  const forms = [...document.forms];
+  const entries = listed.map((el) => {
+    const entry = { tag: el.tagName.toLowerCase(), type: typeOf(el), autocomplete: el.getAttribute("autocomplete") };
+    const formIndex = el.form ? forms.indexOf(el.form) : -1;
+    if (formIndex !== -1) entry.form = formIndex;
+    entry.required = el.required === true;
+    if (entry.type === "password") entry.pasteCancelled = !el.dispatchEvent(
+      new ClipboardEvent("paste", { cancelable: true, bubbles: true }));
+    return entry;
+  });
+  const setNative = (el, value) => Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, value);
+  const announce = (el) => { for (const type of ["input", "change"]) el.dispatchEvent(new Event(type, { bubbles: true })); };
+  const oneTask = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const probeEarlier = async (earlier, later) => {
+    const earlierBefore = earlier.value;
+    const laterBefore = later.value;
+    try {
+      setNative(earlier, ${FORM_INPUT_SENTINEL});
+      announce(earlier);
+      await oneTask();
+      return later.value !== "" && later.value !== laterBefore;
+    } finally {
+      setNative(earlier, earlierBefore);
+      announce(earlier);
+      await oneTask();
+      setNative(later, laterBefore);
+      announce(later);
+    }
   };
+  for (const [index, el] of listed.entries()) {
+    if (entries[index].type !== "email" || !el.form) continue;
+    const earlier = listed.slice(0, index).filter((c) => typeOf(c) === "email" && c.form === el.form).at(-1);
+    if (earlier) entries[index].populatedFromEarlier = await probeEarlier(earlier, el);
+  }
+  return { total: controls.length, elements: entries };
 })()`;
 
 /**
@@ -2003,12 +2059,12 @@ export const FORM_INPUT_CENSUS_EXPRESSION = `(() => {
  * claim on it. Carries `targetMatch`/`candidates`/`targetUrl`/`expectedUrl` like every
  * `pageTarget()`-dependent read, so a capture can say which document the list describes.
  *
- * @returns {Promise<{ elements: { tag: string, type: string | null, autocomplete: string | null }[] | null,
+ * @returns {Promise<{ elements: FormInputEntry[] | null,
  *   total: number | null, targetMatch: unknown, candidates: unknown, targetUrl: unknown, expectedUrl: unknown }
  *   | null>}
  */
 export async function formInputCensus(): Promise<{
-    elements: { tag: string; type: string | null; autocomplete: string | null; }[] | null;
+    elements: FormInputEntry[] | null;
     total: number | null; targetMatch: unknown; candidates: unknown; targetUrl: unknown; expectedUrl: unknown;
 } |
     null> {
@@ -2021,7 +2077,7 @@ export async function formInputCensus(): Promise<{
       socket.send(JSON.stringify({
         id: 1,
         method: "Runtime.evaluate",
-        params: { expression: FORM_INPUT_CENSUS_EXPRESSION, returnByValue: true },
+        params: { expression: FORM_INPUT_CENSUS_EXPRESSION, returnByValue: true, awaitPromise: true },
       }));
       const value = (await result)?.result?.value;
       return {
