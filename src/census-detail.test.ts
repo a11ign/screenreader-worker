@@ -27,7 +27,7 @@ import { resolve } from "node:path";
 
 // A NAMESPACE import, so a missing export reads `undefined` in the test that needs it instead of failing the whole
 // file at link time -- which is what lets the #1507 tests below be run, one red each, against the code before them.
-import * as session from "./browser-session.mjs";
+import * as session from "./browser-session.ts";
 
 const SOURCE = readFileSync(resolve(import.meta.dirname, "browser-session.mjs"), "utf8");
 

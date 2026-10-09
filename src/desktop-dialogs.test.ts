@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { parseDialogList } from "./desktop-dialogs.mjs";
+import { parseDialogList } from "./desktop-dialogs.ts";
 
 const TAB = "\t";
 

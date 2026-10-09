@@ -23,7 +23,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
-import { createVersionSampler } from "./file-version.mjs";
+import { createVersionSampler } from "./file-version.ts";
 
 /** The stub `powershell.exe`: it answers, but only after the time a box that cannot read a value takes. */
 const ONE_SECOND_MS = 1_000;
@@ -189,7 +189,7 @@ test("a reader that throws is contained: the other two survive and the failed on
 
 // ---- the wiring: what `/health`'s path reaches, read off the source ----
 
-const server = readFileSync(fileURLToPath(new URL("./server.mjs", import.meta.url)), "utf8");
+const server = readFileSync(fileURLToPath(new URL("./server.ts", import.meta.url)), "utf8");
 const bodyOf = (name: string) =>
   new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n}\\n`).exec(server)?.[0] ?? "";
 

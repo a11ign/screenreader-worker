@@ -12,7 +12,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { notObserved, sweepObservation } from "./capture-pure.mjs";
+import { notObserved, sweepObservation } from "./capture-pure.ts";
 
 test("a sweep NVDA ended itself is complete — `exhausted` is its own answer", () => {
   // NVDA says "no next heading" when there are none left. That is the only sound terminus, because every
@@ -66,7 +66,7 @@ test("EVERY channel a capture fills must be able to report an observation", () =
   // imports guidepup and cannot be loaded here — the same reason `probe-chain.test.ts` reads it as text.
   // `sweepExtraTypes`'s call site (`sweepEveryStructuralType`) moved to `capture-probes.mjs` in the
   // 2026-09-05 capture-core.mjs split.
-  const source = readFileSync(new URL("./capture-probes.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("./capture-probes.ts", import.meta.url), "utf8");
   const call = /sweepExtraTypes\(\{[^}]*\}\)/.exec(source);
   assert.ok(call, "sweepExtraTypes is no longer called the way this guard reads it");
   assert.match(call[0], /\bobserved\b/,

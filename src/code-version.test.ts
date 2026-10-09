@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { WORKER_FILES } from "./worker-files.mjs";
+import { WORKER_FILES } from "./worker-files.ts";
 
 const LITERAL_LIST = /for \(const file of \[["']/;
 
@@ -29,7 +29,7 @@ test("there is exactly ONE definition of the worker file list, and one hasher", 
   // A reintroduced literal is the regression: two lists that must agree, kept in step by hope.
   // The two fleet-side files (`check-worker-code.mjs`, `deploy-worker.mjs`) were checked here while this package shared a
   // repository with `worker-fleet`. They moved to their own repository, which owns the half of this claim that reads them.
-  for (const path of ["src/server.mjs"]) {
+  for (const path of ["src/server.ts"]) {
     const source = readFileSync(resolve(process.cwd(), path), "utf8");
     assert.ok(!LITERAL_LIST.test(source),
       `${path} has its own literal worker-file list again. Import WORKER_FILES from worker-files.mjs — a `

@@ -24,7 +24,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { prepareDesktop, desktopCachesForTest } from "./desktop-prepare.mjs";
+import { prepareDesktop, desktopCachesForTest } from "./desktop-prepare.ts";
 
 /** A mark array, typed loosely to match what `prepareDesktop` actually pushes. */
 const marks = (): Record<string, unknown>[] => [];

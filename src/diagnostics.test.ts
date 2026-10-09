@@ -2,7 +2,7 @@
 // about to decide whether we build a custom Windows image. Worth being sure it is read correctly.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseTasklistMemory } from "./diagnostics.mjs";
+import { parseTasklistMemory } from "./diagnostics.ts";
 
 // Real `tasklist /fo csv /nh` shape: image, pid, session name, session #, mem usage.
 const CSV = [
@@ -44,7 +44,7 @@ test("empty output is an empty list, not a crash", () => {
 // Committed bytes is what a guest's RAM should be sized from. Working-set sums include the file
 // cache, which grows to fill whatever the guest is given — so reading this wrong sizes a VM from its
 // own cache. See create-utm-vm.sh: an 8 GB guest reported 3.5 GB "in use" and needed under half.
-import { parseCommittedMemory } from "./diagnostics.mjs";
+import { parseCommittedMemory } from "./diagnostics.ts";
 
 test("committed bytes and the commit limit are reported in MB with their ratio", () => {
   // 2 GiB committed against a 6 GiB limit.
@@ -66,7 +66,7 @@ test("unparseable or zero-limit output is null, never a divide-by-zero", () => {
 
 // PowerShell's ConvertTo-Json emits a bare object for one result and an array for several. Reading a
 // service list that happens to have one entry must not silently become "no services".
-import { parsePowerShellJson } from "./diagnostics.mjs";
+import { parsePowerShellJson } from "./diagnostics.ts";
 
 test("a single PowerShell result is normalised to a one-element array", () => {
   const one = parsePowerShellJson('{"Name":"WSearch","Status":4,"StartType":4}');

@@ -16,8 +16,8 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { AuthRequestError, openCdpDriver, signIn, validateAuthRequest } from "./auth-flow.mjs";
-import { beginAuthentication } from "./capture-auth.mjs";
+import { AuthRequestError, openCdpDriver, signIn, validateAuthRequest } from "./auth-flow.ts";
+import { beginAuthentication } from "./capture-auth.ts";
 
 const APP = "https://app.example.test";
 const IDP = "https://idp.example.test";

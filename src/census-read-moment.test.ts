@@ -21,7 +21,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createDiagnostics } from "./capture-pure.mjs";
+import { createDiagnostics } from "./capture-pure.ts";
 
 const PROBES = readFileSync(resolve(import.meta.dirname, "capture-probes.mjs"), "utf8");
 

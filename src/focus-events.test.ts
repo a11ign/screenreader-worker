@@ -12,7 +12,7 @@
  */
 import { test as focusEventTest } from "node:test";
 import focusEventAssert from "node:assert/strict";
-import { focusEventVerdict, shouldInstallFocusEventListenerEarly } from "./capture-pure.mjs";
+import { focusEventVerdict, shouldInstallFocusEventListenerEarly } from "./capture-pure.ts";
 
 focusEventTest("no event log at all reads 'cannot say', never as zero findings", () => {
   const v = focusEventVerdict({ events: null, error: "not installed" });
@@ -130,7 +130,7 @@ focusEventTest("a truthy non-boolean probeFocus (a stray string from a lax calle
 
 // #1918: `formChanges[].submitted`. The same absent-versus-false rule as the focus log above, and the same
 // target gate, because a count read from the wrong document says nothing about this one.
-import { submittedVerdict } from "./capture-pure.mjs";
+import { submittedVerdict } from "./capture-pure.ts";
 
 focusEventTest("#1918 submittedVerdict: a counted submit is true, a counted zero is false", () => {
   focusEventAssert.equal(submittedVerdict({ installed: true, submits: 1, targetMatch: "matched" }), true);

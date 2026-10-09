@@ -153,7 +153,7 @@ A cheap pre-check decides whether to bother running the real one; it is never li
 Capture timing has TWO populations. On the ~12 s CORPUS capture the largest phase is `windowsActivate`, ~10 s / ~37%, and keeping Edge alive is the only real fix. On a REAL page it is ~0.3 s — one tenth of one percent — and `sweep` leads. [Both measurements →](docs/nvda-worker-runbook.md#capture-timing-and-the-windowsactivate-cost-analysis-from-environment-facts)
 ## The capture path — `capture-probes.mjs`, `capture-pure.mjs`, `browser-session.mjs`
 
-**These rules govern `src/capture-probes.mjs`, `src/capture-pure.mjs` and `src/browser-session.mjs`** (moved here from a retired role brief, #2406, so they load for whoever edits those files).
+**These rules govern `src/capture-probes.ts`, `src/capture-pure.ts` and `src/browser-session.ts`** (moved here from a retired role brief, #2406, so they load for whoever edits those files).
 
 - **`capture-probes.mjs`** holds the ~30 probes and the order they run in. It is the most consequential file on the path, because **a probe's evidence is decided by where it sits in the sequence**.
 - **`capture-pure.mjs`** holds the pure verdicts a probe's evidence is turned into: the half that can be tested without NVDA, and therefore the half that must be.

@@ -16,7 +16,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { probeKindFor } from "./capture-pure.mjs";
+import { probeKindFor } from "./capture-pure.ts";
 
 const CLI = { probeForms: false, task: "Book a room for two nights" };
 const ACTION = { probeForms: true, task: "Book a room for two nights" };

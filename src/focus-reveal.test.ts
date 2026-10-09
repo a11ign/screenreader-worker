@@ -9,7 +9,7 @@ import { test as focusRevealTest } from "node:test";
 import focusRevealAssert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { focusRevealVerdict, censusGrowth, focusResetOutcome, namesThatAppeared } from "./capture-pure.mjs";
+import { focusRevealVerdict, censusGrowth, focusResetOutcome, namesThatAppeared } from "./capture-pure.ts";
 
 const BASE = { formControl: 2, link: 3, graphic: 0, heading: 1, landmark: 1 };
 const GREW = { ...BASE, link: 4 };
@@ -84,7 +84,7 @@ focusRevealTest("nothing appearing on focus is not a finding of any kind", () =>
 focusRevealTest("the reveal probe is sequenced BEFORE the probe that walks the tab ring", () => {
   // `probePasses`, where both live, moved to `capture-probes.mjs` in the 2026-09-05 split.
   const source = readFileSync(
-    resolve(import.meta.dirname, "./capture-probes.mjs"), "utf8");
+    resolve(import.meta.dirname, "./capture-probes.ts"), "utf8");
   const reveal = source.indexOf("results.focusReveal = probeFocusReveal_");
   // Marker updated when `probeFocusOrder`'s call site moved into `probeFocusOrderWithEventLog` (the F55
   // focus-event log, which brackets the tab walk) -- that function IS the probe that walks the tab ring
@@ -279,7 +279,7 @@ focusRevealTest("the PROBE passes the baseline's trust to the verdict — a sour
   // other way to catch it. Mutation-checked: replacing the expression with a literal `true` fails here,
   // and nothing else in the suite notices — which is precisely why this test exists rather than being
   // left to the four verdict tests above.
-  const source = readFileSync(resolve(import.meta.dirname, "./capture-probes.mjs"), "utf8");
+  const source = readFileSync(resolve(import.meta.dirname, "./capture-probes.ts"), "utf8");
   const call = source.indexOf("focusRevealVerdict({");
   focusRevealAssert.ok(call >= 0,
     "the call to focusRevealVerdict is gone from capture-probes.mjs -- this test examines nothing; find "

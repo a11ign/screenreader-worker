@@ -25,7 +25,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const SOURCE = readFileSync(resolve(import.meta.dirname, "./capture-probes.mjs"), "utf8");
+const SOURCE = readFileSync(resolve(import.meta.dirname, "./capture-probes.ts"), "utf8");
 
 /**
  * Comments out, so a source-read guard cannot be satisfied by PROSE.

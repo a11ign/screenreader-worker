@@ -8,9 +8,9 @@
 // real gate instead of a paraphrase of it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isLocallyRecoverable } from "./worker-recovery.mjs";
-import { captureFault, FAULT } from "./capture-faults.mjs";
-import { failIfScreenReaderIsMute } from "./capture-pure.mjs";
+import { isLocallyRecoverable } from "./worker-recovery.ts";
+import { captureFault, FAULT } from "./capture-faults.ts";
+import { failIfScreenReaderIsMute } from "./capture-pure.ts";
 
 /** The shape capture-core's diagnostics have, with only what this gate reads. */
 const diagnostics = (lastSpoken: string | undefined) => ({

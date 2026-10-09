@@ -46,7 +46,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { CONTAINER_ROLES } from "@a11ign/evidence";
-import { CONTAINER_PREFIX } from "./capture-pure.mjs";
+import { CONTAINER_PREFIX } from "./capture-pure.ts";
 
 /**
  * Container roles the GRAMMAR parses and the WORKER deliberately does not strip.

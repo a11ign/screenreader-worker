@@ -22,7 +22,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { recordWhatWasAsked } from "./capture-pure.mjs";
+import { recordWhatWasAsked } from "./capture-pure.ts";
 
 const FORM_STATE = {
   state: "error",

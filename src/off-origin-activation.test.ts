@@ -15,7 +15,7 @@ import { stripComments } from "@a11ign/evidence/source-text";
 import {
   activationLeftTheSite, leftTheOrigin, markLeftSite, notRunAfterLeaving, probeKindFor, recordWhatWasAsked,
   sweepObservation,
-} from "./capture-pure.mjs";
+} from "./capture-pure.ts";
 
 // Quoted from run 34767932873's `a11ign-result.json`, `structure.formFields[0]`.
 const EMBED = "main landmark, Web Accessibility Perspectives: Video Captions, region, Video, frame, clickable, "

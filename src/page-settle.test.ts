@@ -18,7 +18,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { censusShape } from "./capture-pure.mjs";
+import { censusShape } from "./capture-pure.ts";
 
 test("an errored census is not comparable, so two failures never agree", () => {
   assert.equal(censusShape({ error: "CDP /json/list returned HTTP 500" }), null,

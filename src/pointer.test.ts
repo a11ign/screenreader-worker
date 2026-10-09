@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { parkPointForTest as parkPoint, parkPointer } from "./pointer.mjs";
+import { parkPointForTest as parkPoint, parkPointer } from "./pointer.ts";
 
 /** The override is read per call, so each case sets and clears it rather than relying on order. */
 function withOverride<T>(value: string | undefined, fn: () => T): T {

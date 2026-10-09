@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { dedupeKey, CONTAINER_PREFIX, lastMark, screenReaderWasSilentAtStart } from "./capture-pure.mjs";
+import { dedupeKey, CONTAINER_PREFIX, lastMark, screenReaderWasSilentAtStart } from "./capture-pure.ts";
 
 const CAPTURES = resolve(process.cwd(), process.env.DATASET_ROOT ?? "runs/screenreader-dataset", "captures");
 

@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { FORM_INPUT_CAP, FORM_INPUT_CENSUS_EXPRESSION } from "./browser-session.mjs";
+import { FORM_INPUT_CAP, FORM_INPUT_CENSUS_EXPRESSION } from "./browser-session.ts";
 import { oracleCounts } from "@a11ign/evidence/verify";
 
 type Control = {

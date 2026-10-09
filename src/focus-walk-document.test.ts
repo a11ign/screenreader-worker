@@ -45,7 +45,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { focusOrderCycled, focusWalkTruncated } from "./capture-pure.mjs";
+import { focusOrderCycled, focusWalkTruncated } from "./capture-pure.ts";
 
 const fixture = JSON.parse(readFileSync(
   resolve(import.meta.dirname, "fixtures-focus-863.json"), "utf8")) as {

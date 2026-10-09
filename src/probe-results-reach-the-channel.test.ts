@@ -27,7 +27,7 @@ import { stripComments } from "@a11ign/evidence/source-text";
 
 // `probePasses`, `interactionEvidence` and `assembleAndMark` all moved to `capture-probes.mjs` in the
 // 2026-09-05 capture-core.mjs split.
-const SOURCE = readFileSync(resolve(import.meta.dirname, "./capture-probes.mjs"), "utf8");
+const SOURCE = readFileSync(resolve(import.meta.dirname, "./capture-probes.ts"), "utf8");
 
 /** Everything `probePasses` assigns a probe result to. */
 function resultKeysAssigned(): string[] {

@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { readFocusAfterTab, FOCUS_READ_ATTEMPTS } from "./capture-pure.mjs";
+import { readFocusAfterTab, FOCUS_READ_ATTEMPTS } from "./capture-pure.ts";
 
 /** A Tab and a read, scripted: each read answer is a string to return or an Error to throw, in order. */
 function scripted(reads: Array<string | null | undefined | Error>, { tabFails = false } = {}) {
@@ -77,7 +77,7 @@ test("#1497: a Tab that throws does not stop the read, and is named if the reads
 test("#1497 WIRING: the route probe's focus read goes through readFocusAfterTab, and an unmeasured reason reaches its mark", () => {
   // READ AS TEXT, never imported: `capture-probes.mjs` imports @guidepup/guidepup, which throws here. Anchored on
   // code shapes (`return readFocusAfterTab({`, a spread into the mark), not on words a comment could carry.
-  const source = readFileSync(new URL("./capture-probes.mjs", import.meta.url), "utf8");
+  const source = readFileSync(new URL("./capture-probes.ts", import.meta.url), "utf8");
   assert.match(source, /\breadFocusAfterTab, routeChangeNavigated,\n\} from "\.\/capture-pure\.mjs";/,
     "the helper is imported from the pure module");
   const start = source.indexOf("async function focusedAfterTab(");

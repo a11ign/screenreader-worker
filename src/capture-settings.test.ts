@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { withIniSetting, withLogLevel, CAPTURE_SETTINGS, captureSettingsDigest } from "./nvda-logging.mjs";
+import { withIniSetting, withLogLevel, CAPTURE_SETTINGS, captureSettingsDigest } from "./nvda-logging.ts";
 
 test("adds the key when the section exists without it", () => {
   const out = withIniSetting("[documentFormatting]\n\treportTables = True\n", "documentFormatting", "reportLanguage", "True");

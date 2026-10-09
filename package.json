@@ -91,7 +91,7 @@
     "yaml": "2.9.1"
   },
   "scripts": {
-    "build": "rslib build && node scripts/write-code-version.mjs",
+    "build": "rslib build && node scripts/write-code-version.ts",
     "prepack": "pnpm run build",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",

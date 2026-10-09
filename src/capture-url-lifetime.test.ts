@@ -29,7 +29,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { stripComments } from "@a11ign/evidence/source-text";
 import { setExpectedPageUrl, expectedPageUrlForTest, lastResolvedPageUrl, endCaptureUrls }
-  from "./browser-session.mjs";
+  from "./browser-session.ts";
 
 const SESSION = readFileSync(resolve(import.meta.dirname, "browser-session.mjs"), "utf8");
 // COMMENTS STRIPPED, and this guard caught its own author doing it. The first version matched

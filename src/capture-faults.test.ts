@@ -11,7 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { stripComments } from "@a11ign/evidence/source-text";
-import { captureFault, faultCode, FAULT } from "./capture-faults.mjs";
+import { captureFault, faultCode, FAULT } from "./capture-faults.ts";
 
 
 test("a swapped code/message is refused at the throw site", () => {
@@ -73,7 +73,7 @@ test("the settle wait is a CONDITION, not a duration, and cannot hang on an empt
   // headings/census logic extensively in prose elsewhere, so a bare regex here risks matching a LATER,
   // unrelated comment rather than this function's own code. See `@a11ign/evidence/source-text`.
   // `waitForPageToSettle` lives in `capture-setup.mjs` since the 2026-09-05 split.
-  const source = stripComments(readFileSync(new URL("./capture-setup.mjs", import.meta.url), "utf8"));
+  const source = stripComments(readFileSync(new URL("./capture-setup.ts", import.meta.url), "utf8"));
   const settle = source.slice(source.indexOf("async function waitForPageToSettle"));
   assert.match(settle, /shape === previous/,
     "it must wait for the tree to STOP CHANGING — waiting for content would hang the whole budget on a "

@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 // FROM capture-pure, NOT capture-core: importing capture-core pulls guidepup, which constructs a
 // ScreenReader at module scope and throws where none exists. On macOS VoiceOver satisfies it and the
 // suite passes; on CI it does not. known-gaps §12, second occurrence.
-import { isBrowserErrorTitle, pageServedRefusal, samePath } from "./capture-pure.mjs";
+import { isBrowserErrorTitle, pageServedRefusal, samePath } from "./capture-pure.ts";
 
 test("Edge's unreachable-page titles are refused", () => {
   for (const title of [

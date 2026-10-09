@@ -4,7 +4,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { bakeDeclaration, bakeModule } from "./write-code-version.mjs";
+import { bakeDeclaration, bakeModule } from "./write-code-version.ts";
 
 // THE BUILT PACKAGE IS PINNED, because every other test in this repository reads `src` (a11ign/a11ign#3734, follow-up of #3552).
 //

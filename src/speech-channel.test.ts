@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { installSpeechChannelShim, resetSpeechSocket, NVDA_REMOTE_PORT } from "./speech-channel.mjs";
+import { installSpeechChannelShim, resetSpeechSocket, NVDA_REMOTE_PORT } from "./speech-channel.ts";
 
 class FakeSocket extends EventEmitter {
   destroyed = false;

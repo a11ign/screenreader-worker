@@ -13,10 +13,10 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { CDP_PORT } from "./browser-session.mjs";
-import { validateAuthRequest } from "./auth-flow.mjs";
-import { beginAuthentication } from "./capture-auth.mjs";
-import { faultCode, FAULT } from "./capture-faults.mjs";
+import { CDP_PORT } from "./browser-session.ts";
+import { validateAuthRequest } from "./auth-flow.ts";
+import { beginAuthentication } from "./capture-auth.ts";
+import { faultCode, FAULT } from "./capture-faults.ts";
 
 const FAKE_USER = "canaryuser6d3f2a";
 const FAKE_SECRET = "canarysecretb81c94";

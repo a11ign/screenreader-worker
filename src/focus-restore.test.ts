@@ -17,8 +17,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { focusRestoreDecision, focusRestoredRecord, heldInFrame, sweepObservation } from "./capture-pure.mjs";
-import { FOCUS_RESTORE_EXPRESSION } from "./browser-session.mjs";
+import { focusRestoreDecision, focusRestoredRecord, heldInFrame, sweepObservation } from "./capture-pure.ts";
+import { FOCUS_RESTORE_EXPRESSION } from "./browser-session.ts";
 
 const source = (file: string) => readFileSync(fileURLToPath(new URL(`./${file}`, import.meta.url)), "utf8");
 const bodyOf = (text: string, signature: string) => {

@@ -17,7 +17,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DOM_CENSUS_EXPRESSION } from "./browser-session.mjs";
+import { DOM_CENSUS_EXPRESSION } from "./browser-session.ts";
 
 /**
  * The expression as the page receives it: IMPORTED, so the template literal is evaluated by module load with

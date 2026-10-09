@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateRawSync } from "node:zlib";
 
-import { screenReaderDefaults } from "./diagnostics.mjs";
+import { screenReaderDefaults } from "./diagnostics.ts";
 
 /** Real lines from NVDA's `configSpec.py`, including the one that started this. */
 const SPEC = `

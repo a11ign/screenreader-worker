@@ -24,7 +24,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const server = readFileSync(fileURLToPath(new URL("./server.mjs", import.meta.url)), "utf8");
+const server = readFileSync(fileURLToPath(new URL("./server.ts", import.meta.url)), "utf8");
 
 /** `runCapture`'s own body — `busy`'s claim/release partner, and where `inFlight` is set. */
 function runCaptureBody(): string {

@@ -17,7 +17,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { parseAnnouncement } from "@a11ign/evidence";
-import { matchesFieldName, matchesWithin, fillActionFor } from "./field-match.mjs";
+import { matchesFieldName, matchesWithin, fillActionFor } from "./field-match.ts";
 
 /**
  * Real announcements, captured from real pages by real NVDA — `runs/real-page-corpus`, 2026-09-02.

@@ -9,7 +9,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 
-import { crossCheckStructure, elementsListRowName } from "./capture-pure.mjs";
+import { crossCheckStructure, elementsListRowName } from "./capture-pure.ts";
 
 test("a row's name is read out of NVDA's tree-view chrome", () => {
   assert.equal(elementsListRowName("main, tree view item, focused, selected, expanded, 1 of 1, level 0"), "main");

@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { titleSourceVerdict } from "./capture-pure.mjs";
+import { titleSourceVerdict } from "./capture-pure.ts";
 
 test("a confirmed CDP target: the document's own title wins, even when it differs from what NVDA said", () => {
   // This is the exact defect: NVDA said the live region, not the title.

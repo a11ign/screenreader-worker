@@ -30,7 +30,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { profileIdentity, readOrStampProfileIdentity, ADOPTED_PROFILE, USED_MARKER, STAMP_FILE,
   ORIGIN_FILE, ORIGIN_ADOPTED, ORIGIN_FRESH, originDisagreement }
-  from "./browser-profile.mjs";
+  from "./browser-profile.ts";
 
 /** A fake filesystem: a set of paths that exist, plus the contents of any read. */
 function fakeDisk(files: Record<string, string>) {

@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { stripComments } from "@a11ign/evidence/source-text";
-import { onlyControlState, pageSpeechAfter } from "./capture-pure.mjs";
+import { onlyControlState, pageSpeechAfter } from "./capture-pure.ts";
 
 // Quoted from each run's `a11ign-result.json`, `interaction.formChanges`: run 34781484432 (sha256
 // f32affb374e13b97…) and run 34782000257 (sha256 a09bfa38c473e6ab…), DanBeckDev/a11ign-v1-rehearsal.

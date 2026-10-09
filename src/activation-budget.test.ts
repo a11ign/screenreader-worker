@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 
 import {
   ACTIVATION_SHARE_OF_REMAINING, activationBudgetMark, activationDeadline,
-} from "./capture-pure.mjs";
+} from "./capture-pure.ts";
 
 test("the activation may take at most its share, and the sweeps after it keep the rest", () => {
   const now = 1_000_000;

@@ -17,7 +17,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 
-import { sweepStepFromSpeech, MAX_CONSECUTIVE_REPEATS } from "./capture-pure.mjs";
+import { sweepStepFromSpeech, MAX_CONSECUTIVE_REPEATS } from "./capture-pure.ts";
 
 test("silence stops the sweep even when older speech is still in the log", () => {
   // This input is chosen so it DISCRIMINATES. The jump added nothing (log length == seen), and `prev`

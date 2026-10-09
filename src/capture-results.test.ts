@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 
 import {
   AUTHENTICATED_RESULT_TTL_MS, createResultStore, isValidCaptureId, RESULT_HISTORY, storedResultResponse,
-} from "./capture-results.mjs";
+} from "./capture-results.ts";
 
 test("a finished capture is replayed with its original status and body", () => {
   const store = createResultStore();

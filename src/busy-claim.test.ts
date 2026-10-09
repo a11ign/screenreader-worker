@@ -25,7 +25,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const server = readFileSync(fileURLToPath(new URL("./server.mjs", import.meta.url)), "utf8");
+const server = readFileSync(fileURLToPath(new URL("./server.ts", import.meta.url)), "utf8");
 
 test("the busy check and the busy claim are in one synchronous step", () => {
   const accept = /function acceptCaptureRequest\([\s\S]*?\n}/.exec(server)?.[0];

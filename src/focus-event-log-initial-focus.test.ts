@@ -13,7 +13,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { INSTALL_FOCUS_EVENT_LOG_EXPRESSION } from "./browser-session.mjs";
+import { INSTALL_FOCUS_EVENT_LOG_EXPRESSION } from "./browser-session.ts";
 
 type FakeElement = { tagName: string; id?: string; getAttribute: (name: string) => string | null };
 type Entry = { type: string; id: number; name: string; atMs: number; initial?: true };

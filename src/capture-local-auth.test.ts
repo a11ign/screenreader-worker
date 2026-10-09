@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { runLocalCapture } from "./capture.mjs";
+import { runLocalCapture } from "./capture.ts";
 
 const URL_ = "http://127.0.0.1:5050/";
 const PLAN_FILE = "/plans/login.json";

@@ -25,7 +25,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { choosePageTarget } from "./browser-session.mjs";
+import { choosePageTarget } from "./browser-session.ts";
 
 const SOURCE = readFileSync(resolve(import.meta.dirname, "browser-session.mjs"), "utf8");
 

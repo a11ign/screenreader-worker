@@ -12,7 +12,7 @@ import {
   ALL_BROWSER_IMAGES, BROWSERS, CAPTURE_WINDOW, CAPTURE_WINDOW_SIZE, DEFAULT_BROWSER, MAGNIFY_FEATURE,
   SHARED_SUPPRESSED_FEATURES,
   browserArgs, browserFor, browserProfileDir, configuredBrowser, resolveBrowser,
-} from "./browsers.mjs";
+} from "./browsers.ts";
 
 const URL_UNDER_TEST = "http://pages/case/good";
 

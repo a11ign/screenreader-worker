@@ -10,9 +10,9 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { stripComments } from "@a11ign/evidence/source-text";
 
-import { validateAuthRequest } from "./auth-flow.mjs";
-import { beginAuthentication } from "./capture-auth.mjs";
-import { loginMarkOverride } from "./capture-core.mjs";
+import { validateAuthRequest } from "./auth-flow.ts";
+import { beginAuthentication } from "./capture-auth.ts";
+import { loginMarkOverride } from "./capture-core.ts";
 
 const APP = "https://app.example.test";
 const ACCOUNT_URL = `${APP}/account`;

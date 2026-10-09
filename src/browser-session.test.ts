@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { choosePageTarget, reusableArgs, CDP_PORT, setExpectedPageUrl, expectedPageUrlForTest }
-  from "./browser-session.mjs";
+  from "./browser-session.ts";
 
 test("the visible page target is chosen", () => {
   const target = choosePageTarget([

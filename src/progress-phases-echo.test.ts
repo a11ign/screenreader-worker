@@ -25,9 +25,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { createDiagnostics } from "./capture-pure.mjs";
+import { createDiagnostics } from "./capture-pure.ts";
 
-const server = readFileSync(fileURLToPath(new URL("./server.mjs", import.meta.url)), "utf8");
+const server = readFileSync(fileURLToPath(new URL("./server.ts", import.meta.url)), "utf8");
 
 /** `respondWithProgress`'s own body, extracted the same way `in-flight-clears.test.ts` reads `runCapture`. */
 function respondWithProgressBody(): string {

@@ -27,8 +27,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { walkToReveal } from "./capture-probes.mjs";
-import { censusGrowth, focusRevealVerdict } from "./capture-pure.mjs";
+import { walkToReveal } from "./capture-probes.ts";
+import { censusGrowth, focusRevealVerdict } from "./capture-pure.ts";
 
 /** The bound under test, restated so a mutation of `FOCUS_REVEAL_STOPS` shows up as a DISAGREEMENT here. */
 const STOPS = 8;

@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 
 // A `.mjs` module with JSDoc types, imported from a `.ts` test exactly as the worker's other tests do —
 // `checkJs` resolves it, so no suppression is needed and adding one is itself a type error.
-import { foregroundBlocker, FOREGROUND_BLOCKERS } from "./desktop-dialogs.mjs";
+import { foregroundBlocker, FOREGROUND_BLOCKERS } from "./desktop-dialogs.ts";
 
 test("the toast that caused the outage is caught", () => {
   const blocker = foregroundBlocker({ title: "New notification", owner: "ShellExperienceHost.exe", ok: true });

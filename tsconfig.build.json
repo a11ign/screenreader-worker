@@ -1,5 +1,5 @@
 {
-  // What Rslib reads to write the declarations (`dts.tsconfigPath` in rslib.config.mjs): the package's own `src`, and never the root
+  // What Rslib reads to write the declarations (`dts.tsconfigPath` in rslib.config.ts): the package's own `src`, and never the root
   // `tsconfig.json`, whose `include` reaches every test and `scripts/` and would lay them out under `dist/`. `tsc` itself emits nothing (Rslib builds; the root `typecheck` checks).
   "extends": "@a11ign/toolchain/tsconfig.base.json",
   "compilerOptions": {

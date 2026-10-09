@@ -26,8 +26,8 @@ import {
   retentionFor,
   signIn,
   validateAuthRequest,
-} from "./auth-flow.mjs";
-import { faultCode, FAULT } from "./capture-faults.mjs";
+} from "./auth-flow.ts";
+import { faultCode, FAULT } from "./capture-faults.ts";
 
 const TOO_MANY = 101; // one over the worker's 100-step bound
 const HTTP_FORBIDDEN = 403;

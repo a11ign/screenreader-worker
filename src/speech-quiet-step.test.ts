@@ -15,7 +15,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 
-import { speechQuietStep } from "./capture-pure.mjs";
+import { speechQuietStep } from "./capture-pure.ts";
 
 const QUIET_WINDOW_MS = 300;
 

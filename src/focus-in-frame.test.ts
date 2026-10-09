@@ -18,8 +18,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { focusInFrameOf, sweepObservation } from "./capture-pure.mjs";
-import { DOM_CENSUS_EXPRESSION } from "./browser-session.mjs";
+import { focusInFrameOf, sweepObservation } from "./capture-pure.ts";
+import { DOM_CENSUS_EXPRESSION } from "./browser-session.ts";
 import { probeStates } from "@a11ign/evidence/verify";
 
 const source = (file: string) => readFileSync(fileURLToPath(new URL(`./${file}`, import.meta.url)), "utf8");
