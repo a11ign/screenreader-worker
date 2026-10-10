@@ -92,7 +92,7 @@ test("POSITIVE CONTROL: a checkout with the foreground-lock script absent is REF
       "FLT -> packages/worker-fleet/src/provisioning/apply-foreground-lock-timeout.ps1 is absent",
     ]);
     assert.deepEqual(absentReach(noHarness), [
-      "CAPTURE_CHECK -> packages/lab/src/harnesses/capture-check.mjs is absent",
+      "CAPTURE_CHECK -> packages/lab/src/harnesses/capture-check.ts is absent",
     ]);
     assert.deepEqual(absentReach(noDeclaration), ["packages/nvda-worker/src/launcher-reach.cmd is absent"]);
   } finally {
