@@ -26,4 +26,4 @@ rem refused the foreground and every capture returns 0 phrases with no error at 
 set "FLT=packages\worker-fleet\src\provisioning\apply-foreground-lock-timeout.ps1"
 
 rem The capture-check harness, which lives in the lab package and not beside the launcher.
-set "CAPTURE_CHECK=packages\lab\src\harnesses\capture-check.mjs"
+set "CAPTURE_CHECK=packages\lab\src\harnesses\capture-check.ts"
