@@ -89,11 +89,33 @@ test("a11ign/a11ign#4199: arm mints for this identity, before the step that uses
   assert.match(text, /^ {2}push:/m, "the sweep after a merge needs the push trigger");
 });
 
-test("a11ign/a11ign#4199: the job holds the OIDC request and no write, and nothing reads a stored token or falls back to github.token", () => {
-  const code = withoutComments(read(".github/workflows/auto-arm.yml"));
+/**
+ * `relay` is the one job that holds `github.token`, ON PURPOSE (a11ign/a11ign#4969, a11ign/a11ign#5045): `pull_request_review` runs the BRANCH'S copy
+ * of this file, so nothing that mints may ride it, and the dispatch to `main`'s copy needs only `actions: write` on the job's own token. It is cut
+ * out before the pins below read the minting jobs, and pinned on its own after them.
+ */
+const RELAY_JOB = /^ {2}relay:\n(?:(?: {4,}.*)?\n)*/m;
+
+test("a11ign/a11ign#4199: the minting jobs hold the OIDC request and no write, and nothing reads a stored token or falls back to github.token", () => {
+  const whole = withoutComments(read(".github/workflows/auto-arm.yml"));
+  assert.match(whole, /github\.token/, "control: `relay` is where the token lives, so cutting it out below is not vacuous");
+  const code = whole.replace(RELAY_JOB, "");
   assert.doesNotMatch(code, /^permissions:/m, "no workflow-level grant: the writes come from the minted token");
   assert.match(code, / {4}permissions:\n(?: {6}contents: read\n)? {6}id-token: write\n/, "the job holds id-token: write and at most a read");
-  assert.doesNotMatch(code, /write-all|(?:pull-requests|contents|issues):\s*write/, "no write on GITHUB_TOKEN");
+  assert.doesNotMatch(code, /write-all|(?:pull-requests|contents|issues|actions):\s*write/, "no write on GITHUB_TOKEN");
   assert.doesNotMatch(code, /secrets\.|github\.token|FALLBACK_TOKEN|A11IGN_BOT_TOKEN/, "no stored or fallback token");
   assert.doesNotMatch(code, /^ {2}token-reach:/m, "the probe of the stored token goes with the token");
+});
+
+test("a11ign/a11ign#5045: relay holds `actions: write` and nothing else, mints nothing, and is the only job that reads github.token", () => {
+  const code = withoutComments(read(".github/workflows/auto-arm.yml"));
+  const relay = RELAY_JOB.exec(code)?.[0];
+  assert.ok(relay, "auto-arm.yml must carry a `relay` job: it is what an approving review reaches");
+  assert.match(code, / {4}if: github\.event_name == 'pull_request_review' && github\.event\.review\.state == 'approved'/, "relay runs on an approving review and no other review");
+  assert.match(relay, / {4}permissions:\n {6}actions: write\n {4}runs-on:/, "relay's whole grant is `actions: write`");
+  assert.doesNotMatch(relay, /octo-sts|id-token|identity:|secrets\./, "relay mints nothing: the event runs the branch's copy, which the policy cannot bind to main");
+  assert.match(relay, /GH_TOKEN: \$\{\{ github\.token \}\}/, "relay dispatches with the job's own token, the one a dispatch is allowed to start a run with");
+  assert.equal(code.match(/github\.token/g)?.length, 1, "no job other than relay reads github.token");
+  assert.match(code, / {4}if: github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/main' && github\.event\.inputs\.pr != ''/,
+    "arm-approved runs only as main's own dispatch, the shape the policy binds");
 });
