@@ -59,6 +59,11 @@ export const WORKER_FILES = [
   // ADR 0038's login interpreter and CDP driver. `capture-core.ts` and `server.ts` import it, so a guest without
   // it cannot start — the same reason as every file above.
   "auth-flow.ts",
+  // What `auth-flow.ts` imports for a login the CLI sends as a `loginBlock` (a11ign#4998): the screen loop (pure), and the authenticator
+  // code it types (`totp.ts`, from the secret `otpauth.ts` reads). A guest without them cannot import `auth-flow.ts`, so cannot start.
+  "screen-loop.ts",
+  "totp.ts",
+  "otpauth.ts",
   // The seam between `capture-core.ts` and `auth-flow.ts`: it reaches the browser session and the capture's marks,
   // which the interpreter deliberately does not. `capture-core.ts` imports it, so it is deployed like the rest.
   "capture-auth.ts",
