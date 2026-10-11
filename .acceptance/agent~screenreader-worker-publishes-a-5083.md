@@ -34,4 +34,4 @@ bash -c 'cd /home/agent/repos/screenreader-worker && pnpm exec rstest run src/la
 - **Nothing runs the published launcher yet.** The scheduled task passes argument 1 only; until row 6 adds argument 2 (or sets `A11Y_WORKER_DIR`) the launcher, if run from `node_modules`, refuses to start by design.
 - **The fleet's copy still exists** in the fleet repo until the fleet row (re-export or delete) lands.
 
-Closes: none — worker half of a11ign/a11ign#5083; the fleet re-export row and orchestrator's VERIFY row are filed separately
+Closes a11ign/a11ign#5083
