@@ -49,6 +49,7 @@
   },
   "files": [
     "dist",
+    "launcher",
     "README.md",
     "LICENSE"
   ],
