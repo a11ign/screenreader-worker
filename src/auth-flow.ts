@@ -7,6 +7,11 @@
  * the capture proper begin. Nothing about a login crosses the wire but the steps and the names, and nothing
  * derived from a session ever leaves this process: the session is destroyed after the capture (`purgeSession`).
  *
+ * **`loginBlock` (a11ign#4998, #4084 v3 login phase 2) stands in for `login`'s steps**: the request names the login page, THREE
+ * environment-variable NAMES (username, password, authenticator secret), a signed-in check and optionally an organization, and this
+ * process runs `screen-loop.ts` against the page: it recognises each screen by accessible name and acts on exactly one match. It is the
+ * worker's copy of the CLI's loop, and it validates the block again because the block arrives over HTTP from anywhere.
+ *
  * **`state: { path }` (ADR 0038, amendment 7) loads a storage state the PERSON saved instead of performing the login.** The
  * request carries a path and nothing else; THIS process reads the file and validates it (`loadStateEntries`), so a request
  * cannot make it load a value the CLI did not show it. The file is a credential: no error here quotes any part of it.
@@ -37,6 +42,11 @@ import { isAbsolute } from "node:path";
 
 import { CDP_READY_TIMEOUT_MS } from "./browser-session.ts";
 import { captureFault, FAULT, faultCode } from "./capture-faults.ts";
+import { parseTotpSecret } from "./otpauth.ts";
+import type { TotpSecret } from "./otpauth.ts";
+import { classifyScreen, runLoop } from "./screen-loop.ts";
+import type { Action, FieldSource, LoginOutcome, LoopResult, ScreenControl, ScreenObservation, TypeAction } from "./screen-loop.ts";
+import { codeForUse, TotpSeedError } from "./totp.ts";
 
 // JSON from the browser or the page (a CDP reply, a `page.evaluate` result, a request body): its shape is the other end's, and
 // modelling it is a job of its own. Named once here so the boundary is greppable and `no-explicit-any` still bites everywhere else.
@@ -72,7 +82,14 @@ type StateCookie = { name: string, value: string, domain: string, path?: string,
 
 type StateEntries = { cookies: (StateCookie & { place: number })[], localStorage: { place: number, name: string, value: string }[] };
 
-export type AuthPlan = { login: Step[], flow: Step[], upTo: number, state?: { path: string, entries?: StateEntries }, idpOrigins?: string[] };
+/** The adopter's proof of signed-in: an element by ARIA role and accessible name, or a URL path prefix on the app's origin. */
+export type SignedInCheck = { role: string, name: string } | { url: string };
+
+/** `auth.loginBlock` after validation. Every `*Env` is the NAME of a variable in THIS process's environment, never a value. */
+export type LoginBlockPlan = { url: string, usernameEnv: string, passwordEnv: string, totpEnv: string, check: SignedInCheck, organization?: string };
+
+/** With `loginBlock`, `login` is empty and the screen loop signs in; without it `login` is the steps, as it always was. */
+export type AuthPlan = { login: Step[], loginBlock?: LoginBlockPlan, flow: Step[], upTo: number, state?: { path: string, entries?: StateEntries }, idpOrigins?: string[] };
 
 /** A request the worker refuses to act on: a 400, not a capture. Carries no value, because none was read yet. */
 export class AuthRequestError extends Error {
@@ -211,20 +228,12 @@ function validateSteps(steps: unknown, origin: string, label: string): Step[] {
 }
 
 /**
- * Validate a request's `auth` again, at THIS boundary, because it arrives over HTTP from anywhere.
- *
- * The login flow is held to the rules a login is held to in `flows.ts`: `fromEnv` only (a literal in a login is
- * a password committed to somebody's file), ends in `expect`, captures nothing. `upTo` counts into `flow`.
- *
- * @param {unknown} raw @param {string} url the capture's URL, whose origin every `goto` is pinned to
- * @returns {AuthPlan}
+ * The login's STEPS, held to the rules a login is held to in `flows.ts`: `fromEnv` only (a literal in a login is a password committed
+ * to somebody's file), ends in `expect`, captures nothing.
+ * @param {unknown} raw @param {string} origin @returns {Step[]}
  */
-export function validateAuthRequest(raw: unknown, url: string): AuthPlan {
-  if (!isObject(raw)) throw new AuthRequestError("auth must be a mapping with a login");
-  refuseUnknownKeys(raw, ["login", "flow", "upTo", "state", "idpOrigins"], "auth");
-  let origin;
-  try { origin = new URL(url).origin; } catch { throw new AuthRequestError("auth needs a capture url to pin its origin to"); }
-  const login = validateSteps(raw.login, origin, "login");
+function validateLoginSteps(raw: unknown, origin: string): Step[] {
+  const login = validateSteps(raw, origin, "login");
   if (login.length === 0) throw new AuthRequestError("auth.login has no steps");
   login.forEach((step, index) => {
     const where = `auth.login step ${index + 1}`;
@@ -234,12 +243,105 @@ export function validateAuthRequest(raw: unknown, url: string): AuthPlan {
     if ("capture" in step) throw new AuthRequestError(`${where}: a login captures nothing`);
   });
   if (!("expect" in login[login.length - 1])) throw new AuthRequestError("auth.login must end with expect");
+  return login;
+}
+
+const LOGIN_BLOCK_KEYS = ["url", "usernameEnv", "passwordEnv", "totpEnv", "check", "organization"];
+
+/**
+ * A variable NAME, and never echoed: a request that put a value where a name belongs may have put a password there, and a refusal is a
+ * log line. Letters, digits and underscores only, so a literal with a space, a symbol or a leading digit is refused here.
+ * @param {unknown} value @param {string} where
+ */
+function envNameOf(value: unknown, where: string): string {
+  if (typeof value !== "string" || !ENV_NAME.test(value)) {
+    throw new AuthRequestError(`${where} must be the NAME of an environment variable (letters, digits and underscores); a value is never sent`);
+  }
+  return value;
+}
+
+/** `loginBlock.url`: the login page, on the capture URL's own origin; an identity provider is reached by redirect and `idpOrigins`. */
+function loginBlockUrl(value: unknown, origin: string): string {
+  let parsed;
+  try { parsed = new URL(String(value)); } catch { throw new AuthRequestError("auth.loginBlock.url must be an absolute http or https URL"); }
+  if (typeof value !== "string" || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+    throw new AuthRequestError("auth.loginBlock.url must be an absolute http or https URL");
+  }
+  if (parsed.username !== "" || parsed.password !== "") throw new AuthRequestError("auth.loginBlock.url carries a username or password");
+  if (parsed.origin !== origin) throw new AuthRequestError(`auth.loginBlock.url leaves ${origin}`);
+  return value;
+}
+
+/**
+ * `loginBlock.check`: `{ role, name }`, or `{ url }` as a path on the app's origin (an absolute URL on that origin is reduced to its
+ * path, so the CLI may send either). A URL on any other origin is refused: the check is about the APP's own page.
+ * @param {unknown} raw @param {string} origin @returns {SignedInCheck}
+ */
+function signedInCheckOf(raw: unknown, origin: string): SignedInCheck {
+  if (!isObject(raw)) throw new AuthRequestError("auth.loginBlock.check must be a mapping with role and name, or url");
+  refuseUnknownKeys(raw, ["role", "name", "url"], "auth.loginBlock.check");
+  if (raw.url === undefined) {
+    if (!isName(raw.role) || !isName(raw.name)) throw new AuthRequestError("auth.loginBlock.check names neither an element (role and name) nor a url");
+    return { role: raw.role, name: raw.name };
+  }
+  if (raw.role !== undefined || raw.name !== undefined) throw new AuthRequestError("auth.loginBlock.check takes role and name, or url, not both");
+  let resolved;
+  try { resolved = typeof raw.url === "string" && !raw.url.startsWith("//") ? new URL(raw.url, origin) : null; } catch { resolved = null; }
+  if (resolved === null || resolved.origin !== origin) throw new AuthRequestError(`auth.loginBlock.check.url must be a path on ${origin}`);
+  return { url: resolved.pathname };
+}
+
+/**
+ * `auth.loginBlock`, validated AGAIN here. The variable names are the only credential-shaped things on the wire; a key this worker does
+ * not define (`fields` included) is refused by name, so a newer CLI cannot be half-obeyed by an older worker.
+ * @param {unknown} raw @param {string} origin @returns {LoginBlockPlan}
+ */
+function validateLoginBlock(raw: unknown, origin: string): LoginBlockPlan {
+  if (!isObject(raw)) throw new AuthRequestError("auth.loginBlock must be a mapping");
+  refuseUnknownKeys(raw, LOGIN_BLOCK_KEYS, "auth.loginBlock");
+  if (raw.organization !== undefined && !isName(raw.organization)) throw new AuthRequestError("auth.loginBlock.organization must be a name");
+  return {
+    url: loginBlockUrl(raw.url, origin),
+    usernameEnv: envNameOf(raw.usernameEnv, "auth.loginBlock.usernameEnv"),
+    passwordEnv: envNameOf(raw.passwordEnv, "auth.loginBlock.passwordEnv"),
+    totpEnv: envNameOf(raw.totpEnv, "auth.loginBlock.totpEnv"),
+    check: signedInCheckOf(raw.check, origin),
+    ...(raw.organization === undefined ? {} : { organization: raw.organization as string }),
+  };
+}
+
+/**
+ * How the request signs in: a `loginBlock` (the screen loop) OR `login` steps, never both, and a block never with a saved `state` (a
+ * state stands in for a login and has no screens to loop over).
+ * @param {Record<string, unknown>} raw @param {string} origin @returns {{ login: Step[], loginBlock?: LoginBlockPlan }}
+ */
+function validateSignIn(raw: Record<string, unknown>, origin: string): { login: Step[]; loginBlock?: LoginBlockPlan } {
+  if (raw.loginBlock === undefined) return { login: validateLoginSteps(raw.login, origin) };
+  if (raw.login !== undefined) throw new AuthRequestError("auth carries both login and loginBlock; a request signs in one way");
+  if (raw.state !== undefined) throw new AuthRequestError("auth.loginBlock cannot be combined with auth.state: a saved state has no login screens");
+  return { login: [], loginBlock: validateLoginBlock(raw.loginBlock, origin) };
+}
+
+/**
+ * Validate a request's `auth` again, at THIS boundary, because it arrives over HTTP from anywhere.
+ *
+ * The login is `loginBlock` or `login` steps (`validateSignIn`). `upTo` counts into `flow`.
+ *
+ * @param {unknown} raw @param {string} url the capture's URL, whose origin every `goto` is pinned to
+ * @returns {AuthPlan}
+ */
+export function validateAuthRequest(raw: unknown, url: string): AuthPlan {
+  if (!isObject(raw)) throw new AuthRequestError("auth must be a mapping with a login");
+  refuseUnknownKeys(raw, ["login", "loginBlock", "flow", "upTo", "state", "idpOrigins"], "auth");
+  let origin;
+  try { origin = new URL(url).origin; } catch { throw new AuthRequestError("auth needs a capture url to pin its origin to"); }
+  const signedInBy = validateSignIn(raw, origin);
   const flow = raw.flow === undefined ? [] : validateSteps(raw.flow, origin, "flow");
   const upTo = raw.upTo === undefined ? flow.length : raw.upTo;
   if (typeof upTo !== "number" || !Number.isInteger(upTo) || upTo < 0 || upTo > flow.length) {
     throw new AuthRequestError("auth.upTo must be a step index within auth.flow");
   }
-  const plan = raw.state === undefined ? { login, flow, upTo } : { login, flow, upTo, state: stateRef(raw.state) };
+  const plan: AuthPlan = { ...signedInBy, flow, upTo, ...(raw.state === undefined ? {} : { state: stateRef(raw.state) }) };
   return raw.idpOrigins === undefined ? plan : { ...plan, idpOrigins: validateIdpOrigins(raw.idpOrigins, origin) };
 }
 
@@ -292,8 +394,27 @@ function stateRef(raw: unknown): { path: string; } {
 export function requiredEnvNames(plan: AuthPlan): string[] {
   // A state run never executes the login's steps (only its final `expect:`), so it reads none of the login's variables.
   const steps = plan.state === undefined ? [...plan.login, ...plan.flow.slice(0, plan.upTo)] : plan.flow.slice(0, plan.upTo);
+  // The authenticator secret is NOT here: a login with no MFA reads none, so its absence is the loop's `mfa-required-no-seed`, not a refusal.
+  const block = plan.loginBlock === undefined ? [] : [plan.loginBlock.usernameEnv, plan.loginBlock.passwordEnv];
   const names = steps.flatMap((step) => ("fill" in step && step.fill.fromEnv !== undefined ? [step.fill.fromEnv] : []));
-  return [...new Set(names)];
+  return [...new Set([...block, ...names])];
+}
+
+/**
+ * The authenticator secret a block names, or undefined when its variable is unset or empty (an account with no MFA needs none). **A value
+ * that is set and cannot be used is refused here, BEFORE a browser opens and a password is typed**, naming the variable; the
+ * explanation is `TotpSeedError`'s, which never carries the secret, and anything else is reduced to a fixed sentence.
+ * @param {LoginBlockPlan} block @param {Record<string, string | undefined>} env @returns {TotpSecret | undefined}
+ */
+export function totpSecretFor(block: LoginBlockPlan, env: Record<string, string | undefined>): TotpSecret | undefined {
+  const value = env[block.totpEnv];
+  if (typeof value !== "string" || value.trim() === "") return undefined;
+  try {
+    return parseTotpSecret(value);
+  } catch (error) {
+    const why = error instanceof TotpSeedError ? error.message : "it is not a base32 seed or an otpauth://totp URI";
+    throw captureFault(FAULT.AUTH_CREDENTIAL_MISSING, `the authenticator secret in ${block.totpEnv} cannot be used: ${why}`);
+  }
 }
 
 /**
@@ -314,6 +435,7 @@ export function readCredential(name: string, env: Record<string, string | undefi
  */
 export function assertCredentialsPresent(plan: AuthPlan, env: Record<string, string | undefined>) {
   for (const name of requiredEnvNames(plan)) readCredential(name, env);
+  if (plan.loginBlock !== undefined) totpSecretFor(plan.loginBlock, env);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -560,6 +682,10 @@ type AuthDriver = {
   frameSources(): Promise<string[]>,
   isChecked(handle: number): Promise<boolean>,
   click(handle: number): Promise<void>,
+  /** The control's `autocomplete` attribute, or "" (the screen loop reads it, never a class). Optional: a driver without it recognises by name alone. */
+  autocompleteOf?(handle: number): Promise<string>,
+  /** Press Enter in the control, for a form that has no button to press. Optional: without it such a form ends the login rather than guessing. */
+  pressEnter?(handle: number): Promise<void>,
   setCookies(cookies: StateCookie[]): Promise<void>,
   setLocalStorage(entries: { name: string, value: string }[]): Promise<void>,
   purge(origin: string): Promise<void>,
@@ -573,11 +699,17 @@ type AuthDriver = {
  * */
 
 /**
+ * What a login failure was, by name. The first three are a step that failed; the loop's outcomes are `screen-loop.ts`'s, and the last is
+ * the loop's one refusal that is a fact about the CHECK (the signed-out start page already satisfied it).
+ */
+type LoginFailureReason = "expect-not-met" | "unbindable-field" | "left-origin" | LoginOutcome | "signed-in-check-matches-signed-out";
+
+/**
  * `auth-login-failed`, with the reason, the step and the verb — and no value. `where` and `detail` stay on the error: a
  * saved-state run states the same fact and gives different advice (`stateExpired`).
- * @param {"expect-not-met" | "unbindable-field" | "left-origin"} reason @param {string} where @param {string} detail @param {string} [advice]
+ * @param {LoginFailureReason} reason @param {string} where @param {string} detail @param {string} [advice]
  */
-function loginFailed(reason: "expect-not-met" | "unbindable-field" | "left-origin", where: string, detail: string, advice?: string) {
+function loginFailed(reason: LoginFailureReason, where: string, detail: string, advice?: string) {
   return Object.assign(captureFault(FAULT.AUTH_LOGIN_FAILED, `the login did not complete (${reason}) at ${where}: ${detail}${advice ? `. ${advice}` : ""}`),
     { reason, where, detail });
 }
@@ -626,9 +758,9 @@ export function challengeVendor(sources: readonly string[]): string | undefined 
  * standing, with the reason it could not look in its detail. The CLI's own copy is `explainFailure` in `interpreter.ts`.
  *
  * @param {AuthDriver} driver
- * @param {"expect-not-met" | "unbindable-field"} reason @param {string} where @param {string} detail
+ * @param {LoginFailureReason} reason @param {string} where @param {string} detail
  */
-async function explainFailure(driver: AuthDriver, reason: "expect-not-met" | "unbindable-field", where: string, detail: string) {
+async function explainFailure(driver: AuthDriver, reason: LoginFailureReason, where: string, detail: string) {
   let vendor;
   try {
     vendor = challengeVendor(await driver.frameSources());
@@ -641,7 +773,7 @@ async function explainFailure(driver: AuthDriver, reason: "expect-not-met" | "un
     + `The step failed as ${reason}: ${detail}`);
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Poll until `attempt` returns something other than undefined, or the bound passes. A wait for a CONDITION, with a
@@ -921,6 +1053,218 @@ async function loadRequestedPage({ driver, url, idpOrigins, land }: { driver: Au
   if (!landed.ok) throw loginFailed("expect-not-met", "the requested page", `${url} could not be loaded after the login (${landed.error ?? "no reason given"})`);
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// The screen loop's glue (a11ign#4998). `screen-loop.ts` is pure: this reads the page into its observation, carries out its
+// actions, and says in the closed fault list what it ended with. A screen is recognised by ACCESSIBLE NAME and `autocomplete`
+// token and never by CSS, and a value is typed at the moment it is needed, from a variable NAMED by the request.
+// ---------------------------------------------------------------------------------------------------------------
+
+/**
+ * How long the loop may run from its first observation. Chosen, not measured: four screens an identity provider shows in a row, each
+ * with a navigation, fit in a fraction of it, and a loop that has not signed in by then is not going to. A BOUND on a wait for a
+ * condition; the loop polls inside it and never sleeps a fixed time between steps.
+ */
+export const LOGIN_LOOP_BUDGET_MS = 90_000;
+
+/** The sentence the CLI prints when the check passes before any login (`signed-in-check-matches-signed-out`), word for word. */
+const CHECK_MATCHES_SIGNED_OUT = "The signed-in check matched the signed-out page, so the login did not sign in: check the credentials and the steps before it.";
+
+/** What the loop looks at: the inputs it types into and the controls it presses, plus an `alert` that carries a rejection. */
+const LOOP_ROLES = new Set([...FILL_ROLES, "button", "link", "radio", "option", "menuitem", "checkbox", "alert"]);
+
+type LoopContext = {
+  driver: AuthDriver, origin: string, env: Record<string, string | undefined>,
+  mark: (event: string, detail: Record<string, unknown>) => void, idpOrigins: readonly string[], budgetMs: number,
+  /** Where each control of the LAST observation is, so an action on it is an action on what the loop classified. */
+  handles: WeakMap<ScreenControl, number>,
+  lastSeen?: ScreenObservation,
+  /** The authenticator window a code was last typed in: a time step is never typed twice (a reused code is a rejected code). */
+  usedWindow?: number,
+};
+
+/** The text under an `alert`, whose own name is empty in the accessibility tree: its static text, in order. */
+function textUnder(nodes: AxNode[], ancestorId: string): string {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const isInside = (node: AxNode) => {
+    for (let up = node.parentId ? byId.get(node.parentId) : undefined; up; up = up.parentId ? byId.get(up.parentId) : undefined) {
+      if (up.id === ancestorId) return true;
+    }
+    return false;
+  };
+  return normalise(nodes.filter((node) => !node.ignored && node.role === "StaticText" && isInside(node)).map((node) => node.name).join(" "));
+}
+
+/**
+ * The page as the loop sees it: its headings, and its controls by role, accessible name and `autocomplete` token. `className` is never
+ * read from the page, so the loop has nothing to classify by but what a person is given.
+ * @param {AuthDriver} driver @param {AxNode[]} nodes
+ */
+async function readScreen(driver: AuthDriver, nodes: AxNode[]) {
+  const live = nodes.filter((node) => !node.ignored);
+  const handles = new WeakMap<ScreenControl, number>();
+  const controls: ScreenControl[] = [];
+  for (const node of live.filter((candidate) => LOOP_ROLES.has(candidate.role))) {
+    const typed = FILL_ROLES.includes(node.role) && node.backendId !== undefined && driver.autocompleteOf !== undefined;
+    const autocomplete = typed ? await driver.autocompleteOf!(node.backendId as number) : "";
+    const named = normalise(node.name);
+    const name = node.role === "alert" && named === "" ? textUnder(nodes, node.id) : named;
+    const control: ScreenControl = { role: node.role, name, ...(autocomplete === "" ? {} : { autocomplete }) };
+    controls.push(control);
+    if (node.backendId !== undefined) handles.set(control, node.backendId);
+  }
+  const headings = live.filter((node) => node.role === "heading" && normalise(node.name) !== "").map((node) => normalise(node.name));
+  return { controls, headings, handles };
+}
+
+/** A URL check is a whole-path-segment prefix, as the CLI's `signed-in-check.ts` reads it: `/account` covers `/account/orders`, not `/accounts`. */
+function pathUnderPrefix(path: string, prefix: string): boolean {
+  return path === prefix || path.startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`);
+}
+
+/** The signed-in check holds: it is shown AND the page is on the app's origin (an element on the identity provider's page is the provider's). */
+async function checkHolds(check: SignedInCheck, ctx: { driver: AuthDriver, origin: string }, nodes: AxNode[]): Promise<boolean> {
+  if (await currentOrigin(ctx.driver) !== ctx.origin) return false;
+  if ("url" in check) {
+    if (ctx.driver.url === undefined) throw new Error("this driver cannot say where the page is, which a url check needs");
+    return pathUnderPrefix(new URL(await ctx.driver.url()).pathname, check.url);
+  }
+  return nodes.some((node) => !node.ignored && node.role === check.role && normalise(node.name) === normalise(check.name));
+}
+
+/**
+ * One observation, read AFTER the origin is confirmed: nothing is classified, let alone typed into, on an origin the flow did not name.
+ * A read that fails because the page is navigating is a blank page, recorded as a mark, and the loop polls on it.
+ * @param {LoginBlockPlan} block @param {LoopContext} ctx @returns {Promise<ScreenObservation>}
+ */
+async function observeScreen(block: LoginBlockPlan, ctx: LoopContext): Promise<ScreenObservation> {
+  await assertStillOnOrigin(ctx.driver, ctx.origin, "the login screens", ctx.idpOrigins);
+  let seen: ScreenObservation;
+  try {
+    const nodes = await ctx.driver.axNodes();
+    const { controls, headings, handles } = await readScreen(ctx.driver, nodes);
+    ctx.handles = handles;
+    seen = { controls, headings, signedIn: await checkHolds(block.check, ctx, nodes) };
+  } catch (error) {
+    ctx.mark("authScreenUnread", { reason: error instanceof Error ? error.message : String(error) });
+    seen = { controls: [], headings: [], signedIn: false };
+  }
+  ctx.lastSeen = seen;
+  return seen;
+}
+
+/** The handle of a control of the last observation, or `unbindable-field` when it is gone: the page moved between the read and the act. */
+function handleOf(target: ScreenControl, ctx: LoopContext): number {
+  const handle = ctx.handles.get(target);
+  if (handle === undefined) {
+    throw loginFailed("unbindable-field", "the login screens", `the ${target.role} "${target.name}" is no longer on the page`);
+  }
+  return handle;
+}
+
+/**
+ * A code for the authenticator window NOW, made immediately before it is typed (`codeForUse` waits out a window's last seconds), and never
+ * for a window one was already typed in: waiting for the next is slower and is what keeps a second screen from submitting a used code.
+ */
+async function freshCode(block: LoginBlockPlan, ctx: LoopContext): Promise<string> {
+  const secret = totpSecretFor(block, ctx.env);
+  if (secret === undefined) throw captureFault(FAULT.AUTH_CREDENTIAL_MISSING, `${block.totpEnv} is not set, or is empty, in the environment of the machine that drives the browser`);
+  const { seed, ...options } = secret;
+  const periodMs = secret.periodSeconds * MS_PER_SECOND;
+  if (Math.floor(Date.now() / periodMs) === ctx.usedWindow) await sleep(periodMs - (Date.now() % periodMs));
+  const code = await codeForUse(seed, Date.now, sleep, options);
+  ctx.usedWindow = Math.floor(Date.now() / periodMs);
+  return code;
+}
+
+/** The text for one field, read from where its source says at the moment it is typed. The loop never held it. */
+async function valueFor(source: FieldSource, action: TypeAction, { block, ctx }: { block: LoginBlockPlan, ctx: LoopContext }): Promise<string> {
+  if (source === "identifier") return readCredential(block.usernameEnv, ctx.env);
+  if (source === "password") return readCredential(block.passwordEnv, ctx.env);
+  if (source === "one-time-code") return freshCode(block, ctx);
+  return String(action.organization); // the flow's own word for its organization: a name, not a secret
+}
+
+/** Type each field, asking the origin BEFORE each one (a page can move on its own since the last look), then submit. */
+async function typeFields(action: TypeAction, { block, ctx }: { block: LoginBlockPlan, ctx: LoopContext }) {
+  let last: number | undefined;
+  for (const { target, source } of action.fields) {
+    await assertStillOnOrigin(ctx.driver, ctx.origin, "the login screens", ctx.idpOrigins);
+    last = handleOf(target, ctx);
+    await ctx.driver.fill(last, await valueFor(source, action, { block, ctx }));
+  }
+  if (action.submit !== undefined) return ctx.driver.click(handleOf(action.submit, ctx));
+  if (last === undefined || ctx.driver.pressEnter === undefined) {
+    throw loginFailed("unbindable-field", "the login screens", "the form has no button to press and no field to press Enter in");
+  }
+  return ctx.driver.pressEnter(last);
+}
+
+/** One action of the loop, marked by screen and kind only: a mark is echoed by `/progress`, so it names no value and no control text. */
+async function carryOut(action: Action, { block, ctx }: { block: LoginBlockPlan, ctx: LoopContext }) {
+  if (action.kind === "stop") return;
+  const screen = ctx.lastSeen === undefined ? "unknown" : classifyScreen(ctx.lastSeen);
+  ctx.mark("authScreen", { screen, action: action.kind, ...(action.kind === "type" ? { fields: action.fields.map((field) => field.source) } : {}) });
+  if (action.kind === "type") return typeFields(action, { block, ctx });
+  await assertStillOnOrigin(ctx.driver, ctx.origin, "the login screens", ctx.idpOrigins);
+  return ctx.driver.click(handleOf(action.target, ctx));
+}
+
+/**
+ * What the loop ended with, as the closed fault list says it: a bot check is `auth-challenge-detected` (named, never answered), and
+ * the rest are `auth-login-failed` carrying the outcome as the reason and the CLI's sentence as the detail. A page nobody recognised, or
+ * one that never reached the check, is looked at for a CAPTCHA widget first, as a failed step is.
+ * @param {LoopResult} result @param {AuthDriver} driver
+ */
+async function loginEnded(result: LoopResult, driver: AuthDriver) {
+  const outcome = result.outcome as LoginOutcome;
+  const detail = `${result.remedy ?? ""}${result.flowsStep === undefined ? "" : ` ${result.flowsStep}`}`;
+  if (outcome === "bot-challenge") {
+    return captureFault(FAULT.AUTH_CHALLENGE_DETECTED, "the login stopped at a bot check, and this run names one and never answers one: it is there to "
+      + `stop automated sign-ins, and nothing here will click it, wait it out or work around it. ${detail}`);
+  }
+  if (outcome === "unknown-screen" || outcome === "signed-in-check-never-matched") {
+    return explainFailure(driver, outcome, "the login screens", detail);
+  }
+  return loginFailed(outcome, "the login screens", detail);
+}
+
+/**
+ * The login, by screens: load the login page, refuse a check the signed-out page already satisfies (before any value is typed), then
+ * loop. Returns how many screens were acted on, for the `authApplied` mark.
+ * @param {LoginBlockPlan} block @param {Omit<LoopContext, "handles">} context @returns {Promise<number>}
+ */
+async function signInByScreens(block: LoginBlockPlan, context: Omit<LoopContext, "handles">): Promise<number> {
+  const ctx: LoopContext = { ...context, handles: new WeakMap() };
+  const loaded = await ctx.driver.navigate(block.url);
+  if (!loaded.ok) throw loginFailed("expect-not-met", "the login page", `${block.url} could not be loaded (${loaded.error ?? "no reason given"})`);
+  if ((await observeScreen(block, ctx)).signedIn) {
+    throw loginFailed("signed-in-check-matches-signed-out", "the login page", CHECK_MATCHES_SIGNED_OUT);
+  }
+  const result = await runLoop({
+    observe: () => observeScreen(block, ctx),
+    act: (action) => carryOut(action, { block, ctx }),
+    pause: sleep,
+    now: Date.now,
+    budgetMillis: ctx.budgetMs,
+    config: { ...(block.organization === undefined ? {} : { organization: block.organization }), totpSeedConfigured: totpSecretFor(block, ctx.env) !== undefined },
+  });
+  if (result.outcome !== "signed-in") throw await loginEnded(result, ctx.driver);
+  return result.branches.length;
+}
+
+/**
+ * A successful login followed by the login form on the requested page: the session did not hold. The screen loop's counterpart of
+ * `assertNotShownLoginWall`, which needs the steps' field names; here the wall is a page that asks for an identifier AND a password.
+ * A page with an identifier alone is not the wall (a settings page has an email box).
+ * @param {AuthDriver} driver
+ */
+async function assertNotShownLoginScreen(driver: AuthDriver) {
+  const { controls, headings } = await readScreen(driver, await driver.axNodes());
+  if (classifyScreen({ controls, headings, signedIn: false }) !== "identifier-and-password") return;
+  throw captureFault(FAULT.AUTH_SESSION_LOST, "the login succeeded, and then the requested page showed the login form: it asks for an identifier "
+    + "and a password. The session did not hold, so this page was not examined as the product.");
+}
+
 /**
  * The whole sign-in: the login, then the flow to its capture point, then the requested page.
  *
@@ -937,10 +1281,10 @@ async function loadRequestedPage({ driver, url, idpOrigins, land }: { driver: Au
  *   uses (`navigateExisting`), which records where redirects landed for `assertLandedOnRequestedPage`; without one
  *   the driver's own navigation is used, which is what the tests do.
  */
-export async function signIn({ plan, url, driver, env, mark, bindTimeoutMs = BIND_TIMEOUT_MS, land }: {
+export async function signIn({ plan, url, driver, env, mark, bindTimeoutMs = BIND_TIMEOUT_MS, land, loopBudgetMs = LOGIN_LOOP_BUDGET_MS }: {
         plan: AuthPlan; url: string; driver: AuthDriver; env: Record<string, string | undefined>;
         mark: (event: string, detail: Record<string, unknown>) => void; bindTimeoutMs?: number;
-        land?: (url: string) => Promise<{ ok: boolean; error?: string; }>;
+        land?: (url: string) => Promise<{ ok: boolean; error?: string; }>; loopBudgetMs?: number;
     }) {
   const state = plan.state?.entries;
   if (plan.state !== undefined && state === undefined) throw new Error("a plan that names a saved state needs its entries read from the file first (withLoadedState)");
@@ -948,13 +1292,17 @@ export async function signIn({ plan, url, driver, env, mark, bindTimeoutMs = BIN
   const flow = plan.flow.slice(0, plan.upTo);
   /** @param {Step[]} steps @param {"login" | "flow"} phase @returns {RunContext} */
   const run = (steps: Step[], phase: "login" | "flow"): RunContext => ({ steps, origin, driver, env, mark, phase, bindTimeoutMs, idpOrigins: plan.idpOrigins ?? [] });
-  if (state === undefined) await runSteps(run(plan.login, "login"));
+  let loginUnits = state === undefined ? plan.login.length : 1;
+  if (plan.loginBlock !== undefined) {
+    loginUnits = await signInByScreens(plan.loginBlock, { driver, origin, env, mark, idpOrigins: plan.idpOrigins ?? [], budgetMs: loopBudgetMs });
+  } else if (state === undefined) await runSteps(run(plan.login, "login"));
   else await signInFromState(state, run(plan.login, "login"), url);
   await runSteps(run(flow, "flow"));
   await loadRequestedPage({ driver, url, land, idpOrigins: state === undefined ? plan.idpOrigins ?? [] : [] }); // a saved state signs in on the page's own load
   await assertStillOnOrigin(driver, origin, "the requested page");
-  await assertNotShownLoginWall(driver, plan.login);
-  mark("authApplied", { steps: (state === undefined ? plan.login.length : 1) + flow.length });
+  if (plan.loginBlock === undefined) await assertNotShownLoginWall(driver, plan.login);
+  else await assertNotShownLoginScreen(driver);
+  mark("authApplied", { steps: loginUnits + flow.length });
 }
 
 /**
@@ -1091,6 +1439,17 @@ function axNodeOf(node: Untyped): AxNode {
   };
 }
 
+/** The fixed function a `choose` step is carried out by, handed the option's label as DATA: nothing a flow says is spliced into it. */
+const CHOOSE_OPTION_FUNCTION = `function (wanted) {
+  const options = Array.from(this.options || []);
+  const at = options.findIndex((o) => (o.label || o.text || '').replace(/\\s+/g, ' ').trim() === wanted);
+  if (at < 0) return false;
+  this.selectedIndex = at;
+  this.dispatchEvent(new Event('input', { bubbles: true }));
+  this.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+}`;
+
 /**
  * The browser protocol behind `AuthDriver`. Every action goes through fixed protocol calls or a FIXED function
  * declaration handed its arguments as data (`Runtime.callFunctionOn`'s `arguments`), so nothing a flow says is ever
@@ -1143,17 +1502,16 @@ export async function openCdpDriver({ port, readyTimeoutMs = CDP_READY_TIMEOUT_M
       await callOn(handle, "function () { if (typeof this.select === 'function') this.select(); }");
       await session.send("Input.insertText", { text });
     },
-    choose: (handle, option) => callOn(handle, `function (wanted) {
-      const options = Array.from(this.options || []);
-      const at = options.findIndex((o) => (o.label || o.text || '').replace(/\\s+/g, ' ').trim() === wanted);
-      if (at < 0) return false;
-      this.selectedIndex = at;
-      this.dispatchEvent(new Event('input', { bubbles: true }));
-      this.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    }`, [option]),
+    choose: (handle, option) => callOn(handle, CHOOSE_OPTION_FUNCTION, [option]),
     isChecked: (handle) => callOn(handle, "function () { return Boolean(this.checked) || this.getAttribute('aria-checked') === 'true'; }"),
     click: async (handle) => { await callOn(handle, "function () { this.click(); }"); },
+    autocompleteOf: async (handle) => String(await callOn(handle, "function () { return this.getAttribute('autocomplete') || ''; }") ?? ""),
+    async pressEnter(handle) {
+      await session.send("DOM.focus", { backendNodeId: handle });
+      const key = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 };
+      await session.send("Input.dispatchKeyEvent", { type: "keyDown", text: "\r", ...key });
+      await session.send("Input.dispatchKeyEvent", { type: "keyUp", ...key });
+    },
     setCookies: async (cookies) => { await session.send("Network.setCookies", { cookies: cookies.map(cookieParam) }); },
     async setLocalStorage(entries) {
       const { result } = await session.send("Runtime.evaluate", { expression: "globalThis" });
