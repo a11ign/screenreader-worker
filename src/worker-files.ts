@@ -47,6 +47,9 @@ export const WORKER_FILES = [
   // The display mode and adapter, sampled on a timer so `/health` never shells out (#2673). `server.ts` imports
   // it, so a guest without it cannot start; guidepup-free for the same reason as the two files above.
   "display-sample.ts",
+  // The Edge-updater guard's record, read for `/health` (#5021). `server.ts` imports it, so a guest without it
+  // cannot start; guidepup-free for the same reason as the files above.
+  "edge-updater-guard.ts",
   // The forms-config matcher (ADR 0024). capture-core imports it, so a guest without it cannot start —
   // which is exactly what `worker-files.test.ts` caught when this line was missing.
   "field-match.ts",

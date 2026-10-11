@@ -15,6 +15,7 @@ import { createServer } from "node:http";
 import { createVersionSampler, fileProductVersion, powershellValue } from "./file-version.ts";
 // Re-exported so every existing importer of `server.ts` is unchanged by the move.
 export { fileProductVersion, powershellValue } from "./file-version.ts";
+import { readEdgeUpdaterGuard, unreadEdgeUpdaterGuard } from "./edge-updater-guard.ts";
 import { existsSync, openSync, readFileSync, readdirSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
@@ -652,6 +653,18 @@ async function refreshWindowsBuild() {
 }
 
 /**
+ * `edgeUpdaterGuard` (#5021): the elevated guard task's record, which this unelevated process can open and the
+ * updater's own tasks it cannot (`edge-updater-guard.ts`). Same placement as `windowsBuild` -- sampled on the
+ * version timer, REPORTED and never keyed -- with the opposite memo rule: the guard rewrites its record every
+ * run, so nothing is cached, and it starts `unknown` because a worker that has not read it yet has not seen it
+ * `ok`. `readEdgeUpdaterGuard` never rejects.
+ */
+let edgeUpdaterGuard = unreadEdgeUpdaterGuard();
+async function refreshEdgeUpdaterGuard() {
+  edgeUpdaterGuard = await readEdgeUpdaterGuard();
+}
+
+/**
  * `windowsVersion`, `screenReaderVersion` and `browserVersion`: the #2673 stall again, for the other three
  * PowerShell reads (#2684). `runtimeEnvironment`'s 5 s rebuild called `bootConstant`/`fileProductVersion`
  * straight from `/health`'s request path, and a read that had not yet succeeded -- or a binary that had
@@ -662,8 +675,10 @@ async function refreshWindowsBuild() {
  */
 const versionSampler = createVersionSampler({
   readWindowsVersion: async () => {
-    // `windowsBuild` rides the same timer tick (#4433); `refreshWindowsBuild` never rejects.
-    const [version] = await Promise.all([bootConstantAsync(WINDOWS_VERSION_SCRIPT), refreshWindowsBuild()]);
+    // `windowsBuild` (#4433) and `edgeUpdaterGuard` (#5021) ride the same timer tick; neither refresh rejects.
+    const [version] = await Promise.all([
+      bootConstantAsync(WINDOWS_VERSION_SCRIPT), refreshWindowsBuild(), refreshEdgeUpdaterGuard(),
+    ]);
     return version;
   },
   readScreenReaderVersion: () => {
@@ -687,7 +702,7 @@ function currentEnvironment() {
   }
   // Merged on EVERY call and never cached with the rest: the age of a sample is a property of the moment it
   // is read, so a value frozen into the 5 s cache would overstate how fresh the sample is by up to 5 s.
-  return { ...environmentCache, ...displaySampler.current(), ...versionSampler.current(), windowsBuild };
+  return { ...environmentCache, ...displaySampler.current(), ...versionSampler.current(), edgeUpdaterGuard, windowsBuild };
 }
 
 /**
