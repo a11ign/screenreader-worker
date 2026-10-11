@@ -53,8 +53,16 @@ import { codeForUse, TotpSeedError } from "./totp.ts";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Untyped = any;
 
-/** The closed vocabulary. Same seven as `flows.ts`, in the same order; pinned equal by a test. */
-export const FLOW_VERBS = ["goto", "fill", "choose", "check", "press", "expect", "capture"];
+/**
+ * The verbs the worker runs. `flows.ts` has one more, `auto`, which the worker refuses BY NAME (see `verbStep`): it hands the screen
+ * to a loop the worker runs only for `auth.loginBlock`. Nothing here pins this list to `flows.ts`'s; that parity test is in the lab.
+ */
+export const FLOW_VERBS = ["goto", "fill", "choose", "check", "press", "expect", "capture", "dismiss-if-shown"];
+/** Keys a step may carry BESIDE its verb. They say whether the step runs, never what it does. Same as `flows.ts`'s. */
+const STEP_MODIFIERS = ["when", "optional"];
+/** The verbs a modifier is refused on, as `flows.ts` refuses them. A condition on a `capture` would move its index. */
+const WHEN_REFUSED_ON = ["capture", "dismiss-if-shown"];
+const OPTIONAL_ALLOWED_ON = ["fill", "choose", "check", "press", "expect"];
 export const EXPECT_DEFAULT_SECONDS = 10;
 export const EXPECT_MAX_SECONDS = 30;
 /** What a variable NAME may look like. A value is never checked against this: only names are on the wire. */
@@ -70,13 +78,18 @@ const CDP_CALL_TIMEOUT_MS = 15_000;
 const CDP_HOST = "127.0.0.1";
 
 type ControlRef = { field: string, within?: string, nth?: number };
-type Step = { goto: string }
+type ControlTarget = { control: string, within?: string, nth?: number };
+type PageCondition = { kind: "heading" | "control" | "text", name: string };
+type StepBody = { goto: string }
   | { fill: ControlRef & { value?: string, fromEnv?: string } }
   | { choose: ControlRef & { option: string } }
   | { check: ControlRef & { checked: boolean } }
-  | { press: { control: string, within?: string, nth?: number } }
-  | { expect: { kind: "heading" | "control" | "text", name: string, timeoutSeconds: number } }
+  | { press: ControlTarget }
+  | { expect: PageCondition & { timeoutSeconds: number } }
+  | { "dismiss-if-shown": ControlTarget }
   | { capture: string };
+/** A verb, with the modifiers the CLI writes beside it: `when:` skips the step when its condition is not on the page; `optional:` when its control never appears. */
+type Step = StepBody & { when?: PageCondition, optional?: true };
 
 type StateCookie = { name: string, value: string, domain: string, path?: string, expires?: number, httpOnly?: boolean, secure?: boolean, sameSite?: string };
 
@@ -160,13 +173,19 @@ function expectStep(raw: unknown, where: string): Step {
 }
 
 /**
+ * One step: exactly one verb, and whatever modifiers the CLI writes beside it.
  * @param {unknown} raw @param {string} origin @param {string} where @returns {Step}
  */
 function validateStep(raw: unknown, origin: string, where: string): Step {
-  if (!isObject(raw) || Object.keys(raw).length !== 1) {
-    throw new AuthRequestError(`${where} must be a mapping with exactly one verb`);
-  }
-  const [verb, body] = Object.entries(raw)[0];
+  if (!isObject(raw)) throw new AuthRequestError(`${where} must be a mapping with exactly one verb`);
+  const verbs = Object.keys(raw).filter((key) => !STEP_MODIFIERS.includes(key));
+  if (verbs.length !== 1) throw new AuthRequestError(`${where} must be a mapping with exactly one verb`);
+  const [verb] = verbs;
+  return withModifiers(verbStep(verb, raw[verb], origin, where), raw, where);
+}
+
+/** @param {string} verb @param {unknown} body @param {string} origin @param {string} where @returns {StepBody} */
+function verbStep(verb: string, body: unknown, origin: string, where: string): StepBody {
   switch (verb) {
     case "goto": return { goto: gotoTarget(body, origin, where) };
     case "fill": return fillStep(body, where);
@@ -174,11 +193,53 @@ function validateStep(raw: unknown, origin: string, where: string): Step {
     case "check": return checkStep(body, where);
     case "press": return pressStep(body, where);
     case "expect": return expectStep(body, where);
+    case "dismiss-if-shown": return { "dismiss-if-shown": controlTarget(body, "dismiss-if-shown", where) };
     case "capture":
       if (!isName(body)) throw new AuthRequestError(`${where}: capture needs a name`);
       return { capture: body };
+    // Refused by name, not as "not a step": a flow that writes auto: is asking for something the worker does not do, and says what.
+    case "auto":
+      throw new AuthRequestError(`${where}: auto: is refused by the worker. It hands the screen to the CLI's built-in login loop, which the `
+        + "worker runs only for auth.loginBlock, so a flow cannot ask for it.");
     default: throw new AuthRequestError(`${where}: ${verb} is not a step; the vocabulary is closed`);
   }
+}
+
+/**
+ * `when:` and `optional:` as the CLI writes them on the wire, each refused on the verbs `flows.ts` refuses it on.
+ * @param {StepBody} step @param {Record<string, unknown>} raw @param {string} where @returns {Step}
+ */
+function withModifiers(step: StepBody, raw: Record<string, unknown>, where: string): Step {
+  const verb = Object.keys(step)[0];
+  const modified: Step = { ...step };
+  if (raw.when !== undefined) {
+    if (WHEN_REFUSED_ON.includes(verb)) throw new AuthRequestError(`${where}: ${verb} does not take when:`);
+    modified.when = pageCondition(raw.when, where);
+  }
+  if (raw.optional !== undefined) {
+    if (!OPTIONAL_ALLOWED_ON.includes(verb)) {
+      throw new AuthRequestError(`${where}: ${verb} does not take optional:, since it has no control that could be missing`);
+    }
+    if (raw.optional !== true) throw new AuthRequestError(`${where}: optional is written true, and takes nothing else`);
+    modified.optional = true;
+  }
+  return modified;
+}
+
+/**
+ * A page condition as the CLI writes it, `{ kind, name }`. `when:` reads the page once and never waits, so a `timeout` on it is refused.
+ * @param {unknown} raw @param {string} where @returns {PageCondition}
+ */
+function pageCondition(raw: unknown, where: string): PageCondition {
+  if (!isObject(raw)) throw new AuthRequestError(`${where}: when takes a mapping of kind and name`);
+  if (raw.timeout !== undefined || raw.timeoutSeconds !== undefined) {
+    throw new AuthRequestError(`${where}: when takes no timeout. It looks at the page once and never waits; use expect for a wait`);
+  }
+  refuseUnknownKeys(raw, ["kind", "name"], `${where}: when`);
+  const { kind, name } = raw;
+  if (kind !== "heading" && kind !== "control" && kind !== "text") throw new AuthRequestError(`${where}: when kind`);
+  if (!isName(name)) throw new AuthRequestError(`${where}: when needs a name`);
+  return { kind, name };
 }
 
 /** @param {unknown} body @param {string} origin @param {string} where */
@@ -211,10 +272,15 @@ function checkStep(raw: unknown, where: string): Step {
 
 /** @param {unknown} raw @param {string} where @returns {Step} */
 function pressStep(raw: unknown, where: string): Step {
-  if (!isObject(raw)) throw new AuthRequestError(`${where}: press takes a mapping`);
-  refuseUnknownKeys(raw, ["control", "within", "nth"], `${where}: press`);
-  const { field, ...rest } = controlRef({ ...raw, field: raw.control }, `${where}: press`);
-  return { press: { control: field, ...rest } };
+  return { press: controlTarget(raw, "press", where) };
+}
+
+/** `press:` and `dismiss-if-shown:` name a control by its accessible name, with `within:` and `nth:` to say which. */
+function controlTarget(raw: unknown, verb: string, where: string): ControlTarget {
+  if (!isObject(raw)) throw new AuthRequestError(`${where}: ${verb} takes a mapping`);
+  refuseUnknownKeys(raw, ["control", "within", "nth"], `${where}: ${verb}`);
+  const { field, ...rest } = controlRef({ ...raw, field: raw.control }, `${where}: ${verb}`);
+  return { control: field, ...rest };
 }
 
 /**
@@ -242,7 +308,10 @@ function validateLoginSteps(raw: unknown, origin: string): Step[] {
     }
     if ("capture" in step) throw new AuthRequestError(`${where}: a login captures nothing`);
   });
-  if (!("expect" in login[login.length - 1])) throw new AuthRequestError("auth.login must end with expect");
+  const last = login[login.length - 1];
+  if (!("expect" in last)) throw new AuthRequestError("auth.login must end with expect");
+  // The CLI's rule, `resolveLoginFlow`: a post-condition that can be skipped is no post-condition, so the login's last step always runs.
+  if (last.when !== undefined) throw new AuthRequestError("auth.login ends with an expect: that carries when:, so the login's last step always runs");
   return login;
 }
 
@@ -901,6 +970,43 @@ function allowedOrigins(run: RunContext, index: number): readonly string[] {
 /** @param {Step} step @returns {string} the step's verb, and never a value */
 const verbOf = (step: Step): string => (Object.keys(step)[0] as string);
 
+type BindingQuery = { roles: string[]; name: string; within?: string; nth?: number };
+
+/** The control a step binds, by the roles `runStep` binds it by. `goto`, `expect` and `capture` bind none, so `optional:` has nothing to wait for. */
+function bindingQuery(step: Step): BindingQuery | undefined {
+  if ("fill" in step) return { roles: FILL_ROLES, name: step.fill.field, within: step.fill.within, nth: step.fill.nth };
+  if ("choose" in step) return { roles: CHOOSE_ROLES, name: step.choose.field, within: step.choose.within, nth: step.choose.nth };
+  if ("check" in step) return { roles: CHECK_ROLES, name: step.check.field, within: step.check.within, nth: step.check.nth };
+  if ("press" in step || "dismiss-if-shown" in step) {
+    const target = "press" in step ? step.press : step["dismiss-if-shown"];
+    return { roles: PRESS_ROLES, name: target.control, within: target.within, nth: target.nth };
+  }
+  return undefined;
+}
+
+/** Is the control on the page now? A name two controls share counts as present: binding it then says "ambiguous", not "absent". */
+function controlPresent(nodes: AxNode[], query: BindingQuery): boolean {
+  const found = controlsNamed(nodes, query).length;
+  return query.nth === undefined ? found > 0 : found >= query.nth;
+}
+
+/**
+ * Why a step does not run, or undefined when it does. `when:` and `dismiss-if-shown:` read the page ONCE and never wait, so a skipped
+ * step costs one read. `optional:` waits as long as a bind would, because a control about to render is not absent yet, and skips only
+ * when no control of that name ever appeared. An `expect:` has no `optional:` effect: "its target never appeared" is the timeout that
+ * must fail.
+ *
+ * @param {Step} step @param {RunContext} run @returns {Promise<"when" | "not-shown" | "optional" | undefined>}
+ */
+async function skipReason(step: Step, run: RunContext): Promise<"when" | "not-shown" | "optional" | undefined> {
+  const query = bindingQuery(step);
+  if (step.when !== undefined && !expectationMet(await run.driver.axNodes(), step.when)) return "when";
+  if ("dismiss-if-shown" in step) return controlPresent(await run.driver.axNodes(), query as BindingQuery) ? undefined : "not-shown";
+  if (step.optional !== true || query === undefined) return undefined;
+  const appeared = await until(async () => (controlPresent(await run.driver.axNodes(), query) ? true : undefined), run.bindTimeoutMs);
+  return appeared ? undefined : "optional";
+}
+
 /**
  * @param {Step} step @param {RunContext} run @param {{ where: string, index: number }} position
  */
@@ -926,9 +1032,8 @@ async function runStep(step: Step, run: RunContext, { where, index }: { where: s
     const { field, within, nth, checked } = step.check;
     const handle = await bindControl(driver, { roles: CHECK_ROLES, name: field, within, nth }, where, bindTimeoutMs);
     if (await driver.isChecked(handle) !== checked) await driver.click(handle);
-  } else if ("press" in step) {
-    const { control, within, nth } = step.press;
-    await driver.click(await bindControl(driver, { roles: PRESS_ROLES, name: control, within, nth }, where, bindTimeoutMs));
+  } else if ("press" in step || "dismiss-if-shown" in step) {
+    await driver.click(await bindControl(driver, bindingQuery(step) as BindingQuery, where, bindTimeoutMs));
   } else if ("expect" in step) {
     await expectStepMet(step.expect, run, { where, index });
   }
@@ -961,7 +1066,10 @@ async function runNumbered(step: Step, index: number, run: RunContext) {
   const where = `${run.phase} step ${index} (${verb})`;
   if (verb === "capture") return; // a capture point is where the caller stops; it acts on nothing
   const body = (step as Untyped)[verb];
-  run.mark("authStep", { phase: run.phase, index, verb, name: typeof body === "string" ? undefined : body.field ?? body.control ?? body.name });
+  const name = typeof body === "string" ? undefined : body.field ?? body.control ?? body.name;
+  const skipped = await skipReason(step, run);
+  if (skipped !== undefined) return run.mark("authStepSkipped", { phase: run.phase, index, verb, name, because: skipped });
+  run.mark("authStep", { phase: run.phase, index, verb, name });
   await runStep(step, run, { where, index });
   if (verb !== "expect") await assertStillOnOrigin(run.driver, run.origin, where, allowedOrigins(run, index));
 }
