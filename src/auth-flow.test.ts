@@ -583,3 +583,80 @@ test("an authenticated capture's response is kept for one delivery; an ordinary 
   assert.deepEqual(retentionFor({ auth: validateAuthRequest({ login: LOGIN }, URL_UNDER_TEST) }), { deliverOnce: true });
   assert.deepEqual(retentionFor({}), { deliverOnce: false });
 });
+
+// ---- when:, optional:, dismiss-if-shown: and auto: (the CLI's semantics, #4994) -----------------------------------------
+
+const WHEN_DASHBOARD = { kind: "heading", name: "Dashboard" };
+
+test("the new keys refuse a selector or a script, and auto: is refused by name, not as an unknown key", () => {
+  refused({ login: LOGIN, flow: [{ fill: { field: "Email", value: "x" }, when: { ...WHEN_DASHBOARD, selector: "#x" } }] }, /selector/);
+  refused({ login: LOGIN, flow: [{ "dismiss-if-shown": { control: "Accept", selector: "#a" } }] }, /selector/);
+  refused({ login: LOGIN, flow: [{ fill: { field: "Email", value: "x" }, optional: "document.title" }] }, /optional/);
+  refused({ login: LOGIN, flow: [{ goto: "/prefs" }, { auto: true }, expectDashboard] }, /auto: is refused by the worker/);
+  // POSITIVE CONTROL: the same key without a selector is accepted, so the refusals above are about the extra key, not the key.
+  validateAuthRequest({ login: LOGIN, flow: [{ fill: { field: "Email", value: "x" }, when: WHEN_DASHBOARD }] }, URL_UNDER_TEST);
+});
+
+test("NEGATIVE CONTROLS: when: is refused on capture and dismiss-if-shown, optional: on goto, capture and dismiss-if-shown", () => {
+  refused({ login: LOGIN, flow: [{ capture: "x", when: WHEN_DASHBOARD }] }, /does not take when/);
+  refused({ login: LOGIN, flow: [{ "dismiss-if-shown": { control: "Accept" }, when: WHEN_DASHBOARD }] }, /does not take when/);
+  refused({ login: LOGIN, flow: [{ goto: "/x", optional: true }] }, /does not take optional/);
+  refused({ login: LOGIN, flow: [{ capture: "x", optional: true }] }, /does not take optional/);
+  refused({ login: LOGIN, flow: [{ "dismiss-if-shown": { control: "Accept" }, optional: true }] }, /does not take optional/);
+  // POSITIVE CONTROLS: the verbs that take each modifier accept it, and dismiss-if-shown takes neither.
+  validateAuthRequest({ login: LOGIN, flow: [
+    { fill: { field: "Postcode", value: "AB1 2CD" }, optional: true, when: WHEN_DASHBOARD },
+    { press: { control: "Continue" }, when: WHEN_DASHBOARD, optional: true },
+    { expect: { kind: "heading", name: "Dashboard", timeoutSeconds: 1 }, optional: true, when: WHEN_DASHBOARD },
+    { "dismiss-if-shown": { control: "Accept" } },
+  ] }, URL_UNDER_TEST);
+});
+
+test("the login's last expect: may not carry when:, because the login's last step always runs", () => {
+  refused({ login: [...LOGIN.slice(0, 4), { ...expectDashboard, when: WHEN_DASHBOARD }] }, /always runs/);
+  // POSITIVE CONTROL: the same expect with no when: is the shipped login, and is accepted.
+  validateAuthRequest({ login: LOGIN }, URL_UNDER_TEST);
+});
+
+test("when: runs its step when the condition is on the page, and skips it when not, without failing", async () => {
+  // POSITIVE CONTROL: "Country" is a combobox on /prefs, so the check runs and presses "Remember me".
+  const present = fakeBrowser();
+  await run(present, { login: LOGIN, flow: [{ goto: "/prefs" }, { check: { field: "Remember me" }, when: { kind: "control", name: "Country" } }] }).outcome;
+  assert.ok(present.clicks.includes("Remember me"));
+  // NEGATIVE CONTROL: no Dashboard heading on /prefs, so the same check is skipped, and the skip is the only thing that differs.
+  const absent = fakeBrowser();
+  const skipped = run(absent, { login: LOGIN, flow: [{ goto: "/prefs" }, { check: { field: "Remember me" }, when: WHEN_DASHBOARD }] });
+  await skipped.outcome;
+  assert.ok(!absent.clicks.includes("Remember me"));
+  assert.equal(skipped.marks.find((m) => m.event === "authStepSkipped")?.detail.because, "when");
+});
+
+test("optional: binds a control that appeared, skips one that never did, and an expect: that times out is still a failure", async () => {
+  // POSITIVE CONTROL: the PIN box is on /pin, so the optional fill binds it and types.
+  const present = fakeBrowser();
+  await run(present, { login: LOGIN, flow: [{ goto: "/pin" }, { fill: { field: "PIN", fromEnv: "APP_USER" }, optional: true }] }).outcome;
+  assert.ok(present.typed.some((t) => t.field === "PIN"));
+  // NEGATIVE CONTROL: "Nickname" is on no page, so the optional fill waits its bind bound, is skipped, and the run goes on.
+  const absent = fakeBrowser();
+  const skipped = run(absent, { login: LOGIN, flow: [{ goto: "/pin" }, { fill: { field: "Nickname", value: "x" }, optional: true }] });
+  await skipped.outcome;
+  assert.equal(skipped.marks.find((m) => m.event === "authStepSkipped")?.detail.because, "optional");
+  // NEGATIVE CONTROL: optional: has no effect on expect:, so an expect that never comes true still fails the run.
+  await failsWith(run(fakeBrowser(), { login: LOGIN, flow: [{ goto: "/dashboard" }, { expect: { kind: "heading", name: "Nope", timeoutSeconds: 0.4 }, optional: true }] }).outcome,
+    "expect-not-met");
+});
+
+test("dismiss-if-shown presses its control when it is on the page, and skips the step when it is not, without failing", async () => {
+  // POSITIVE CONTROL: the "Sign out" link is on /dashboard, so it is pressed.
+  const shown = fakeBrowser();
+  const { outcome, marks } = run(shown, { login: LOGIN, flow: [{ goto: "/dashboard" }, { "dismiss-if-shown": { control: "Sign out" } }] });
+  await outcome;
+  assert.ok(shown.clicks.includes("Sign out"));
+  assert.ok(!marks.some((m) => m.event === "authStepSkipped"));
+  // NEGATIVE CONTROL: no "Accept cookies" control on the page, so nothing is pressed and the run still succeeds.
+  const absent = fakeBrowser();
+  const skipped = run(absent, { login: LOGIN, flow: [{ goto: "/dashboard" }, { "dismiss-if-shown": { control: "Accept cookies" } }] });
+  await skipped.outcome;
+  assert.ok(!absent.clicks.includes("Accept cookies"));
+  assert.equal(skipped.marks.find((m) => m.event === "authStepSkipped")?.detail.because, "not-shown");
+});
