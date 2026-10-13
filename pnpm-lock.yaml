@@ -16,8 +16,8 @@ importers:
         specifier: 0.1.0
         version: 0.1.0
       '@a11ign/toolchain':
-        specifier: 0.1.5
-        version: 0.1.5(@rslib/core@1.0.3(typescript@6.0.3))(@rstest/core@0.12.3)
+        specifier: 0.7.0
+        version: 0.7.0(@rslib/core@1.0.3(typescript@6.0.3))(@rstest/core@0.12.3)(typescript@6.0.3)
       '@changesets/cli':
         specifier: 3.0.3
         version: 3.0.3
@@ -58,26 +58,27 @@ importers:
         specifier: 2.9.1
         version: 2.9.1
 
-  packages/nvda-speech: {}
-
 packages:
 
   '@a11ign/evidence@0.1.0':
     resolution: {integrity: sha512-Pn9xdgqLfxsTOSPoOqee4cqiwiRKia4hvv1On7pRoh70qvB2qAQ0K2n/5pFcseEmOCOUF30lNC6YQu2L4bfL3w==}
     engines: {node: '>=20'}
 
-  '@a11ign/toolchain@0.1.5':
-    resolution: {integrity: sha512-T+aX/fbI1G28IL7FXaGVdBSlXry0FyiGsmYLt50MGHwAaISTDPi7zxFqOJLaVgE3BR7Ie9sQboBE3DfsKYE1DQ==}
+  '@a11ign/toolchain@0.7.0':
+    resolution: {integrity: sha512-+XeVAH45pfQmCSP6krFPfCPu3a2inQ94wAfWz8HCpmxsGoshhf3fMmp25iY6uSEmQqi5tmFlJkUMRncnCEC3uQ==}
     engines: {node: '>=22.15.0'}
     hasBin: true
     peerDependencies:
       '@rslib/core': ^1.0.3
       '@rstest/core': ^0.12.3
       '@rstest/coverage-v8': ^0.12.3
+      typescript: ^6.0.3 || ^7.0.0
     peerDependenciesMeta:
       '@rslib/core':
         optional: true
       '@rstest/coverage-v8':
+        optional: true
+      typescript:
         optional: true
 
   '@ast-grep/napi-darwin-arm64@0.45.3':
@@ -1084,11 +1085,12 @@ snapshots:
 
   '@a11ign/evidence@0.1.0': {}
 
-  '@a11ign/toolchain@0.1.5(@rslib/core@1.0.3(typescript@6.0.3))(@rstest/core@0.12.3)':
+  '@a11ign/toolchain@0.7.0(@rslib/core@1.0.3(typescript@6.0.3))(@rstest/core@0.12.3)(typescript@6.0.3)':
     dependencies:
       '@rstest/core': 0.12.3
     optionalDependencies:
       '@rslib/core': 1.0.3(typescript@6.0.3)
+      typescript: 6.0.3
 
   '@ast-grep/napi-darwin-arm64@0.45.3':
     optional: true
