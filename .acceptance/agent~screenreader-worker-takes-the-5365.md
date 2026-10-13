@@ -3,10 +3,10 @@ Row a11ign/a11ign#5365, amended 2026-10-13 by product-manager (option a): the sc
 Acceptance:
 
 ```bash
-bash -c 'cd ~/repos/screenreader-worker && git fetch -q origin && git grep -q "guidepup is a lazy import now" origin/main -- src && git grep -q "the worker.s own displayAdapter comment claims no absence either" origin/main -- src'
+bash -c 'git grep -q "guidepup is a lazy import now" HEAD -- src && git grep -q "the worker.s own displayAdapter comment claims no absence either" HEAD -- src'
 ```
 
-**As run (2026-10-13, in this branch's worktree):** the two titles are present in `src/` of this branch (`git grep` over the working tree reads them once tracked); the command against `origin/main` can only pass once this PR merges, so it is expected to exit `1` before the merge. The third ported title, `the poison really is reachable from a real file, or this guard proves nothing`, is in `src/no-win32-imports.test.ts` and is not named by the row's Acceptance command.
+**As run (2026-10-13, on this branch):** the Acceptance command, run as written against `HEAD`, exits `0`: both titles are tracked in `src/`. It reads `HEAD` and not `origin/main` because `origin/main` cannot hold these titles until this PR merges. The third ported title, `the poison really is reachable from a real file, or this guard proves nothing`, is in `src/no-win32-imports.test.ts` and is not named by the row's Acceptance command.
 
 ## What changed
 
