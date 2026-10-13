@@ -1,12 +1,12 @@
-Row a11ign/a11ign#5365, the screenreader-worker half of the port out of control (from a11ign/a11ign#5345): two guards that read the worker's own source as text. This PR ports the two that do NOT depend on control's field lists: the lazy-import pair from `no-win32-imports.test.ts` and the worker-only displayAdapter comment guard from `fleet-consistency.test.ts`. The list-dependent guards stay in control, where `worker-fleet-carried.ts` lives. The row's Acceptance title `EVERY MUST_MATCH FIELD IS ONE THE WORKER ACTUALLY REPORTS` therefore cannot pass in this repository; see "Not established".
+Row a11ign/a11ign#5365, amended 2026-10-13 by product-manager (option a): the screenreader-worker half of the port out of control (from a11ign/a11ign#5345). Three tests read the worker's own source alone and move here: the lazy-import pair from `no-win32-imports.test.ts` and the worker-only displayAdapter comment guard from `fleet-consistency.test.ts`. The three list-dependent guards (`EVERY MUST_MATCH FIELD ...`, `#2063: EVERY REPORTED_ONLY FIELD ...`, `#2211: every hardware reading ...`) read control's field lists and stay in control, where `worker-fleet-carried.ts` lives.
 
 Acceptance:
 
 ```bash
-bash -c 'cd /home/agent/repos/screenreader-worker && git grep -q "EVERY MUST_MATCH FIELD IS ONE THE WORKER ACTUALLY REPORTS" origin/main -- src && git grep -q "guidepup is a lazy import now" origin/main -- src'
+bash -c 'cd ~/repos/screenreader-worker && git fetch -q origin && git grep -q "guidepup is a lazy import now" origin/main -- src && git grep -q "the worker.s own displayAdapter comment claims no absence either" origin/main -- src'
 ```
 
-**As run (measured, 2026-10-13, in this branch's worktree against origin/main 587449d):** the command as written exits `1` and prints nothing (`git grep -q`). The first grep finds no `EVERY MUST_MATCH FIELD ...` title in `src/` on origin/main, which is expected: that test lives in control and is not ported. The second grep finds no `guidepup is a lazy import now` on origin/main either, because this PR has not merged; in this worktree the title is present in `src/no-win32-imports.test.ts`, which `git grep` reads only once the file is tracked.
+**As run (2026-10-13, in this branch's worktree):** the two titles are present in `src/` of this branch (`git grep` over the working tree reads them once tracked); the command against `origin/main` can only pass once this PR merges, so it is expected to exit `1` before the merge. The third ported title, `the poison really is reachable from a real file, or this guard proves nothing`, is in `src/no-win32-imports.test.ts` and is not named by the row's Acceptance command.
 
 ## What changed
 
@@ -28,6 +28,5 @@ bash -c 'cd /home/agent/repos/screenreader-worker && git grep -q "EVERY MUST_MAT
 
 ## Not established
 
-- **The row's first Acceptance title cannot pass here.** Closing the row needs product-manager to amend its Region or Acceptance, not this PR: either the list-dependent guards are dropped from the row, or the field lists are shared with this repository by a means the row does not name.
 - **The "real file" title overstates the control.** The first test's positive control is a planted fixture, kept under the title the row specifies. The fixture stands in for a real file because no worker file reaches the driver statically.
 - **`pnpm run verify` is not defined in this repository's `package.json`.** The PR-ready check was run as `pnpm run lint`, `pnpm run typecheck` and `pnpm test` above.
