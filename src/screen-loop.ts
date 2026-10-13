@@ -74,6 +74,7 @@ export const FORM_SCREENS = [
   "stay-signed-in",
   "consent",
   "organization-picker",
+  "landing",
 ] as const;
 export type FormScreen = (typeof FORM_SCREENS)[number];
 
@@ -92,6 +93,8 @@ const PASSWORD_NAME = /password/i;
 const PASSWORD_NOT = /forgot|show|hide|new|confirm|reset/i;
 const CODE_NAME = /(one[- ]time|verification|authentication|security) code|enter (the |your )?code/i;
 const SUBMIT_NAME = /^(continue|log ?in|sign ?in|submit|next|verify|enter)\b/i;
+// The app's own entry button on a page that asks for nothing (`auth0-spa` shows "Sign in required" and one "Sign in").
+const LANDING_NAME = /^(sign ?in|log ?in)$/i;
 const SKIP_NAME = /^(skip|not now|maybe later|remind me later|no,? thanks|do (this|it) later|continue without)/i;
 const FACTOR_NAME = /authenticator|sms|text message|push|e-?mail|security key|recovery code|phone|voice|webauthn/i;
 const AUTHENTICATOR_NAME = /authenticator|totp|one-time/i;
@@ -158,6 +161,10 @@ const FORM_MATCHERS: Record<FormScreen, (o: ScreenObservation) => boolean> = {
   "stay-signed-in": (o) => headingMatches(o, /stay signed in|keep me signed in/i) && choices(o, NO_NAME).length > 0,
   consent: (o) => headingMatches(o, /authorize|requesting access|consent|permission/i) && choices(o, ACCEPT_NAME).length > 0,
   "organization-picker": (o) => headingMatches(o, /organi[sz]ation/i) && !hasInput(findPassword, o),
+  // A page with no field and exactly one sign-in control is the app's signed-out page: pressing it starts the login.
+  // Two such controls match nothing and end `unknown-screen`, because which one starts the login is not ours to guess.
+  landing: (o) =>
+    !hasInput(findIdentifier, o) && !hasInput(findPassword, o) && !hasInput(findCode, o) && choices(o, LANDING_NAME).length === 1,
 };
 
 const matching = <S extends string>(matchers: Record<S, (o: ScreenObservation) => boolean>, o: ScreenObservation): S[] =>
@@ -257,6 +264,11 @@ const organizationPicker = (o: ScreenObservation, config: LoopConfig): Action =>
 
 type Decision = (observation: ScreenObservation, config: LoopConfig) => Action;
 
+const landing = (o: ScreenObservation): Action => {
+  const target = choices(o, LANDING_NAME)[0];
+  return target ? { kind: "submit", target, note: "landing page's sign-in button pressed" } : stop("unknown-screen");
+};
+
 const FORM_DECISIONS: Record<FormScreen, Decision> = {
   "identifier-and-password": (o) => typing(o, [["identifier", findIdentifier(o)], ["password", findPassword(o)]]),
   identifier: (o) => typing(o, [["identifier", findIdentifier(o)]]),
@@ -268,6 +280,7 @@ const FORM_DECISIONS: Record<FormScreen, Decision> = {
   "stay-signed-in": stayNo,
   consent,
   "organization-picker": organizationPicker,
+  landing,
 };
 
 /** What to do on a recognised screen, as data. The one place a screen name becomes behaviour. */
