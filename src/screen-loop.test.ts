@@ -42,6 +42,7 @@ const PASSKEY = screen(["Log in faster with a passkey"], [
 ]);
 const BLOCKED = screen(["Account blocked"], [{ role: "alert", name: "Your account has been blocked." }]);
 const BOT = screen(["One more step"], [{ role: "checkbox", name: "I'm not a robot" }]);
+const LANDING = screen(["Sign in required"], [{ role: "button", name: "Sign in" }]);
 const CONFIG: LoopConfig = { totpSeedConfigured: true };
 
 interface Rig {
@@ -214,6 +215,32 @@ describe("runLoop: act, observe, repeat, within one budget", () => {
     const result = await r.run([OTP, SIGNED_IN], { config: { totpSeedConfigured: false } });
     assert.equal(result.outcome, "mfa-required-no-seed");
     assert.equal(r.acted.length, 0);
+  });
+});
+
+describe("runLoop: the landing screen, the app's own signed-out page", () => {
+  test("POSITIVE CONTROL: a landing screen with one Sign in button presses it, and the login continues from there", async () => {
+    assert.equal(classifyScreen(LANDING), "landing");
+    const r = rig();
+    const result = await r.run([LANDING, IDENTIFIER, SIGNED_IN]);
+    assert.equal(result.outcome, "signed-in");
+    assert.equal(r.acted[0].kind === "submit" && r.acted[0].target.name, "Sign in");
+    assert.deepEqual(result.branches.map((b) => b.screen), ["landing", "identifier"]);
+  });
+
+  test("NEGATIVE CONTROL: a landing screen with TWO sign-in controls is not pressed, since which one starts the login is a guess", async () => {
+    const twins = screen(["Sign in required"], [{ role: "button", name: "Sign in" }, { role: "button", name: "Log in" }]);
+    const r = rig();
+    const result = await r.run([twins], { budgetMillis: 5_000 });
+    assert.equal(r.acted.length, 0, "two sign-in controls must never be pressed");
+    assert.equal(result.outcome, "unknown-screen");
+  });
+
+  test("NEGATIVE CONTROL: a landing screen that comes back unchanged is pressed once, never again", async () => {
+    const r = rig();
+    const result = await r.run([LANDING], { budgetMillis: 5_000 });
+    assert.equal(r.acted.length, 1, "the same landing is never pressed twice in a row");
+    assert.equal(result.outcome, "signed-in-check-never-matched");
   });
 });
 
