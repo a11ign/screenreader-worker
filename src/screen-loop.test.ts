@@ -21,6 +21,7 @@ import {
   type LoopResult,
   type ScreenControl,
   type ScreenObservation,
+  type TypeAction,
 } from "./screen-loop.ts";
 
 const EMAIL: ScreenControl = { role: "textbox", name: "Email address", autocomplete: "username" };
@@ -377,5 +378,56 @@ describe("the sentences a person reads, as literals (the CLI's `login-outcomes.t
     assert.equal(result.remedy, REMEDIES["account-blocked"]);
     const unknown = await rig().run([screen(["Pick a nickname"], [{ role: "textbox", name: "Nickname" }])]);
     assert.equal(unknown.remedy, REMEDIES["unknown-screen"]);
+  });
+});
+
+describe("the submit a typed form presses: a provider's button is never it, and two candidates are never picked by order", () => {
+  const GOOGLE: ScreenControl = { role: "button", name: "Continue with Google" };
+  const VERIFY: ScreenControl = { role: "button", name: "Verify" };
+  const NEXT: ScreenControl = { role: "button", name: "Next" };
+
+  /** The first action on an identifier page with these buttons beside the email field, when it is typed. */
+  const typedFirst = async (buttons: readonly ScreenControl[]): Promise<TypeAction | undefined> => {
+    const r = rig();
+    await r.run([screen(["Welcome"], [EMAIL, ...buttons]), SIGNED_IN]);
+    const first = r.acted[0];
+    return first?.kind === "type" ? first : undefined;
+  };
+
+  test("POSITIVE CONTROL: the plain Continue is pressed beside a provider's button, whichever comes first on the page", async () => {
+    assert.equal((await typedFirst([GOOGLE, CONTINUE]))?.submit?.name, "Continue");
+    assert.equal((await typedFirst([CONTINUE, GOOGLE]))?.submit?.name, "Continue");
+  });
+
+  test("POSITIVE CONTROL: every provider the row names is never the submit, even when it is the only button", async () => {
+    for (const name of ["Continue with Google", "Sign in with Apple", "Continue using GitHub", "Continue with Microsoft", "Continue with Facebook"]) {
+      const alone = await typedFirst([{ role: "button", name }]);
+      assert.ok(alone, `${name}: the identifier must still be typed`);
+      assert.equal(alone.submit, undefined, name);
+    }
+  });
+
+  test("the exact name wins over a looser one, whichever comes first", async () => {
+    assert.equal((await typedFirst([VERIFY, SIGN_IN_BUTTON]))?.submit?.name, "Log in");
+    assert.equal((await typedFirst([SIGN_IN_BUTTON, VERIFY]))?.submit?.name, "Log in");
+  });
+
+  test("NEGATIVE CONTROL: a provider's button alone is no submit, so the field is typed and Enter presses it", async () => {
+    const typed = await typedFirst([GOOGLE]);
+    assert.ok(typed, "the identifier must still be typed");
+    assert.equal(typed.submit, undefined);
+  });
+
+  test("NEGATIVE CONTROL: a page whose only sign-in control is a provider's is unknown-screen, not a form", () => {
+    assert.equal(classifyScreen(screen(["Welcome"], [GOOGLE])), "unknown-screen");
+  });
+
+  test("NEGATIVE CONTROL: two submits with no exact name are ambiguous, and nothing is typed or pressed", async () => {
+    const both = screen(["Welcome"], [EMAIL, NEXT, VERIFY]);
+    assert.equal(classifyScreen(both), "ambiguous");
+    const r = rig();
+    const result = await r.run([both]);
+    assert.equal(r.acted.length, 0, "an ambiguous submit must never be guessed at");
+    assert.equal(result.outcome, "unknown-screen");
   });
 });
