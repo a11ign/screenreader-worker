@@ -243,6 +243,23 @@ describe("runLoop: the landing screen, the app's own signed-out page", () => {
     assert.equal(r.acted.length, 1, "the same landing is never pressed twice in a row");
     assert.equal(result.outcome, "signed-in-check-never-matched");
   });
+
+  // a11ign#5534: the app's callback page returns after the provider's forms, and it is classified `landing` while the token exchange is in
+  // flight. Pressing it there starts a second login on top of the first, so the landing is pressed once per loop, never after another screen.
+  test("POSITIVE CONTROL (a11ign#5534): a landing that returns after the login's forms is waited on, and Sign in is pressed once", async () => {
+    const r = rig();
+    const result = await r.run([LANDING, COMBINED, OTP, LANDING, LANDING, SIGNED_IN]);
+    assert.equal(result.outcome, "signed-in");
+    assert.equal(r.acted.filter((a) => a.kind === "submit").length, 1, "Sign in is pressed once per login");
+    assert.deepEqual(result.branches.map((b) => b.screen), ["landing", "identifier-and-password", "one-time-code"]);
+  });
+
+  test("NEGATIVE CONTROL (a11ign#5534): a landing that returns last is waited on, so the run ends with its one press and no second", async () => {
+    const r = rig();
+    const result = await r.run([LANDING, COMBINED, OTP, LANDING], { budgetMillis: 5_000 });
+    assert.equal(r.acted.filter((a) => a.kind === "submit").length, 1, "a returning landing is never pressed");
+    assert.equal(result.outcome, "signed-in-check-never-matched");
+  });
 });
 
 describe("runLoop: the screens it must not act on, and the ends it must not retry", () => {

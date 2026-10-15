@@ -367,6 +367,8 @@ export const UNKNOWN_SETTLE_OBSERVATIONS = 3;
 interface LoopState {
   readonly branches: Branch[];
   lastActed: Screen | undefined;
+  /** The landing is pressed once per loop: a landing that returns after another screen is waited on, never pressed again. */
+  landingAlreadyPressed: boolean;
   /** The last page that matched nothing or more than one screen, for the budget's ending. */
   unmatched: ScreenObservation | undefined;
   unmatchedKey: string;
@@ -402,6 +404,7 @@ async function actOn(screen: Screen, o: ScreenObservation, options: LoopOptions,
   state.branches.push(note ? { screen, kind: action.kind, note } : { screen, kind: action.kind });
   await options.act(action);
   state.lastActed = screen;
+  if (screen === "landing") state.landingAlreadyPressed = true;
   return undefined;
 }
 
@@ -412,6 +415,9 @@ async function step(o: ScreenObservation, options: LoopOptions, state: LoopState
   state.unmatchedStreak = 0;
   state.unmatchedKey = "";
   if (screen === state.lastActed) return undefined;
+  // The app's callback page comes back as `landing` while its token exchange is still in flight (a11ign#5534): pressing it again there
+  // starts a second login on top of the first.
+  if (screen === "landing" && state.landingAlreadyPressed) return undefined;
   return actOn(screen, o, options, state);
 }
 
@@ -428,7 +434,14 @@ function budgetEnd(state: LoopState): LoopResult {
  */
 export async function runLoop(options: LoopOptions): Promise<LoopResult> {
   const started = options.now();
-  const state: LoopState = { branches: [], lastActed: undefined, unmatched: undefined, unmatchedKey: "", unmatchedStreak: 0 };
+  const state: LoopState = {
+    branches: [],
+    lastActed: undefined,
+    landingAlreadyPressed: false,
+    unmatched: undefined,
+    unmatchedKey: "",
+    unmatchedStreak: 0,
+  };
   const withinBudget = (): boolean => options.now() - started < options.budgetMillis;
   while (withinBudget()) {
     const observation = await options.observe();
