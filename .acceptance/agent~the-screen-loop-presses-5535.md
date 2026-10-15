@@ -3,10 +3,10 @@ Row a11ign/a11ign#5535, the worker's copy of the screen loop's landing guard (si
 Acceptance:
 
 ```bash
-cd /home/agent/repos/screenreader-worker && grep -q "a11ign#5534" src/screen-loop.test.ts && pnpm exec rstest run src/screen-loop.test.ts
+grep -q "a11ign#5534" src/screen-loop.test.ts && pnpm exec rstest run src/screen-loop.test.ts
 ```
 
-The row's command runs in the primary checkout, which is behind `origin/main`. This pull request's head carries the same grep and test, and that is the reading below.
+The command runs from the root of this pull request's checkout. The primary checkout at `/home/agent/repos/screenreader-worker` is on `main` at `5cfcc5a` and has no `src/screen-loop.ts`, so a `cd` into it cannot pass; the reading below is this head.
 
 **As run (measured, 2026-10-15):** `pnpm exec rstest run src/screen-loop.test.ts` is `passed 39, failed 0` at this head; on `origin/main` with only the two new tests added it is `failed 2` (both report `Expected 1, Received 2` presses). `pnpm run typecheck` and `pnpm exec eslint` on the two changed sources are clean. `pnpm test` is `852 tests in 97 files (19 skipped)`, after `pnpm run build` (the built-package tests read `dist/`).
 
