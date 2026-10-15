@@ -93,6 +93,10 @@ const PASSWORD_NAME = /password/i;
 const PASSWORD_NOT = /forgot|show|hide|new|confirm|reset/i;
 const CODE_NAME = /(one[- ]time|verification|authentication|security) code|enter (the |your )?code/i;
 const SUBMIT_NAME = /^(continue|log ?in|sign ?in|submit|next|verify|enter)\b/i;
+// `Continue with Google` names an identity provider, not the form: it leaves this login for the provider's own page, so it is
+// never the submit. Auth0 enables the Google connection by default, so a real tenant shows it beside the plain `Continue`.
+const PROVIDER_NAME = /\b(with|using)\s+(google|apple|microsoft|github|facebook)\b/i;
+const EXACT_SUBMIT_NAME = /^(continue|log ?in|sign ?in)$/i;
 // The app's own entry button on a page that asks for nothing (`auth0-spa` shows "Sign in required" and one "Sign in").
 const LANDING_NAME = /^(sign ?in|log ?in)$/i;
 const SKIP_NAME = /^(skip|not now|maybe later|remind me later|no,? thanks|do (this|it) later|continue without)/i;
@@ -170,16 +174,27 @@ const FORM_MATCHERS: Record<FormScreen, (o: ScreenObservation) => boolean> = {
 const matching = <S extends string>(matchers: Record<S, (o: ScreenObservation) => boolean>, o: ScreenObservation): S[] =>
   (Object.keys(matchers) as S[]).filter((screen) => matchers[screen](o));
 
+/** The forms that type into a field and then press the submit, so a submit that cannot be picked makes them ambiguous. */
+const TYPING_FORMS: ReadonlySet<FormScreen> = new Set([
+  "identifier-and-password",
+  "identifier",
+  "password",
+  "one-time-code",
+  "organization-picker",
+]);
+
 /**
  * Which screen is this? An ending screen outranks a form because it is about the same page: an alert saying the code
  * was wrong sits ON the one-time-code form, and acting on that form again is exactly what must not happen. Among
- * forms exactly one must match; none is `unknown-screen`, and more than one is `ambiguous`.
+ * forms exactly one must match; none is `unknown-screen`, and more than one is `ambiguous`. A typing form whose submit
+ * cannot be told apart from its siblings is `ambiguous` too: the loop waits rather than press one of them by page order.
  */
 export function classifyScreen(observation: ScreenObservation): Classification {
   const [ending] = matching(ENDING_MATCHERS, observation);
   if (ending !== undefined) return ending;
   const forms = matching(FORM_MATCHERS, observation);
-  if (forms.length === 1) return forms[0];
+  const [form] = forms;
+  if (forms.length === 1 && !(TYPING_FORMS.has(form) && submitIsAmbiguous(observation))) return form;
   return forms.length === 0 ? "unknown-screen" : "ambiguous";
 }
 
@@ -216,7 +231,17 @@ export type Action =
 
 const stop = (outcome: LoginOutcome): Action => ({ kind: "stop", outcome, remedy: LOGIN_OUTCOMES[outcome].remedy });
 
-const submitControl = (o: ScreenObservation): ScreenControl | undefined => choices(o, SUBMIT_NAME)[0];
+const submitCandidates = (o: ScreenObservation): ScreenControl[] =>
+  choices(o, SUBMIT_NAME).filter((control) => !PROVIDER_NAME.test(control.name.trim()));
+
+/** The exact name (`Continue`, `Log in`) wins among several candidates; several with none is no submit at all, never the first. */
+const submitControl = (o: ScreenObservation): ScreenControl | undefined => {
+  const candidates = submitCandidates(o);
+  if (candidates.length <= 1) return candidates[0];
+  return candidates.find((control) => EXACT_SUBMIT_NAME.test(control.name.trim()));
+};
+
+const submitIsAmbiguous = (o: ScreenObservation): boolean => submitCandidates(o).length > 1 && submitControl(o) === undefined;
 
 const typing = (o: ScreenObservation, wanted: ReadonlyArray<readonly [FieldSource, ScreenControl | undefined]>): TypeAction => ({
   kind: "type",
