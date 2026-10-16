@@ -44,7 +44,7 @@ type SiteOptions = { hopsTo?: string; driftsToThird?: boolean; signOutLeavesForI
 
 /** The sentence a person reads, and that BOTH interpreters must print for the same refusal (the CLI's test holds the same literal). */
 const leftOriginSentence = (where: string, now: string) =>
-  `the login did not complete (left-origin) at ${where}: the page is on ${now}, not ${APP}. A redirect to an identity provider is SSO, which v1 does not do: use a dedicated test account without MFA or SSO.`;
+  `the login did not complete (left-origin) at ${where}: the page is on ${now}, not ${APP}. A redirect to an identity provider this flow does not declare ends the run: declare its origin under idp-origins: in the flows file if it signs in with a form. SSO beyond that is not supported: use a dedicated test account without MFA or SSO.`;
 
 /** An app, a declared identity provider that signs in with a form, and a third origin; typed values and the order of pages are recorded. */
 function fakeSite(options: SiteOptions = {}) {
