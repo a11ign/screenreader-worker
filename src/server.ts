@@ -44,7 +44,8 @@ import { killStrayBrowsers, pruneEdgeProfile, reportBrowserPolicyDrift,
 import { applyRequestedLogLevel, applyCaptureSettings, captureSettingsDigest } from "./nvda-logging.ts";
 import { trimAlreadyDone } from "./windows-trim.ts";
 import { createLogWriter, silenceStreamErrors } from "./server-log.ts";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { isEntryPoint } from "./is-entry-point.ts";
+import { fileURLToPath } from "node:url";
 
 // JSON from the browser or the page (a CDP reply, a `page.evaluate` result, a request body): its shape is the other end's, and
 // modelling it is a job of its own. Named once here so the boundary is greppable and `no-explicit-any` still bites everywhere else.
@@ -65,7 +66,7 @@ type Untyped = any;
  * because neither lint nor tsc can see a ReferenceError at import — a fault this repo has already had in
  * `capture-core.ts`. The worker's own entry point was the one file that check could not be run against.
  */
-const IS_MAIN = import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
+const IS_MAIN = isEntryPoint(import.meta.url, process.argv[1]);
 
 
 const PORT = Number(process.env.A11Y_PORT || 8765);

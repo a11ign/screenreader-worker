@@ -29,6 +29,9 @@ export const WORKER_FILES = [
   // it, so it is hashed like every other worker file. `code-version.test.ts` refused the split until it
   // was listed here, which is that guard working.
   "file-version.ts",
+  // Split out of `server.ts` so a Linux test can import the entry-point test without importing the server, which
+  // starts its samplers and warm-up on load. `server.ts` imports it, so the guest runs it and it is hashed.
+  "is-entry-point.ts",
   "server.ts",
   "server-log.ts",
   "worker-recovery.ts",
