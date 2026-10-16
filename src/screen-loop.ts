@@ -24,7 +24,7 @@
  * one-time code is made then and not here.
  */
 
-import { PROVIDER_NAME } from "./identity-provider.ts";
+import { PROVIDER_NAME } from "./capture-pure.ts";
 
 /**
  * The outcomes this loop can end with, and the one line a person reads for each. The CLI's `login-outcomes.ts` names fifteen; these are

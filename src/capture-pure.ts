@@ -26,7 +26,11 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { captureFault, FAULT } from "./capture-faults.ts";
-import { PROVIDER_NAME } from "./identity-provider.ts";
+
+// The identity providers a login's own buttons name: `Continue with Google`, `Sign in with Apple`. ONE definition, read by the
+// screen loop, which never presses one as a form's submit (a11ign#5494), and by the probe path, which never presses one under
+// probe-forms (a11ign#5657). A provider added to one reader and not the other is the defect, so neither keeps a copy.
+export const PROVIDER_NAME = /\b(with|using)\s+(google|apple|microsoft|github|facebook)\b/i;
 
 // JSON from the browser or the page (a CDP reply, a `page.evaluate` result, a request body): its shape is the other end's, and
 // modelling it is a job of its own. Named once here so the boundary is greppable and `no-explicit-any` still bites everywhere else.
