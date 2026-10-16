@@ -448,3 +448,65 @@ describe("the submit a typed form presses: a provider's button is never it, and 
     assert.equal(result.outcome, "unknown-screen");
   });
 });
+
+describe("the branch records the alerts and controls the screen showed (#5673)", () => {
+  const CODE_REJECTED = "The code you entered is invalid";
+
+  test("POSITIVE CONTROL: a one-time-code screen with an alert ends on a stop branch that carries the alert", async () => {
+    const rejected = screen(OTP.headings, [...OTP.controls, { role: "alert", name: CODE_REJECTED }]);
+    const r = rig();
+    const result = await r.run([rejected]);
+    const stop = result.branches.at(-1);
+    assert.equal(stop?.kind, "stop");
+    assert.equal(stop?.outcome, "totp-rejected");
+    assert.deepEqual(stop?.alerts, [{ role: "alert", name: CODE_REJECTED }]);
+  });
+
+  test("POSITIVE CONTROL: the stop branch carries every control the screen showed, as role and name only", async () => {
+    const rejected = screen(OTP.headings, [...OTP.controls, { role: "alert", name: CODE_REJECTED }]);
+    const r = rig();
+    const result = await r.run([rejected]);
+    assert.deepEqual(result.branches.at(-1)?.controls, [
+      { role: "textbox", name: "Enter the code" },
+      { role: "button", name: "Continue" },
+      { role: "alert", name: CODE_REJECTED },
+    ]);
+  });
+
+  test("NEGATIVE CONTROL: a screen with no alert records alerts as an empty list, not an absent field", async () => {
+    const r = rig();
+    const result = await r.run([IDENTIFIER, SIGNED_IN]);
+    assert.deepEqual(result.branches[0].alerts, []);
+    assert.equal(result.branches[0].kind, "type");
+  });
+
+  test("NEGATIVE CONTROL: a control's class name and autocomplete token are never copied into the branch", async () => {
+    const withClass = screen(IDENTIFIER.headings, [{ ...EMAIL, className: "c-provider-rebuilt" }, CONTINUE]);
+    const r = rig();
+    const result = await r.run([withClass, SIGNED_IN]);
+    assert.deepEqual(result.branches[0].controls, [
+      { role: "textbox", name: "Email address" },
+      { role: "button", name: "Continue" },
+    ]);
+  });
+
+  test("NEGATIVE CONTROL: a value typed into a field is in no branch, while the typing itself did happen", async () => {
+    const secret = "correct-horse-battery";
+    const typed: string[] = [];
+    let observations = 0;
+    const script = [PASSWORD_SCREEN, SIGNED_IN];
+    const result = await runLoop({
+      observe: async () => script[Math.min(observations++, script.length - 1)],
+      act: async () => {
+        typed.push(secret);
+      },
+      pause: async () => {},
+      now: () => 0,
+      budgetMillis: 60_000,
+      config: CONFIG,
+    });
+    assert.equal(result.outcome, "signed-in");
+    assert.equal(typed.length, 1, "the typing reached the act step");
+    assert.equal(JSON.stringify(result.branches).includes(secret), false);
+  });
+});

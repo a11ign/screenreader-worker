@@ -139,7 +139,9 @@ const hasInput = (find: (o: ScreenObservation) => ScreenControl | undefined, o: 
 /** Every name a person could read on the page, for the endings that can arrive as a heading, a label or an alert. */
 const pageTexts = (o: ScreenObservation): string[] => [...o.headings, ...o.controls.map((c) => c.name)];
 
-const alertTexts = (o: ScreenObservation): string[] => o.controls.filter((c) => c.role === "alert").map((c) => c.name);
+const alertControls = (o: ScreenObservation): ScreenControl[] => o.controls.filter((c) => c.role === "alert");
+
+const alertTexts = (o: ScreenObservation): string[] => alertControls(o).map((c) => c.name);
 
 const anyMatch = (texts: readonly string[], pattern: RegExp): boolean => texts.some((text) => pattern.test(text));
 
@@ -334,11 +336,21 @@ export function unknownScreenStep(observation: ScreenObservation): string {
   return `Screen not recognised (${seen.join(", ") || "nothing readable on it"}). Add a flows step that handles it, for example: ${example}`;
 }
 
+/** A control as a branch records it: its role and accessible name, never its value, class name or autocomplete token. */
+export interface BranchControl {
+  readonly role: string;
+  readonly name: string;
+}
+
 export interface Branch {
   readonly screen: Screen;
   readonly kind: Action["kind"];
   readonly note?: string;
   readonly outcome?: LoginOutcome;
+  /** The alert controls the screen showed when the branch was taken. `[]` when there were none, so "no alert" and "not recorded" differ. */
+  readonly alerts: readonly BranchControl[];
+  /** Every control the screen showed, so a field error that is not an `alert` role is visible beside the alert. */
+  readonly controls: readonly BranchControl[];
 }
 
 export interface LoopResult {
@@ -395,14 +407,21 @@ function noteUnmatched(o: ScreenObservation, kind: "unknown-screen" | "ambiguous
   return settled ? unknownEnd(o, state.branches) : undefined;
 }
 
+/** What a branch records of the screen it was taken on: roles and names only, so no typed value and no class name can reach it. */
+const recordOf = (o: ScreenObservation): Pick<Branch, "alerts" | "controls"> => {
+  const readable = (c: ScreenControl): BranchControl => ({ role: c.role, name: c.name });
+  return { alerts: alertControls(o).map(readable), controls: o.controls.map(readable) };
+};
+
 async function actOn(screen: Screen, o: ScreenObservation, options: LoopOptions, state: LoopState): Promise<LoopResult | undefined> {
   const action = nextAction(screen, options.config, o);
+  const seen = recordOf(o);
   if (action.kind === "stop") {
-    state.branches.push({ screen, kind: "stop", outcome: action.outcome });
+    state.branches.push({ screen, kind: "stop", outcome: action.outcome, ...seen });
     return { outcome: action.outcome, branches: state.branches, remedy: action.remedy };
   }
   const note = "note" in action ? action.note : undefined;
-  state.branches.push(note ? { screen, kind: action.kind, note } : { screen, kind: action.kind });
+  state.branches.push(note ? { screen, kind: action.kind, note, ...seen } : { screen, kind: action.kind, ...seen });
   await options.act(action);
   state.lastActed = screen;
   if (screen === "landing") state.landingAlreadyPressed = true;
