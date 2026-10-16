@@ -947,7 +947,7 @@ async function assertStillOnOrigin(driver: AuthDriver, origin: string, where: st
   const now = await currentOrigin(driver);
   if (now !== origin && !allowed.includes(now)) {
     throw loginFailed("left-origin", where, `the page is on ${now}, not ${origin}`,
-      "A redirect to an identity provider is SSO, which v1 does not do: use a dedicated test account without MFA or SSO.");
+      "A redirect to an identity provider this flow does not declare ends the run: declare its origin under idp-origins: in the flows file if it signs in with a form. SSO beyond that is not supported: use a dedicated test account without MFA or SSO.");
   }
 }
 
