@@ -47,6 +47,21 @@ test("with probing ON a submit-like button is activated, because 3.3.1 is otherw
   assert.equal(probeKindFor("Sign in, button", ACTION), "submit");
 });
 
+test("a provider's own control is never activated, because it takes the page to the provider's login", () => {
+  // `Continue with Google` is what a tenant shows beside the plain `Continue` (a11ign#5657). Under probe-forms it was
+  // the submit, so the run left this site for the provider's page. The screen loop already refuses it as a submit
+  // (a11ign#5494); this is the probe path's refusal. A provider-named disclosure is refused too: a button can carry
+  // aria-expanded and still start a redirect, and nothing in its announcement says which it is.
+  assert.equal(probeKindFor("Continue with Google, button", ACTION), null);
+  assert.equal(probeKindFor("Sign in with Apple, button", ACTION), null);
+  assert.equal(probeKindFor("Sign in with Google, button, collapsed", ACTION), null);
+  assert.equal(probeKindFor("Continue with Google, button", { probeForms: true, task: "Continue with Google" }), null);
+});
+
+test("the plain Continue beside a provider is still the submit", () => {
+  assert.equal(probeKindFor("Continue, button", ACTION), "submit");
+});
+
 test("a button the task NAMES is activated; an unrelated one is not", () => {
   // The word match is the guard that makes task-driven activation safe. "Book a room" reaches a *Rooms*
   // button and must never reach *Delete account*.
