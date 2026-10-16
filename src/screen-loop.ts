@@ -24,6 +24,8 @@
  * one-time code is made then and not here.
  */
 
+import { PROVIDER_NAME } from "./identity-provider.ts";
+
 /**
  * The outcomes this loop can end with, and the one line a person reads for each. The CLI's `login-outcomes.ts` names fifteen; these are
  * the eleven the loop itself can reach (the rest are the scan's, after the login). The sentences are the CLI's, word for word.
@@ -93,9 +95,6 @@ const PASSWORD_NAME = /password/i;
 const PASSWORD_NOT = /forgot|show|hide|new|confirm|reset/i;
 const CODE_NAME = /(one[- ]time|verification|authentication|security) code|enter (the |your )?code/i;
 const SUBMIT_NAME = /^(continue|log ?in|sign ?in|submit|next|verify|enter)\b/i;
-// `Continue with Google` names an identity provider, not the form: it leaves this login for the provider's own page, so it is
-// never the submit. Auth0 enables the Google connection by default, so a real tenant shows it beside the plain `Continue`.
-const PROVIDER_NAME = /\b(with|using)\s+(google|apple|microsoft|github|facebook)\b/i;
 const EXACT_SUBMIT_NAME = /^(continue|log ?in|sign ?in)$/i;
 // The app's own entry button on a page that asks for nothing (`auth0-spa` shows "Sign in required" and one "Sign in").
 const LANDING_NAME = /^(sign ?in|log ?in)$/i;
@@ -231,6 +230,8 @@ export type Action =
 
 const stop = (outcome: LoginOutcome): Action => ({ kind: "stop", outcome, remedy: LOGIN_OUTCOMES[outcome].remedy });
 
+// `Continue with Google` names an identity provider, not the form: it leaves this login for the provider's own page, so it is
+// never the submit. Auth0 enables the Google connection by default, so a real tenant shows it beside the plain `Continue`.
 const submitCandidates = (o: ScreenObservation): ScreenControl[] =>
   choices(o, SUBMIT_NAME).filter((control) => !PROVIDER_NAME.test(control.name.trim()));
 

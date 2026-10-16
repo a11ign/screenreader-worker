@@ -26,6 +26,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { captureFault, FAULT } from "./capture-faults.ts";
+import { PROVIDER_NAME } from "./identity-provider.ts";
 
 // JSON from the browser or the page (a CDP reply, a `page.evaluate` result, a request body): its shape is the other end's, and
 // modelling it is a job of its own. Named once here so the boundary is greppable and `no-explicit-any` still bites everywhere else.
@@ -1117,6 +1118,9 @@ export function probeKindFor(phrase: string, { probeForms, task }: { probeForms?
   // content is another document, usually another site's; this tool examines the page it was given. Matched as
   // a ROLE, between commas, so a button NAMED "Frame size" is still a button.
   if (EMBEDDED_CONTENT_ROLE_RE.test(announced)) return null;
+  // A provider's own control takes the page to the provider's login, whatever kind it would be (a11ign#5657). Checked BEFORE the
+  // disclosure: a button can carry aria-expanded and still start a redirect, and its announcement does not say which it is.
+  if (PROVIDER_NAME.test(announced)) return null;
   if (/\bcollapsed\b/i.test(announced)) return "disclosure";
   if (!probeForms) return null;
   // BEFORE the button test, because NVDA announces a radio as "radio button" -- so `\bbutton\b` matches it

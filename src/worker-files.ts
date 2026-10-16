@@ -68,6 +68,8 @@ export const WORKER_FILES = [
   // What `auth-flow.ts` imports for a login the CLI sends as a `loginBlock` (a11ign#4998): the screen loop (pure), and the authenticator
   // code it types (`totp.ts`, from the secret `otpauth.ts` reads). A guest without them cannot import `auth-flow.ts`, so cannot start.
   "screen-loop.ts",
+  // The provider list both the screen loop and the probe path read (a11ign#5657): a guest that runs either without it cannot start.
+  "identity-provider.ts",
   "totp.ts",
   "otpauth.ts",
   // The seam between `capture-core.ts` and `auth-flow.ts`: it reaches the browser session and the capture's marks,
