@@ -1264,8 +1264,8 @@ async function collectByType(commands: { prev: object; next: object; }, ctx: Omi
   // none -- absence must not be read as "the array happens to be in order".
   // The ledger's ms buckets are snapshotted at each edge inside walkBothDirections, so each split is its own delta.
   const { prevOutcome, nextOutcome, prevSplit, nextSplit } = await walkBothDirections(ctx.trips, {
-    prev: () => sweepInDirection(commands.prev, sweepCtx),
-    next: () => sweepInDirection(commands.next, sweepCtx),
+    prev: () => sweepInDirection(commands.prev, sweepCtx, LIVE_SWEEP_IO),
+    next: () => sweepInDirection(commands.next, sweepCtx, LIVE_SWEEP_IO),
     onPrevDone: () => {
       prevCount = out.length;
       afterPrev = Date.now();
@@ -1580,10 +1580,26 @@ async function awaitLateSpeech({ step, prev, repeats, label, trips }: {
 }
 
 /**
+ * The two NVDA calls whose results decide whether a step moved. `io` defaults to `LIVE_SWEEP_IO`, so the
+ * sweep runs against NVDA unchanged; a test passes a fake and drives `sweepInDirection` through the real
+ * `collectPhrase` call site, which it could not reach otherwise. The silent-retry wait and the focus-mode
+ * remedies still reach NVDA directly: they run only on the paths a deterministic fake does not take.
+ */
+type SweepIo = {
+  perform: (cmd: object, label: string) => Promise<unknown>,
+  spokenPhraseLog: (label: string) => Promise<string[] | undefined>,
+};
+const LIVE_SWEEP_IO: SweepIo = {
+  perform: (cmd, label) => withTimeout(nvda.perform(cmd as Untyped), NAV_TIMEOUT_MS, label),
+  spokenPhraseLog: (label) => withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label),
+};
+
+/**
  * @param {object} cmd
  * @param {SweepContext} ctx
+ * @param {SweepIo} io
  */
-async function sweepInDirection(cmd: object, { label, out, seenKeys, onItem, deadline, trips, ended }: SweepContext) {
+export async function sweepInDirection(cmd: object, { label, out, seenKeys, onItem, deadline, trips, ended }: SweepContext, io: SweepIo) {
   // Movement is decided by "did NVDA say anything NEW?", never by "did lastSpokenPhrase change?".
   //
   // The old test was unsound in the one case that matters. When a quick-nav jump does not move and
@@ -1608,7 +1624,7 @@ async function sweepInDirection(cmd: object, { label, out, seenKeys, onItem, dea
   // Read once, then advance as we go, so this costs the same two round trips per step as the
   // lastSpokenPhrase version it replaces. `trips` therefore stays comparable across the change.
   trips.count += 1;
-  let seen = ((await spendTrip(trips, "logMs", () => withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label))
+  let seen = ((await spendTrip(trips, "logMs", () => io.spokenPhraseLog(label))
     .catch(() => [])) || []).length;
   for (let i = 0; i < MAX_SWEEP_STEPS; i++) {
     // Running out of budget and finding nothing more are DIFFERENT observations, and both used to
@@ -1625,8 +1641,8 @@ async function sweepInDirection(cmd: object, { label, out, seenKeys, onItem, dea
     let step: import("./capture-pure.ts").SweepStep;
     try {
       trips.count += 2;
-      await spendTrip(trips, "performMs", () => withTimeout(nvda.perform((cmd as Untyped)), NAV_TIMEOUT_MS, label));
-      const log = (await spendTrip(trips, "logMs", () => withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label))) || [];
+      await spendTrip(trips, "performMs", () => io.perform(cmd, label));
+      const log = (await spendTrip(trips, "logMs", () => io.spokenPhraseLog(label))) || [];
       step = sweepStepFromSpeech({ log, seen, prev, repeats });
     } catch (error) {
       // Same asymmetry: a round trip that threw is not evidence the page ran out of elements.

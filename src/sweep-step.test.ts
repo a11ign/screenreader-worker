@@ -20,7 +20,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import { sweepStepFromSpeech, MAX_CONSECUTIVE_REPEATS } from "./capture-pure.ts";
-import { collectPhrase, spendTrip, splitByDirection, walkBothDirections } from "./capture-probes.ts";
+import { collectPhrase, spendTrip, splitByDirection, sweepInDirection, walkBothDirections } from "./capture-probes.ts";
 
 test("silence stops the sweep even when older speech is still in the log", () => {
   // This input is chosen so it DISCRIMINATES. The jump added nothing (log length == seen), and `prev`
@@ -201,10 +201,28 @@ test("a round that takes under a millisecond still adds to its bucket", async ()
   assert.ok(trips.logMs > 0, `200 immediate rounds must not read as zero, read ${trips.logMs} ms`);
 });
 
-test("the sweep takes onItem through collectPhrase's bracket, not around it", () => {
-  // The behaviour test above drives collectPhrase; this pins that sweepInDirection hands it the ledger, so the bracket
-  // can time the calls the sweep makes. Read from the source because sweepInDirection needs a live NVDA to run.
-  const source = readFileSync(resolve(import.meta.dirname, "capture-probes.ts"), "utf8");
-  assert.ok(source.includes("await collectPhrase(phrase, { out, seenKeys, onItem, trips });"),
-    "sweepInDirection must pass its trips to collectPhrase");
+test("a sweep step's onItem runs through the real call site, and its time lands in itemMs", async () => {
+  // Drives sweepInDirection, not collectPhrase: a fake NVDA says "Heading one" on the first step and then
+  // "no next heading" on the second, so the sweep takes one phrase, runs onItem on it, and stops with `exhausted`
+  // without reaching the silent-retry wait. If the call site dropped `trips` or the bracket, itemMs stays zero or
+  // the call throws, and this fails.
+  const trips = { count: 0, performMs: 0, logMs: 0, quietMs: 0, itemMs: 0 };
+  const out: string[] = [];
+  const itemsSeen: string[] = [];
+  const logs = [[], ["Heading one"], ["Heading one", "no next heading"]];
+  let reads = 0;
+  const io = {
+    perform: async () => undefined,
+    spokenPhraseLog: async () => logs[Math.min(reads++, logs.length - 1)],
+  };
+  const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
+  const ctx = {
+    label: "headings", out, seenKeys: new Set<string>(), trips, deadline: Infinity,
+    onItem: async (phrase: string) => { itemsSeen.push(phrase); await wait(50); },
+  } as Parameters<typeof sweepInDirection>[1];
+  const result = await sweepInDirection({ key: "H" }, ctx, io);
+  assert.equal(result.stop, "exhausted", `the sweep should end on NVDA's end-of-list wording, got ${result.stop}`);
+  assert.deepEqual(out, ["Heading one"], "the first step's phrase is the one collected");
+  assert.deepEqual(itemsSeen, ["Heading one"], "onItem runs once, on that phrase");
+  assert.ok(trips.itemMs >= 45, `a 50 ms onItem at the call site must spend at least 45 ms in itemMs, spent ${trips.itemMs}`);
 });
