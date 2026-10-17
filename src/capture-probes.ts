@@ -94,7 +94,7 @@ type Trips = { count: number, performMs: number, logMs: number, quietMs: number 
 /**
  * Runs one round trip and adds its wall-clock to one of the ledger's buckets, however the trip ends.
  */
-async function spendTrip<T>(trips: Trips, bucket: "performMs" | "logMs" | "quietMs", round: () => Promise<T>): Promise<T> {
+export async function spendTrip<T>(trips: Trips, bucket: "performMs" | "logMs" | "quietMs", round: () => Promise<T>): Promise<T> {
   const startedAt = Date.now();
   try {
     return await round();

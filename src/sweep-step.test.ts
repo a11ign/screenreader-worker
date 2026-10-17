@@ -20,6 +20,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import { sweepStepFromSpeech, MAX_CONSECUTIVE_REPEATS } from "./capture-pure.ts";
+import { spendTrip } from "./capture-probes.ts";
 
 test("silence stops the sweep even when older speech is still in the log", () => {
   // This input is chosen so it DISCRIMINATES. The jump added nothing (log length == seen), and `prev`
@@ -119,4 +120,16 @@ test("the sweep mark splits each direction's trips into perform, log and quiet m
     const count = mark.split(`${bucket}:`).length - 1;
     assert.equal(count, 2, `the sweep mark must carry ${bucket} once for prevSplit and once for nextSplit`);
   }
+});
+
+test("a round's wall-clock lands in its own bucket, and a round that throws still spends it", async () => {
+  // The source test above proves the three names are in the mark. This one proves the buckets hold time: a
+  // `-=` for `+=`, or a helper that writes the wrong bucket, fails here and passes the source test.
+  const trips = { count: 0, performMs: 0, logMs: 0, quietMs: 0 };
+  const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
+  await spendTrip(trips, "performMs", () => wait(30));
+  await assert.rejects(spendTrip(trips, "quietMs", async () => { await wait(30); throw new Error("silent"); }), /silent/);
+  assert.ok(trips.performMs >= 25, `a 30 ms perform round must spend at least 25 ms, spent ${trips.performMs}`);
+  assert.ok(trips.quietMs >= 25, `a 30 ms quiet round that threw must still spend its time, spent ${trips.quietMs}`);
+  assert.equal(trips.logMs, 0, "a bucket no round used stays at zero");
 });
