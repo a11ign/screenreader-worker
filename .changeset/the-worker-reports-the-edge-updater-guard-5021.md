@@ -1,5 +1,0 @@
----
-"@a11ign/screenreader-worker": minor
----
-
-`/health`'s `environment` carries `edgeUpdaterGuard`, `{state, checkedAt, reenabled}`, read from `C:\ProgramData\a11ign\edge-updater-guard.json`, the record the elevated `a11y-edge-updater-guard` task writes. The worker runs unelevated and cannot read Edge's update tasks (`edgeUpdater` in `/diagnostics` returned `tasks: []` on a guest carrying three disabled ones), so a re-enabled updater was unreadable from the fleet; the record is the one reading it can open. `state` is `ok` (checked within 45 minutes, nothing re-enabled), `drift` (the last run found the updater re-enabled and put it down), `stale` (the last run is older than 45 minutes, so the guard stopped) or `absent` (no record: a box not yet provisioned with the guard); a record that cannot be read as one, or a read that fails for any reason but the file being absent, is `unknown`, never `ok`. Sampled on the same timer tick as `windowsBuild`, never on the request path, and not memoised: the guard rewrites the record every run. The fleet reports `edgeUpdaterGuard.state` as `REPORTED_ONLY` (#4405).
