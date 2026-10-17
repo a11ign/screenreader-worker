@@ -20,7 +20,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import { sweepStepFromSpeech, MAX_CONSECUTIVE_REPEATS } from "./capture-pure.ts";
-import { collectPhrase, spendTrip, splitByDirection, sweepInDirection, walkBothDirections } from "./capture-probes.ts";
+import { collectPhrase, MAX_SWEEP_STEPS, spendTrip, splitByDirection, sweepInDirection, walkBothDirections } from "./capture-probes.ts";
 
 test("silence stops the sweep even when older speech is still in the log", () => {
   // This input is chosen so it DISCRIMINATES. The jump added nothing (log length == seen), and `prev`
@@ -225,4 +225,27 @@ test("a sweep step's onItem runs through the real call site, and its time lands 
   assert.deepEqual(out, ["Heading one"], "the first step's phrase is the one collected");
   assert.deepEqual(itemsSeen, ["Heading one"], "onItem runs once, on that phrase");
   assert.ok(trips.itemMs >= 45, `a 50 ms onItem at the call site must spend at least 45 ms in itemMs, spent ${trips.itemMs}`);
+});
+
+test("a sweep that keeps finding new speech stops at MAX_SWEEP_STEPS, and says it was the cap", async () => {
+  // Every step announces a phrase no step has said before, so nothing but the cap can end the sweep. The fake
+  // answers "no next link" only after twice the cap, so a cap that never fires shows up as `exhausted` with
+  // more round trips, not as a hang.
+  const trips = { count: 0, performMs: 0, logMs: 0, quietMs: 0, itemMs: 0 };
+  const log: string[] = [];
+  let performs = 0;
+  const io = {
+    perform: async () => {
+      performs += 1;
+      log.push(performs > MAX_SWEEP_STEPS * 2 ? "no next link" : `Link number ${performs}`);
+    },
+    spokenPhraseLog: async () => [...log],
+  };
+  const ctx = {
+    label: "links", out: [] as string[], seenKeys: new Set<string>(), trips, deadline: Infinity, diag: {},
+  } as Parameters<typeof sweepInDirection>[1];
+  const result = await sweepInDirection({ key: "K" }, ctx, io);
+  assert.equal(result.stop, "cap", `a sweep with new speech on every step must end on the cap, ended ${result.stop}`);
+  assert.equal(result.steps, MAX_SWEEP_STEPS, "the cap is the step count the sweep reports");
+  assert.equal(performs, MAX_SWEEP_STEPS, `the cap is a count of round trips: ${performs} ran`);
 });
