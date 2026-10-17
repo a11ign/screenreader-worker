@@ -20,7 +20,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import { sweepStepFromSpeech, MAX_CONSECUTIVE_REPEATS } from "./capture-pure.ts";
-import { spendTrip } from "./capture-probes.ts";
+import { spendTrip, splitByDirection } from "./capture-probes.ts";
 
 test("silence stops the sweep even when older speech is still in the log", () => {
   // This input is chosen so it DISCRIMINATES. The jump added nothing (log length == seen), and `prev`
@@ -107,19 +107,32 @@ test("blank and whitespace-only utterances do not count as movement", () => {
   assert.equal(sweepStepFromSpeech({ log: ["a", "", "   "], seen: 1, prev: "" }).stop, "silent");
 });
 
-test("the sweep mark splits each direction's trips into perform, log and quiet milliseconds", () => {
-  // The split is the instrument for #1685: a recapture cannot say what a trip is made of unless the mark carries
-  // all three buckets for BOTH directions. Read from source, as census-read-moment.test.ts does, because the mark
-  // is written inside collectByType and nothing here runs NVDA. The window stops at `phrases:`, so a field moved
-  // out of the mark is caught rather than found elsewhere in the file.
+test("the sweep mark carries each direction's split", () => {
+  // The mark is written inside collectByType, which nothing here runs (it needs NVDA), so this reads the source.
+  // The window stops at `phrases:`, so a split moved out of the mark is caught rather than found elsewhere in the file.
+  // What the splits CONTAIN is pinned by the behavioural test below, not by this one.
   const source = readFileSync(resolve(import.meta.dirname, "capture-probes.ts"), "utf8");
   const at = source.indexOf('ctx.diag.mark("sweep", {');
   assert.notEqual(at, -1, "the sweep mark must exist");
   const mark = source.slice(at, source.indexOf("phrases:", at));
-  for (const bucket of ["tripPerformMs", "tripLogMs", "tripQuietMs"]) {
-    const count = mark.split(`${bucket}:`).length - 1;
-    assert.equal(count, 2, `the sweep mark must carry ${bucket} once for prevSplit and once for nextSplit`);
+  for (const split of ["prevSplit:", "nextSplit:"]) {
+    assert.equal(mark.split(split).length - 1, 1, `the sweep mark must carry ${split} once`);
   }
+  // The edges are the one mapping the behavioural test cannot reach: which snapshot each direction starts and ends on.
+  assert.ok(source.includes("splitByDirection(msAtStart, msAfterPrev, ctx.trips)"),
+    "the splits must be taken between the start, the far end of the backward walk, and the end");
+});
+
+test("each direction's split is the bucket deltas between its own two edges", () => {
+  // #1685's instrument. Every bucket gets a different delta, so a swapped bucket, or a direction measured between
+  // the wrong edges, changes the result. deepEqual also pins the field names, so a renamed field fails here.
+  const atStart = { count: 0, performMs: 0, logMs: 0, quietMs: 0 };
+  const afterPrev = { count: 3, performMs: 10, logMs: 20, quietMs: 40 };
+  const atEnd = { count: 9, performMs: 15, logMs: 27, quietMs: 100 };
+  assert.deepEqual(splitByDirection(atStart, afterPrev, atEnd), {
+    prevSplit: { tripPerformMs: 10, tripLogMs: 20, tripQuietMs: 40 },
+    nextSplit: { tripPerformMs: 5, tripLogMs: 7, tripQuietMs: 60 },
+  });
 });
 
 test("a round's wall-clock lands in its own bucket, and a round that throws still spends it", async () => {

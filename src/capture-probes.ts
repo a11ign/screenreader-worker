@@ -104,6 +104,16 @@ export async function spendTrip<T>(trips: Trips, bucket: "performMs" | "logMs" |
 }
 
 /**
+ * The two directions' splits, each the bucket deltas between two edges of the ledger: the start, the far end of
+ * the backward walk, and the end. Pure, so the mapping from edge to direction is checked without running a sweep.
+ */
+export function splitByDirection(atStart: Trips, afterPrev: Trips, atEnd: Trips) {
+  const between = (from: Trips, to: Trips) => ({ tripPerformMs: to.performMs - from.performMs,
+    tripLogMs: to.logMs - from.logMs, tripQuietMs: to.quietMs - from.quietMs });
+  return { prevSplit: between(atStart, afterPrev), nextSplit: between(afterPrev, atEnd) };
+}
+
+/**
  * What a sweep carries. `trips` is REQUIRED and that is the point: adding it to `collectByType` and
  * spelling the context out at one call site instead of spreading it threw on the function's first line,
  * before any sweep ran, and returned `postSubmitFields: []` on all 2,122 captures with every check
@@ -1237,6 +1247,7 @@ async function collectByType(commands: { prev: object; next: object; }, ctx: Omi
   const prevCount = out.length;
   const afterPrev = Date.now(), tripsPrev = ctx.trips.count - before;
   const nextOutcome = await sweepInDirection(commands.next, sweepCtx);
+  const splits = splitByDirection(msAtStart, msAfterPrev, ctx.trips);
   ctx.diag.mark("sweep", {
     type: ctx.label,
     found: out.length,
@@ -1248,10 +1259,8 @@ async function collectByType(commands: { prev: object; next: object; }, ctx: Omi
     // direction's `prevMs`/`nextMs`; what they do not cover is the bookkeeping between round trips. A recapture
     // reads these before choosing a cut: a trip that is mostly `Quiet` is the silence wait, which #1643 ruled
     // is not to be cut, and a trip that is mostly `Perform` or `Log` is the one the cut could touch.
-    prevSplit: { tripPerformMs: msAfterPrev.performMs - msAtStart.performMs,
-      tripLogMs: msAfterPrev.logMs - msAtStart.logMs, tripQuietMs: msAfterPrev.quietMs - msAtStart.quietMs },
-    nextSplit: { tripPerformMs: ctx.trips.performMs - msAfterPrev.performMs,
-      tripLogMs: ctx.trips.logMs - msAfterPrev.logMs, tripQuietMs: ctx.trips.quietMs - msAfterPrev.quietMs },
+    prevSplit: splits.prevSplit,
+    nextSplit: splits.nextSplit,
     // WHY each direction stopped. Without this, an empty sweep and a truncated one are the same
     // observation -- and telling a phantom from a real element needs to know whether the sweep ran
     // out of elements, went silent, or hit the step cap.
