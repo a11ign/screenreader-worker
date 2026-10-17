@@ -15,9 +15,12 @@
  * never was.
  */
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
 
 import { sweepStepFromSpeech, MAX_CONSECUTIVE_REPEATS } from "./capture-pure.ts";
+import { spendTrip, splitByDirection, walkBothDirections } from "./capture-probes.ts";
 
 test("silence stops the sweep even when older speech is still in the log", () => {
   // This input is chosen so it DISCRIMINATES. The jump added nothing (log length == seen), and `prev`
@@ -102,4 +105,63 @@ test("a log that SHRANK is a channel rebuild, not a delta", () => {
 
 test("blank and whitespace-only utterances do not count as movement", () => {
   assert.equal(sweepStepFromSpeech({ log: ["a", "", "   "], seen: 1, prev: "" }).stop, "silent");
+});
+
+test("the sweep mark carries each direction's split", () => {
+  // The mark is written inside collectByType, which nothing here runs (it needs NVDA), so this reads the source.
+  // The window stops at `phrases:`, so a split moved out of the mark is caught rather than found elsewhere in the file.
+  // What the splits CONTAIN is pinned by the behavioural test below, not by this one.
+  const source = readFileSync(resolve(import.meta.dirname, "capture-probes.ts"), "utf8");
+  const at = source.indexOf('ctx.diag.mark("sweep", {');
+  assert.notEqual(at, -1, "the sweep mark must exist");
+  const mark = source.slice(at, source.indexOf("phrases:", at));
+  for (const split of ["prevSplit", "nextSplit"]) {
+    // Matches the key whether it is written `split: split` or shorthand, and the word must end there.
+    assert.equal(mark.match(new RegExp(`\\b${split}\\b`, "g"))?.length, 1, `the sweep mark must carry ${split} once`);
+  }
+  // collectByType must reach the edges through the seam the behavioural test below drives, not around it.
+  assert.ok(source.includes("walkBothDirections(ctx.trips, {"),
+    "collectByType must take its splits through walkBothDirections");
+});
+
+test("each direction's split is the bucket deltas between its own two edges", () => {
+  // #1685's instrument. Every bucket gets a different delta, so a swapped bucket, or a direction measured between
+  // the wrong edges, changes the result. deepEqual also pins the field names, so a renamed field fails here.
+  const atStart = { count: 0, performMs: 0, logMs: 0, quietMs: 0 };
+  const afterPrev = { count: 3, performMs: 10, logMs: 20, quietMs: 40 };
+  const atEnd = { count: 9, performMs: 15, logMs: 27, quietMs: 100 };
+  assert.deepEqual(splitByDirection(atStart, afterPrev, atEnd), {
+    prevSplit: { tripPerformMs: 10, tripLogMs: 20, tripQuietMs: 40 },
+    nextSplit: { tripPerformMs: 5, tripLogMs: 7, tripQuietMs: 60 },
+  });
+});
+
+test("the walk seam takes its edges around each direction, and fires the middle edge between them", async () => {
+  // The edges are the wiring the reviewer named: which snapshot each direction starts and ends on, and when the
+  // middle one is read. Each stub moves only its own bucket, so a swapped edge gives a different split, and a middle
+  // read taken after the forward walk shows up in the order check, and this fails.
+  const trips = { count: 0, performMs: 0, logMs: 0, quietMs: 0 };
+  const order: string[] = [];
+  const result = await walkBothDirections(trips, {
+    prev: async () => { order.push("prev"); trips.count += 3; trips.performMs += 10; return "prevDone"; },
+    onPrevDone: () => { order.push("middle"); },
+    next: async () => { order.push("next"); trips.count += 6; trips.logMs += 7; trips.quietMs += 60; return "nextDone"; },
+  });
+  assert.deepEqual(order, ["prev", "middle", "next"], "the middle edge must fire between the two walks");
+  assert.equal(result.prevOutcome, "prevDone");
+  assert.equal(result.nextOutcome, "nextDone");
+  assert.deepEqual(result.prevSplit, { tripPerformMs: 10, tripLogMs: 0, tripQuietMs: 0 });
+  assert.deepEqual(result.nextSplit, { tripPerformMs: 0, tripLogMs: 7, tripQuietMs: 60 });
+});
+
+test("a round's wall-clock lands in its own bucket, and a round that throws still spends it", async () => {
+  // The source test above proves the three names are in the mark. This one proves the buckets hold time: a
+  // `-=` for `+=`, or a helper that writes the wrong bucket, fails here and passes the source test.
+  const trips = { count: 0, performMs: 0, logMs: 0, quietMs: 0 };
+  const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
+  await spendTrip(trips, "performMs", () => wait(30));
+  await assert.rejects(spendTrip(trips, "quietMs", async () => { await wait(30); throw new Error("silent"); }), /silent/);
+  assert.ok(trips.performMs >= 25, `a 30 ms perform round must spend at least 25 ms, spent ${trips.performMs}`);
+  assert.ok(trips.quietMs >= 25, `a 30 ms quiet round that threw must still spend its time, spent ${trips.quietMs}`);
+  assert.equal(trips.logMs, 0, "a bucket no round used stays at zero");
 });
