@@ -114,6 +114,24 @@ export function splitByDirection(atStart: Trips, afterPrev: Trips, atEnd: Trips)
 }
 
 /**
+ * Runs the backward walk then the forward one, and takes the ledger's edges where they meet: before the first walk,
+ * after it, and after the second. `onPrevDone` fires at the middle edge, so the caller can read what the backward walk
+ * left behind before the forward walk pushes more into the same array. This is the seam `collectByType` runs through,
+ * so a test can drive the real edge-taking with stub walks.
+ */
+export async function walkBothDirections<P, N>(trips: Trips, walks: {
+  prev: () => Promise<P>, next: () => Promise<N>, onPrevDone: () => void,
+}) {
+  const atStart = { ...trips };
+  const prevOutcome = await walks.prev();
+  const afterPrev = { ...trips };
+  walks.onPrevDone();
+  const nextOutcome = await walks.next();
+  const atEnd = { ...trips };
+  return { prevOutcome, nextOutcome, ...splitByDirection(atStart, afterPrev, atEnd) };
+}
+
+/**
  * What a sweep carries. `trips` is REQUIRED and that is the point: adding it to `collectByType` and
  * spelling the context out at one call site instead of spreading it threw on the function's first line,
  * before any sweep ran, and returned `postSubmitFields: []` on all 2,122 captures with every check
@@ -1229,10 +1247,7 @@ async function collectByType(commands: { prev: object; next: object; }, ctx: Omi
   // per-element cost. Optimising without this is guesswork.
   const startedAt = Date.now();
   const before = ctx.trips.count;
-  // The ledger's ms buckets, snapshotted at each edge so each direction's split is its own delta.
-  const msAtStart = { ...ctx.trips };
-  const prevOutcome = await sweepInDirection(commands.prev, sweepCtx);
-  const msAfterPrev = { ...ctx.trips };
+  let prevCount = 0, afterPrev = startedAt, tripsPrev = 0;
   // WHERE THE BACKWARD WALK ENDED. Both directions push into one `out`, so the array is
   // reverse(everything before the caret) followed by (everything after it, in document order) -- and
   // without this index the two halves are indistinguishable and the array is NOT reading order.
@@ -1244,10 +1259,16 @@ async function collectByType(commands: { prev: object; next: object; }, ctx: Omi
   // Additive: `out` itself is unchanged, so every cached capture stays valid and no protocol bump is
   // needed. A capture without this mark cannot support an order claim, and `addBrokenFocusOrder` makes
   // none -- absence must not be read as "the array happens to be in order".
-  const prevCount = out.length;
-  const afterPrev = Date.now(), tripsPrev = ctx.trips.count - before;
-  const nextOutcome = await sweepInDirection(commands.next, sweepCtx);
-  const splits = splitByDirection(msAtStart, msAfterPrev, ctx.trips);
+  // The ledger's ms buckets are snapshotted at each edge inside walkBothDirections, so each split is its own delta.
+  const { prevOutcome, nextOutcome, prevSplit, nextSplit } = await walkBothDirections(ctx.trips, {
+    prev: () => sweepInDirection(commands.prev, sweepCtx),
+    next: () => sweepInDirection(commands.next, sweepCtx),
+    onPrevDone: () => {
+      prevCount = out.length;
+      afterPrev = Date.now();
+      tripsPrev = ctx.trips.count - before;
+    },
+  });
   ctx.diag.mark("sweep", {
     type: ctx.label,
     found: out.length,
@@ -1259,8 +1280,8 @@ async function collectByType(commands: { prev: object; next: object; }, ctx: Omi
     // direction's `prevMs`/`nextMs`; what they do not cover is the bookkeeping between round trips. A recapture
     // reads these before choosing a cut: a trip that is mostly `Quiet` is the silence wait, which #1643 ruled
     // is not to be cut, and a trip that is mostly `Perform` or `Log` is the one the cut could touch.
-    prevSplit: splits.prevSplit,
-    nextSplit: splits.nextSplit,
+    prevSplit,
+    nextSplit,
     // WHY each direction stopped. Without this, an empty sweep and a truncated one are the same
     // observation -- and telling a phantom from a real element needs to know whether the sweep ran
     // out of elements, went silent, or hit the step cap.

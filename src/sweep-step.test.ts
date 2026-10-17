@@ -20,7 +20,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import { sweepStepFromSpeech, MAX_CONSECUTIVE_REPEATS } from "./capture-pure.ts";
-import { spendTrip, splitByDirection } from "./capture-probes.ts";
+import { spendTrip, splitByDirection, walkBothDirections } from "./capture-probes.ts";
 
 test("silence stops the sweep even when older speech is still in the log", () => {
   // This input is chosen so it DISCRIMINATES. The jump added nothing (log length == seen), and `prev`
@@ -115,12 +115,13 @@ test("the sweep mark carries each direction's split", () => {
   const at = source.indexOf('ctx.diag.mark("sweep", {');
   assert.notEqual(at, -1, "the sweep mark must exist");
   const mark = source.slice(at, source.indexOf("phrases:", at));
-  for (const split of ["prevSplit:", "nextSplit:"]) {
-    assert.equal(mark.split(split).length - 1, 1, `the sweep mark must carry ${split} once`);
+  for (const split of ["prevSplit", "nextSplit"]) {
+    // Matches the key whether it is written `split: split` or shorthand, and the word must end there.
+    assert.equal(mark.match(new RegExp(`\\b${split}\\b`, "g"))?.length, 1, `the sweep mark must carry ${split} once`);
   }
-  // The edges are the one mapping the behavioural test cannot reach: which snapshot each direction starts and ends on.
-  assert.ok(source.includes("splitByDirection(msAtStart, msAfterPrev, ctx.trips)"),
-    "the splits must be taken between the start, the far end of the backward walk, and the end");
+  // collectByType must reach the edges through the seam the behavioural test below drives, not around it.
+  assert.ok(source.includes("walkBothDirections(ctx.trips, {"),
+    "collectByType must take its splits through walkBothDirections");
 });
 
 test("each direction's split is the bucket deltas between its own two edges", () => {
@@ -133,6 +134,24 @@ test("each direction's split is the bucket deltas between its own two edges", ()
     prevSplit: { tripPerformMs: 10, tripLogMs: 20, tripQuietMs: 40 },
     nextSplit: { tripPerformMs: 5, tripLogMs: 7, tripQuietMs: 60 },
   });
+});
+
+test("the walk seam takes its edges around each direction, and fires the middle edge between them", async () => {
+  // The edges are the wiring the reviewer named: which snapshot each direction starts and ends on, and when the
+  // middle one is read. Each stub moves only its own bucket, so a swapped edge gives a different split, and a middle
+  // read taken after the forward walk shows up in the order check, and this fails.
+  const trips = { count: 0, performMs: 0, logMs: 0, quietMs: 0 };
+  const order: string[] = [];
+  const result = await walkBothDirections(trips, {
+    prev: async () => { order.push("prev"); trips.count += 3; trips.performMs += 10; return "prevDone"; },
+    onPrevDone: () => { order.push("middle"); },
+    next: async () => { order.push("next"); trips.count += 6; trips.logMs += 7; trips.quietMs += 60; return "nextDone"; },
+  });
+  assert.deepEqual(order, ["prev", "middle", "next"], "the middle edge must fire between the two walks");
+  assert.equal(result.prevOutcome, "prevDone");
+  assert.equal(result.nextOutcome, "nextDone");
+  assert.deepEqual(result.prevSplit, { tripPerformMs: 10, tripLogMs: 0, tripQuietMs: 0 });
+  assert.deepEqual(result.nextSplit, { tripPerformMs: 0, tripLogMs: 7, tripQuietMs: 60 });
 });
 
 test("a round's wall-clock lands in its own bucket, and a round that throws still spends it", async () => {
