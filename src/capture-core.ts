@@ -36,6 +36,7 @@ import {
   phraseAction,
   failIfScreenReaderIsMute,
   failIfCaptureIsOnWrongWindow,
+  focusTargetIsSuspect,
   dedupeKey,
   sweepStepFromSpeech,
   elementsListRowName,
@@ -49,7 +50,7 @@ import {
   screenReaderWasSilentAtStart,
   shouldInstallFocusEventListenerEarly,
 } from "./capture-pure.ts";
-import { endCaptureUrls, installFocusEventLog, viewportMeasure } from "./browser-session.ts";
+import { documentTitle as readDocumentTitle, endCaptureUrls, installFocusEventLog, viewportMeasure } from "./browser-session.ts";
 import { parkPointer } from "./pointer.ts";
 import {
   reuseBrowserFor, openPage, assertLandedOnRequestedPage, assertPageWasServed, waitForPageToSettle,
@@ -365,6 +366,15 @@ async function installFocusEventListenerBeforeFirstFocus(opts: Record<string, Un
   diag.mark("focusEventListenerEarlyInstall", install);
 }
 
+// The page's own title, from the document over CDP, for the wrong-window check to compare NVDA's window title
+// against. Null when the read cannot be trusted as this page (`focusTargetIsSuspect`, the same test the title
+// verdict uses), so the check falls back to the shell-window signature rather than to a guess.
+async function requestedPageTitle() {
+  const dom = await readDocumentTitle();
+  if (typeof dom.title !== "string" || focusTargetIsSuspect(dom)) return null;
+  return dom.title;
+}
+
 /** @param {string} url @param {Record<string, any>} opts @param {Diag} diag */
 async function runCapturePhases(url: string, opts: Record<string, Untyped>, diag: Diag) {
   const steps = Number(opts.steps || DEFAULT_STEPS);
@@ -413,7 +423,7 @@ async function runCapturePhases(url: string, opts: Record<string, Untyped>, diag
     silentAtStart: screenReaderWasSilentAtStart(diag),
   });
   failIfScreenReaderIsMute(transcript, diag);
-  failIfCaptureIsOnWrongWindow(transcript, diag);
+  failIfCaptureIsOnWrongWindow(transcript, diag, await requestedPageTitle());
   const { structure, interaction, media, formInputs, observed } = await navigateByStructureThenAudit({
     deadline, diag,
     probeForms: !!opts.probeForms, probeFocus: !!opts.probeFocus, probeTables: !!opts.probeTables,
