@@ -24,11 +24,11 @@ test("the activation may take at most its share, and the sweeps after it keep th
   const captureDeadline = now + 400_000;
   const stops = activationDeadline(captureDeadline, now);
 
-  assert.equal(stops, now + 200_000);
+  assert.equal(stops, now + 100_000);
   // THE LOAD-BEARING PROPERTY, stated as the thing that starved rather than as the arithmetic: whatever
   // the share is, what is LEFT for graphic/link/list/frame/postSubmit must not be less than it.
   const leftForTheRest = captureDeadline - stops;
-  assert.ok(leftForTheRest >= 200_000,
+  assert.ok(leftForTheRest >= 300_000,
     `the five sweeps after formField were left ${leftForTheRest} ms; on the IKEA capture they got 0`);
 });
 
@@ -49,13 +49,13 @@ test("the share is a fraction of what REMAINS, not of the whole budget", () => {
   const early = activationDeadline(now + 400_000, now) - now;
   const late = activationDeadline(now + 100_000, now) - now;
   assert.ok(late < early, "a capture that has already used most of its budget grants a smaller share");
-  assert.equal(late, 50_000);
+  assert.equal(late, 25_000);
 });
 
 test("the share is one number, and it is the one that moves", () => {
   // A second knob (an absolute ceiling) would be a constant with no measurement behind it. If the fleet
-  // says half is wrong, this is what changes — so it is asserted, not merely defined.
-  assert.equal(ACTIVATION_SHARE_OF_REMAINING, 0.5);
+  // says the share is wrong, this is what changes — so it is asserted, not merely defined.
+  assert.equal(ACTIVATION_SHARE_OF_REMAINING, 0.25);
   const now = 0;
   assert.equal(activationDeadline(1_000, now), Math.floor(1_000 * ACTIVATION_SHARE_OF_REMAINING));
 });
