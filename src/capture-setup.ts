@@ -10,7 +10,7 @@
  * too. Keeping those here — rather than in `capture-core.ts` or duplicated — is what keeps the import
  * graph a DAG: `capture-probes.ts` depends on this file, this file depends on neither of the other two.
  */
-import { focusExistingBrowserWindow } from "./window-focus.ts";
+import { chooseActivation, focusExistingBrowserWindow } from "./window-focus.ts";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { captureFault, FAULT } from "./capture-faults.ts";
@@ -490,21 +490,17 @@ async function activateBrowserWithinDeadline(deadline: number): Promise<{ ok: bo
   const remaining = () => deadline - Date.now();
   if (remaining() <= 0) return { ok: false, via: "none", error: "no time left to activate", fastReason: "" };
 
-  // FIRST, because it is the only route that does not enumerate something. One CDP round trip on a socket the
-  // worker already uses, against a window Chromium owns and we just navigated. The two alternatives below both
-  // failed on a heavy real page for the same reason: guidepup's WMI process scan and our own `Add-Type` compile
-  // are both O(how busy the guest is), and the guest is busiest exactly when the page is hardest.
+  // CDP first, for the tab inside Chromium: one round trip on a socket the worker already uses. It is NOT the
+  // verdict. `Page.bringToFront` resolves without the OS having moved the foreground, and on build 26200 that
+  // left NVDA on the launcher's console and every capture blank (a11ign#5697). The window check below reads
+  // the foreground handle back, so it always runs; `chooseActivation` says what the two together mean.
   const cdp = await bringPageToFront();
-  if (cdp.ok) return { ok: true, via: "cdpBringToFront", error: "", fastReason: "" };
-
   const fast = await focusExistingBrowserWindow({ timeoutMs: Math.min(FAST_FOCUS_MS, remaining()) });
-  if (fast.found && fast.foreground) return { ok: true, via: "setForegroundWindow", error: "", fastReason: "" };
+  const verdict = chooseActivation(cdp, fast);
+  if (verdict.ok) return { ok: true, via: verdict.via, error: "", fastReason: "" };
   // Found-but-refused and no-window-at-all are different faults: guidepup can launch a browser that is
   // missing, but it cannot talk Windows into handing over a foreground it has refused.
-  const fastReason = [
-    cdp.reason ? `cdp: ${cdp.reason}` : "",
-    fast.found ? "SetForegroundWindow refused" : (fast.reason ?? "no Chromium window found"),
-  ].filter(Boolean).join("; ");
+  const fastReason = [cdp.reason ? `cdp: ${cdp.reason}` : "", verdict.reason].filter(Boolean).join("; ");
 
   if (remaining() <= 0) return { ok: false, via: "fast", error: "deadline spent on the fast path", fastReason };
   try {
