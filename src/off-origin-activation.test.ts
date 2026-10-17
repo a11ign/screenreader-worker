@@ -151,7 +151,7 @@ const PROBES = stripComments(readFileSync(resolve(import.meta.dirname, "capture-
 
 /** The body of one top-level function: from its declaration to the next line that closes a top-level block. */
 function bodyOf(name: string): string {
-  const start = PROBES.search(new RegExp(`\\n(async )?function ${name}\\(`));
+  const start = PROBES.search(new RegExp(`\\n(export )?(async )?function ${name}\\(`));
   assert.ok(start >= 0, `capture-probes.ts no longer declares ${name}`);
   return PROBES.slice(start, PROBES.indexOf("\n}\n", start));
 }

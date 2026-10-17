@@ -20,7 +20,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import { sweepStepFromSpeech, MAX_CONSECUTIVE_REPEATS } from "./capture-pure.ts";
-import { spendTrip, splitByDirection, walkBothDirections } from "./capture-probes.ts";
+import { collectPhrase, spendTrip, splitByDirection, sweepInDirection, walkBothDirections } from "./capture-probes.ts";
 
 test("silence stops the sweep even when older speech is still in the log", () => {
   // This input is chosen so it DISCRIMINATES. The jump added nothing (log length == seen), and `prev`
@@ -127,12 +127,12 @@ test("the sweep mark carries each direction's split", () => {
 test("each direction's split is the bucket deltas between its own two edges", () => {
   // #1685's instrument. Every bucket gets a different delta, so a swapped bucket, or a direction measured between
   // the wrong edges, changes the result. deepEqual also pins the field names, so a renamed field fails here.
-  const atStart = { count: 0, performMs: 0, logMs: 0, quietMs: 0 };
-  const afterPrev = { count: 3, performMs: 10, logMs: 20, quietMs: 40 };
-  const atEnd = { count: 9, performMs: 15, logMs: 27, quietMs: 100 };
+  const atStart = { count: 0, performMs: 0, logMs: 0, quietMs: 0, itemMs: 0 };
+  const afterPrev = { count: 3, performMs: 10, logMs: 20, quietMs: 40, itemMs: 5 };
+  const atEnd = { count: 9, performMs: 15, logMs: 27, quietMs: 100, itemMs: 9 };
   assert.deepEqual(splitByDirection(atStart, afterPrev, atEnd), {
-    prevSplit: { tripPerformMs: 10, tripLogMs: 20, tripQuietMs: 40 },
-    nextSplit: { tripPerformMs: 5, tripLogMs: 7, tripQuietMs: 60 },
+    prevSplit: { tripPerformMs: 10, tripLogMs: 20, tripQuietMs: 40, tripItemMs: 5 },
+    nextSplit: { tripPerformMs: 5, tripLogMs: 7, tripQuietMs: 60, tripItemMs: 4 },
   });
 });
 
@@ -140,28 +140,89 @@ test("the walk seam takes its edges around each direction, and fires the middle 
   // The edges are the wiring the reviewer named: which snapshot each direction starts and ends on, and when the
   // middle one is read. Each stub moves only its own bucket, so a swapped edge gives a different split, and a middle
   // read taken after the forward walk shows up in the order check, and this fails.
-  const trips = { count: 0, performMs: 0, logMs: 0, quietMs: 0 };
+  const trips = { count: 0, performMs: 0, logMs: 0, quietMs: 0, itemMs: 0 };
   const order: string[] = [];
   const result = await walkBothDirections(trips, {
     prev: async () => { order.push("prev"); trips.count += 3; trips.performMs += 10; return "prevDone"; },
     onPrevDone: () => { order.push("middle"); },
-    next: async () => { order.push("next"); trips.count += 6; trips.logMs += 7; trips.quietMs += 60; return "nextDone"; },
+    next: async () => { order.push("next"); trips.count += 6; trips.logMs += 7; trips.quietMs += 60; trips.itemMs += 4; return "nextDone"; },
   });
   assert.deepEqual(order, ["prev", "middle", "next"], "the middle edge must fire between the two walks");
   assert.equal(result.prevOutcome, "prevDone");
   assert.equal(result.nextOutcome, "nextDone");
-  assert.deepEqual(result.prevSplit, { tripPerformMs: 10, tripLogMs: 0, tripQuietMs: 0 });
-  assert.deepEqual(result.nextSplit, { tripPerformMs: 0, tripLogMs: 7, tripQuietMs: 60 });
+  assert.deepEqual(result.prevSplit, { tripPerformMs: 10, tripLogMs: 0, tripQuietMs: 0, tripItemMs: 0 });
+  assert.deepEqual(result.nextSplit, { tripPerformMs: 0, tripLogMs: 7, tripQuietMs: 60, tripItemMs: 4 });
 });
 
 test("a round's wall-clock lands in its own bucket, and a round that throws still spends it", async () => {
   // The source test above proves the three names are in the mark. This one proves the buckets hold time: a
   // `-=` for `+=`, or a helper that writes the wrong bucket, fails here and passes the source test.
-  const trips = { count: 0, performMs: 0, logMs: 0, quietMs: 0 };
+  const trips = { count: 0, performMs: 0, logMs: 0, quietMs: 0, itemMs: 0 };
   const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
   await spendTrip(trips, "performMs", () => wait(30));
   await assert.rejects(spendTrip(trips, "quietMs", async () => { await wait(30); throw new Error("silent"); }), /silent/);
   assert.ok(trips.performMs >= 25, `a 30 ms perform round must spend at least 25 ms, spent ${trips.performMs}`);
   assert.ok(trips.quietMs >= 25, `a 30 ms quiet round that threw must still spend its time, spent ${trips.quietMs}`);
   assert.equal(trips.logMs, 0, "a bucket no round used stays at zero");
+});
+
+test("onItem's own time lands in itemMs, and the buckets add up to the span", async () => {
+  // #1685's second fault. The split named only the three NVDA round trips, so the `onItem` work between them (the
+  // formField probe's activation and its speech waits) sat in the span and in no bucket. Here the only work is
+  // `onItem`, so its time must be the whole span: the bucket sum and the span agree to within a stated 5 ms.
+  const trips = { count: 0, performMs: 0, logMs: 0, quietMs: 0, itemMs: 0 };
+  const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
+  const span = performance.now();
+  await collectPhrase("Email, edit", { out: [], seenKeys: new Set(), trips, onItem: () => wait(50) });
+  const elapsed = performance.now() - span;
+  assert.ok(trips.itemMs >= 45, `a 50 ms onItem must spend at least 45 ms in itemMs, spent ${trips.itemMs}`);
+  const sum = trips.performMs + trips.logMs + trips.quietMs + trips.itemMs;
+  assert.ok(Math.abs(sum - elapsed) <= 5, `the buckets (${sum} ms) must sum to the span (${elapsed} ms) within 5 ms`);
+});
+
+test("a phrase the sweep has already seen does not run onItem, and spends nothing", async () => {
+  // The bracket wraps `onItem`, not the bookkeeping: a de-duplicated announcement must not be timed as item work.
+  const trips = { count: 0, performMs: 0, logMs: 0, quietMs: 0, itemMs: 0 };
+  let calls = 0;
+  const seenKeys = new Set<string>();
+  const out: string[] = [];
+  const onItem = () => { calls += 1; };
+  await collectPhrase("Email, edit", { out, seenKeys, trips, onItem });
+  await collectPhrase("Email, edit", { out, seenKeys, trips, onItem });
+  assert.equal(calls, 1, "onItem runs once per distinct announcement");
+  assert.deepEqual(out, ["Email, edit"]);
+});
+
+test("a round that takes under a millisecond still adds to its bucket", async () => {
+  // `Date.now()` has whole-millisecond resolution, so a quick round read as 0 and the split could not tell a free
+  // `spokenPhraseLog` from one that was merely fast. 200 immediate rounds must add up to more than zero.
+  const trips = { count: 0, performMs: 0, logMs: 0, quietMs: 0, itemMs: 0 };
+  for (let i = 0; i < 200; i += 1) await spendTrip(trips, "logMs", async () => undefined);
+  assert.ok(trips.logMs > 0, `200 immediate rounds must not read as zero, read ${trips.logMs} ms`);
+});
+
+test("a sweep step's onItem runs through the real call site, and its time lands in itemMs", async () => {
+  // Drives sweepInDirection, not collectPhrase: a fake NVDA says "Heading one" on the first step and then
+  // "no next heading" on the second, so the sweep takes one phrase, runs onItem on it, and stops with `exhausted`
+  // without reaching the silent-retry wait. If the call site dropped `trips` or the bracket, itemMs stays zero or
+  // the call throws, and this fails.
+  const trips = { count: 0, performMs: 0, logMs: 0, quietMs: 0, itemMs: 0 };
+  const out: string[] = [];
+  const itemsSeen: string[] = [];
+  const logs = [[], ["Heading one"], ["Heading one", "no next heading"]];
+  let reads = 0;
+  const io = {
+    perform: async () => undefined,
+    spokenPhraseLog: async () => logs[Math.min(reads++, logs.length - 1)],
+  };
+  const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
+  const ctx = {
+    label: "headings", out, seenKeys: new Set<string>(), trips, deadline: Infinity,
+    onItem: async (phrase: string) => { itemsSeen.push(phrase); await wait(50); },
+  } as Parameters<typeof sweepInDirection>[1];
+  const result = await sweepInDirection({ key: "H" }, ctx, io);
+  assert.equal(result.stop, "exhausted", `the sweep should end on NVDA's end-of-list wording, got ${result.stop}`);
+  assert.deepEqual(out, ["Heading one"], "the first step's phrase is the one collected");
+  assert.deepEqual(itemsSeen, ["Heading one"], "onItem runs once, on that phrase");
+  assert.ok(trips.itemMs >= 45, `a 50 ms onItem at the call site must spend at least 45 ms in itemMs, spent ${trips.itemMs}`);
 });
