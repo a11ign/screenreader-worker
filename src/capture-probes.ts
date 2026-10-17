@@ -84,6 +84,26 @@ type Observation = { asked: boolean, complete?: boolean, why?: string, activated
             stop?: { prev: string, next: string } };
 
 /**
+ * The round-trip ledger a sweep threads through every call. `count` is the trip total the capture has always
+ * reported. The three milliseconds say what those trips cost: `performMs` is the NVDA keystroke, `logMs` every
+ * `spokenPhraseLog` read, `quietMs` the silence waits `awaitLateSpeech` makes. The split is the instrument for
+ * #1685: a recapture reads which of the three a trip is made of, and only then is there a cut to make.
+ */
+type Trips = { count: number, performMs: number, logMs: number, quietMs: number };
+
+/**
+ * Runs one round trip and adds its wall-clock to one of the ledger's buckets, however the trip ends.
+ */
+async function spendTrip<T>(trips: Trips, bucket: "performMs" | "logMs" | "quietMs", round: () => Promise<T>): Promise<T> {
+  const startedAt = Date.now();
+  try {
+    return await round();
+  } finally {
+    trips[bucket] += Date.now() - startedAt;
+  }
+}
+
+/**
  * What a sweep carries. `trips` is REQUIRED and that is the point: adding it to `collectByType` and
  * spelling the context out at one call site instead of spreading it threw on the function's first line,
  * before any sweep ran, and returned `postSubmitFields: []` on all 2,122 captures with every check
@@ -91,7 +111,7 @@ type Observation = { asked: boolean, complete?: boolean, why?: string, activated
  */
 type SweepContext = { out: string[], seenKeys: Set<string>,
             onItem?: ((phrase: string) => Promise<unknown> | unknown) | null,
-            deadline: number, diag: Diag, label: string, trips: { count: number },
+            deadline: number, diag: Diag, label: string, trips: Trips,
             observed?: Record<string, Observation>, observedAs?: string,
             trace?: string[], ended?: () => boolean };
 
@@ -759,7 +779,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
       navigatedOnSubmit?: unknown; postSubmitNames?: string[]; postSubmitFields?: string[]; leftSite?: { control: string; };
   } = { stateChanges: [], formChanges: [], sweepLog: [] };
   const site = await watchTheSite(interaction);
-  const trips = { count: 0 };
+  const trips: Trips = { count: 0, performMs: 0, logMs: 0, quietMs: 0 };
   const structure: CapturedStructure = {
     headings: [], landmarks: [], formFields: [], graphics: [], links: [], lists: [], tableCells: [],
     frames: [],
@@ -940,7 +960,7 @@ function assembleAndMark({ structure, interaction, postSubmitFields, focusOrder,
  */
 async function runConfiguredForm({ formState, interaction, results, deadline, diag, trips, pageUrl = null }: {
         formState: Untyped; interaction: Untyped; results: { postSubmitFields: string[]; }; deadline: number;
-        diag: Diag; trips: { count: number; }; pageUrl?: string | null;
+        diag: Diag; trips: Trips; pageUrl?: string | null;
     }) {
   const heard = interaction.formChanges.length + interaction.stateChanges.length;
   await probeConfiguredForm({ formState, interaction, deadline, diag });
@@ -966,7 +986,7 @@ async function runConfiguredForm({ formState, interaction, results, deadline, di
  */
 async function sweepEveryStructuralType({ structure, onFormField, probeTables, deadline, diag, trips, observed, ended = () => false }: {
         structure: CapturedStructure; onFormField: (phrase: string) => Promise<unknown>;
-        probeTables?: boolean; deadline: number; diag: Diag; trips: { count: number; };
+        probeTables?: boolean; deadline: number; diag: Diag; trips: Trips;
         observed: Record<string, Observation>; ended?: () => boolean;
     }) {
   const K = nvda.keyboardCommands;
@@ -1060,7 +1080,7 @@ async function sweepEveryStructuralType({ structure, onFormField, probeTables, d
  */
 async function rescanFormFieldsAfterSubmit({ interaction, deadline, diag, trips }: {
         interaction: Record<string, Untyped>; probeForms?: boolean; deadline: number;
-        diag: Diag; trips: { count: number; };
+        diag: Diag; trips: Trips;
     }) {
   const K = nvda.keyboardCommands;
   // After a form was submitted in place during the sweep above, re-scan the
@@ -1199,7 +1219,10 @@ async function collectByType(commands: { prev: object; next: object; }, ctx: Omi
   // per-element cost. Optimising without this is guesswork.
   const startedAt = Date.now();
   const before = ctx.trips.count;
+  // The ledger's ms buckets, snapshotted at each edge so each direction's split is its own delta.
+  const msAtStart = { ...ctx.trips };
   const prevOutcome = await sweepInDirection(commands.prev, sweepCtx);
+  const msAfterPrev = { ...ctx.trips };
   // WHERE THE BACKWARD WALK ENDED. Both directions push into one `out`, so the array is
   // reverse(everything before the caret) followed by (everything after it, in document order) -- and
   // without this index the two halves are indistinguishable and the array is NOT reading order.
@@ -1221,6 +1244,14 @@ async function collectByType(commands: { prev: object; next: object; }, ctx: Omi
     nextMs: Date.now() - afterPrev,
     prevTrips: tripsPrev,
     nextTrips: ctx.trips.count - before - tripsPrev,
+    // WHAT EACH DIRECTION'S TRIPS COST, in the three buckets `spendTrip` fills. The three add up to roughly the
+    // direction's `prevMs`/`nextMs`; what they do not cover is the bookkeeping between round trips. A recapture
+    // reads these before choosing a cut: a trip that is mostly `Quiet` is the silence wait, which #1643 ruled
+    // is not to be cut, and a trip that is mostly `Perform` or `Log` is the one the cut could touch.
+    prevSplit: { tripPerformMs: msAfterPrev.performMs - msAtStart.performMs,
+      tripLogMs: msAfterPrev.logMs - msAtStart.logMs, tripQuietMs: msAfterPrev.quietMs - msAtStart.quietMs },
+    nextSplit: { tripPerformMs: ctx.trips.performMs - msAfterPrev.performMs,
+      tripLogMs: ctx.trips.logMs - msAfterPrev.logMs, tripQuietMs: ctx.trips.quietMs - msAfterPrev.quietMs },
     // WHY each direction stopped. Without this, an empty sweep and a truncated one are the same
     // observation -- and telling a phantom from a real element needs to know whether the sweep ran
     // out of elements, went silent, or hit the step cap.
@@ -1496,12 +1527,13 @@ async function applyBrowseModeRemedy(attempt: number) {
  */
 async function awaitLateSpeech({ step, prev, repeats, label, trips }: {
         step: import("./capture-pure.ts").SweepStep; prev: string; repeats: number;
-        label: string; trips: { count: number; };
+        label: string; trips: Trips;
     }): Promise<import("./capture-pure.ts").SweepStep> {
   for (let retry = 0; retry < SWEEP_SILENT_RETRIES; retry += 1) {
-    await waitForSpeechQuiet(`${label}SilentRetry`);
+    await spendTrip(trips, "quietMs", () => waitForSpeechQuiet(`${label}SilentRetry`));
     trips.count += 1;
-    const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label).catch(() => [])) || [];
+    const log = (await spendTrip(trips, "logMs", () => withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label))
+      .catch(() => [])) || [];
     const again = sweepStepFromSpeech({ log, seen: step.seen, prev, repeats });
     // Anything other than silence is a real answer — "no next heading", a channel reset — and belongs to the
     // caller unchanged. Only continued silence is worth another wait.
@@ -1539,7 +1571,8 @@ async function sweepInDirection(cmd: object, { label, out, seenKeys, onItem, dea
   // Read once, then advance as we go, so this costs the same two round trips per step as the
   // lastSpokenPhrase version it replaces. `trips` therefore stays comparable across the change.
   trips.count += 1;
-  let seen = ((await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label).catch(() => [])) || []).length;
+  let seen = ((await spendTrip(trips, "logMs", () => withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label))
+    .catch(() => [])) || []).length;
   for (let i = 0; i < MAX_SWEEP_STEPS; i++) {
     // Running out of budget and finding nothing more are DIFFERENT observations, and both used to
     // fall through to `stop: "cap"` below -- so a sweep that never got to ask reported the same
@@ -1555,8 +1588,8 @@ async function sweepInDirection(cmd: object, { label, out, seenKeys, onItem, dea
     let step: import("./capture-pure.ts").SweepStep;
     try {
       trips.count += 2;
-      await withTimeout(nvda.perform((cmd as Untyped)), NAV_TIMEOUT_MS, label);
-      const log = (await withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label)) || [];
+      await spendTrip(trips, "performMs", () => withTimeout(nvda.perform((cmd as Untyped)), NAV_TIMEOUT_MS, label));
+      const log = (await spendTrip(trips, "logMs", () => withTimeout(nvda.spokenPhraseLog(), QUERY_TIMEOUT_MS, label))) || [];
       step = sweepStepFromSpeech({ log, seen, prev, repeats });
     } catch (error) {
       // Same asymmetry: a round trip that threw is not evidence the page ran out of elements.

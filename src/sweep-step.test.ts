@@ -15,6 +15,8 @@
  * never was.
  */
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
 
 import { sweepStepFromSpeech, MAX_CONSECUTIVE_REPEATS } from "./capture-pure.ts";
@@ -102,4 +104,19 @@ test("a log that SHRANK is a channel rebuild, not a delta", () => {
 
 test("blank and whitespace-only utterances do not count as movement", () => {
   assert.equal(sweepStepFromSpeech({ log: ["a", "", "   "], seen: 1, prev: "" }).stop, "silent");
+});
+
+test("the sweep mark splits each direction's trips into perform, log and quiet milliseconds", () => {
+  // The split is the instrument for #1685: a recapture cannot say what a trip is made of unless the mark carries
+  // all three buckets for BOTH directions. Read from source, as census-read-moment.test.ts does, because the mark
+  // is written inside collectByType and nothing here runs NVDA. The window stops at `phrases:`, so a field moved
+  // out of the mark is caught rather than found elsewhere in the file.
+  const source = readFileSync(resolve(import.meta.dirname, "capture-probes.ts"), "utf8");
+  const at = source.indexOf('ctx.diag.mark("sweep", {');
+  assert.notEqual(at, -1, "the sweep mark must exist");
+  const mark = source.slice(at, source.indexOf("phrases:", at));
+  for (const bucket of ["tripPerformMs", "tripLogMs", "tripQuietMs"]) {
+    const count = mark.split(`${bucket}:`).length - 1;
+    assert.equal(count, 2, `the sweep mark must carry ${bucket} once for prevSplit and once for nextSplit`);
+  }
 });
