@@ -42,6 +42,10 @@ import { powershell, USER32 } from "./powershell.ts";
 /** Chromium's top-level window class, `--app` windows included. */
 const CHROMIUM_CLASS = "Chrome_WidgetWin_1";
 
+/** VK_MENU (Alt) and KEYEVENTF_KEYUP, for the synthetic key press that makes a foreground request count as input. */
+const VK_MENU = 0x12;
+const KEYEVENTF_KEYUP = 2;
+
 /** SW_RESTORE: un-minimise without resizing, so a restored window keeps the geometry NVDA measured. */
 const SW_RESTORE = 9;
 
@@ -52,7 +56,7 @@ const SW_RESTORE = 9;
  * can return true having not actually changed the foreground, and this project has already been burned by a
  * verification that shared a failure mode with the action it verified.
  */
-const ACTIVATE_SCRIPT = `
+export const ACTIVATE_SCRIPT = `
 ${USER32}
 $best = [IntPtr]::Zero
 $bestTitle = ''
@@ -69,10 +73,32 @@ $cb = [A11yUser32+EnumProc]{
 [A11yUser32]::EnumWindows($cb, [IntPtr]::Zero) | Out-Null
 if ($best -eq [IntPtr]::Zero) { 'NONE' } else {
   [A11yUser32]::ShowWindow($best, ${SW_RESTORE}) | Out-Null
+  $method = 'plain'
   [A11yUser32]::SetForegroundWindow($best) | Out-Null
   Start-Sleep -Milliseconds 120
+  if ([A11yUser32]::GetForegroundWindow() -ne $best) {
+    # A plain request was refused (build 26200 leaves the launcher console in front). A synthetic Alt press
+    # counts as input for the foreground rules, so ask again behind it.
+    $method = 'alt'
+    [A11yUser32]::keybd_event(${VK_MENU}, 0, 0, [UIntPtr]::Zero)
+    [A11yUser32]::SetForegroundWindow($best) | Out-Null
+    [A11yUser32]::keybd_event(${VK_MENU}, 0, ${KEYEVENTF_KEYUP}, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 120
+  }
+  if ([A11yUser32]::GetForegroundWindow() -ne $best) {
+    # Last resort: join the holder's input queue so the request is made as the holder.
+    $method = 'attach'
+    $holder = [A11yUser32]::GetForegroundWindow()
+    [uint32]$holdPid = 0
+    $holdThread = [A11yUser32]::GetWindowThreadProcessId($holder, [ref]$holdPid)
+    $ourThread = [A11yUser32]::GetWindowThreadProcessId($best, [ref]$holdPid)
+    [A11yUser32]::AttachThreadInput($ourThread, $holdThread, $true) | Out-Null
+    [A11yUser32]::SetForegroundWindow($best) | Out-Null
+    [A11yUser32]::AttachThreadInput($ourThread, $holdThread, $false) | Out-Null
+    Start-Sleep -Milliseconds 120
+  }
   $fg = [A11yUser32]::GetForegroundWindow()
-  "{0}\`t{1}\`t{2}" -f $best.ToInt64(), ($(if ($fg -eq $best) { 'FOREGROUND' } else { 'REFUSED' })), $bestTitle
+  "{0}\`t{1}\`t{2}\`t{3}" -f $best.ToInt64(), ($(if ($fg -eq $best) { 'FOREGROUND' } else { 'REFUSED' })), $bestTitle, $method
 }
 `;
 
@@ -83,20 +109,21 @@ if ($best -eq [IntPtr]::Zero) { 'NONE' } else {
  * a misparse would read as "there is no browser window" on a guest that has one.
  *
  * @param {string} stdout
- * @returns {{ found: boolean, foreground: boolean, title: string, handle: string }}
+ * @returns {{ found: boolean, foreground: boolean, title: string, handle: string, method: string }}
  */
-export function parseActivation(stdout: string): { found: boolean; foreground: boolean; title: string; handle: string; } {
+export function parseActivation(stdout: string): { found: boolean; foreground: boolean; title: string; handle: string; method: string; } {
   const line = String(stdout ?? "").split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 0) ?? "";
-  if (line === "NONE" || line === "") return { found: false, foreground: false, title: "", handle: "" };
-  const [handle = "", state = "", title = ""] = line.split("\t");
+  if (line === "NONE" || line === "") return { found: false, foreground: false, title: "", handle: "", method: "" };
+  const [handle = "", state = "", title = "", method = ""] = line.split("\t");
   // A handle is always a positive integer. Anything else is PowerShell noise and must not be read as a
   // window we focused — the caller would then skip its fallback and capture an unfocused browser.
-  if (!/^\d+$/.test(handle.trim())) return { found: false, foreground: false, title: "", handle: "" };
+  if (!/^\d+$/.test(handle.trim())) return { found: false, foreground: false, title: "", handle: "", method: "" };
   return {
     found: true,
     foreground: state.trim() === "FOREGROUND",
     title: title.trim(),
     handle: handle.trim(),
+    method: method.trim(),
   };
 }
 
@@ -104,10 +131,80 @@ export function parseActivation(stdout: string): { found: boolean; foreground: b
  * Try to focus an existing Chromium window.
  *
  * @param {{ timeoutMs?: number }} [options]
- * @returns {Promise<{ found: boolean, foreground: boolean, title: string, handle: string, reason?: string }>}
+ * @returns {Promise<{ found: boolean, foreground: boolean, title: string, handle: string, method: string, reason?: string }>}
  */
-export async function focusExistingBrowserWindow(options: { timeoutMs?: number; } = {}): Promise<{ found: boolean; foreground: boolean; title: string; handle: string; reason?: string; }> {
+export async function focusExistingBrowserWindow(options: { timeoutMs?: number; } = {}): Promise<{ found: boolean; foreground: boolean; title: string; handle: string; method: string; reason?: string; }> {
   const result = await powershell(ACTIVATE_SCRIPT, options);
-  if (!result.ok) return { found: false, foreground: false, title: "", handle: "", reason: result.reason };
+  if (!result.ok) return { found: false, foreground: false, title: "", handle: "", method: "", reason: result.reason };
   return parseActivation(result.stdout);
+}
+
+/** What `activateBrowserWithinDeadline` does next, given what the two cheap routes reported. */
+export type ActivationVerdict =
+  | { ok: true; via: "setForegroundWindow" | "cdpBringToFront" }
+  | { ok: false; reason: string };
+
+/**
+ * Decide whether the browser is in front, from the CDP round trip AND the operating system's own answer.
+ *
+ * `Page.bringToFront` resolving only says Chromium accepted the request for its own tab. On Windows 11 build
+ * 26200 it resolved with `via: cdpBringToFront` while the foreground stayed on the `cmd.exe` window of the
+ * launcher, so NVDA started there, `documentReady` read the console's title, and every capture came back
+ * `["blank","blank"]` with no error (a11ign#5697). The same capture on 22631 read the page. A CDP success is
+ * therefore never the verdict: the foreground handle read back by `focusExistingBrowserWindow` is.
+ *
+ * CDP is accepted alone only when the operating-system check could not RUN (`reason` set): "could not
+ * determine" keeps the earlier behaviour, and "refused" never shares its value.
+ *
+ * @param {{ ok: boolean }} cdp
+ * @param {Awaited<ReturnType<typeof focusExistingBrowserWindow>>} fast
+ */
+export function chooseActivation(cdp: { ok: boolean; }, fast: { found: boolean; foreground: boolean; reason?: string; }): ActivationVerdict {
+  if (fast.found && fast.foreground) return { ok: true, via: "setForegroundWindow" };
+  if (cdp.ok && !fast.found && fast.reason) return { ok: true, via: "cdpBringToFront" };
+  return { ok: false, reason: fast.found ? "SetForegroundWindow refused" : (fast.reason ?? "no Chromium window found") };
+}
+
+/** What one activation attempt reports; `via` names the route that put the browser in front. */
+export type Activation = { ok: boolean; via: string; error: string; fastReason: string };
+
+/** The side effects an activation attempt is made of, so the sequence can be tested without Windows. */
+export type ActivationDeps = {
+  bringToFront: () => Promise<{ ok: boolean; reason?: string }>;
+  /** Bounded by the caller's own ceiling as well as the time given. */
+  focusWindow: (timeoutMs: number) => Promise<Awaited<ReturnType<typeof focusExistingBrowserWindow>>>;
+  /** guidepup's launching activate, already bounded by the caller; rejects on failure. */
+  launchBrowser: (timeoutMs: number) => Promise<void>;
+  now: () => number;
+};
+
+/**
+ * Put the browser in front and prove it, by CDP, then the window check, then guidepup's launcher.
+ *
+ * Every route that reports success is followed by the foreground handle read back from Windows. guidepup's
+ * `windowsActivate` resolving is the same kind of claim `Page.bringToFront` resolving is: a request the
+ * operating system accepted, not a foreground it granted (a11ign#5697). So the launcher's success is checked
+ * too, and accepted unverified only when the check itself could not run.
+ *
+ * @param {ActivationDeps} deps
+ * @param {number} deadline epoch ms
+ */
+export async function activateVerified(deps: ActivationDeps, deadline: number): Promise<Activation> {
+  const remaining = () => deadline - deps.now();
+  if (remaining() <= 0) return { ok: false, via: "none", error: "no time left to activate", fastReason: "" };
+  const cdp = await deps.bringToFront();
+  const fast = await deps.focusWindow(remaining());
+  const verdict = chooseActivation(cdp, fast);
+  if (verdict.ok) return { ok: true, via: verdict.via, error: "", fastReason: "" };
+  const fastReason = [cdp.reason ? `cdp: ${cdp.reason}` : "", verdict.reason].filter(Boolean).join("; ");
+  if (remaining() <= 0) return { ok: false, via: "fast", error: "deadline spent on the fast path", fastReason };
+  try {
+    await deps.launchBrowser(Math.max(1_000, remaining()));
+  } catch (e) {
+    return { ok: false, via: "guidepup", error: e instanceof Error ? e.message : String(e), fastReason };
+  }
+  const after = await deps.focusWindow(Math.max(1_000, remaining()));
+  if (after.found && after.foreground || !after.found && after.reason) return { ok: true, via: "guidepup", error: "", fastReason };
+  const error = after.found ? "guidepup activated but the foreground is still not the browser" : "guidepup activated but no Chromium window exists";
+  return { ok: false, via: "guidepup", error, fastReason };
 }

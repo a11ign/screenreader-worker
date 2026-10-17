@@ -78,6 +78,10 @@ public class A11yUser32 {
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  // The two levers for a foreground Windows will not hand over: a synthetic Alt press marks the process as
+  // having seen input, and attaching to the holder's input queue lets SetForegroundWindow run as the holder.
+  [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint from, uint to, bool attach);
   [DllImport("user32.dll")] public static extern IntPtr SendMessageTimeout(IntPtr h, uint m, IntPtr w, IntPtr l, uint f, uint t, out IntPtr r);
   // WHO OWNS THE WINDOW. A blocking dialog reported by title and text alone cannot say whether WE opened
   // it or the machine came with it, and those need opposite work: ours is a bug to fix, the image's is a

@@ -10,7 +10,7 @@
  * too. Keeping those here — rather than in `capture-core.ts` or duplicated — is what keeps the import
  * graph a DAG: `capture-probes.ts` depends on this file, this file depends on neither of the other two.
  */
-import { focusExistingBrowserWindow } from "./window-focus.ts";
+import { activateVerified, focusExistingBrowserWindow } from "./window-focus.ts";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { captureFault, FAULT } from "./capture-faults.ts";
@@ -487,39 +487,23 @@ const FAST_FOCUS_MS = 15_000;
  */
 async function activateBrowserWithinDeadline(deadline: number): Promise<{ ok: boolean; via: string; error: string; fastReason: string; }> {
   await ensureGuidepup();
-  const remaining = () => deadline - Date.now();
-  if (remaining() <= 0) return { ok: false, via: "none", error: "no time left to activate", fastReason: "" };
-
-  // FIRST, because it is the only route that does not enumerate something. One CDP round trip on a socket the
-  // worker already uses, against a window Chromium owns and we just navigated. The two alternatives below both
-  // failed on a heavy real page for the same reason: guidepup's WMI process scan and our own `Add-Type` compile
-  // are both O(how busy the guest is), and the guest is busiest exactly when the page is hardest.
-  const cdp = await bringPageToFront();
-  if (cdp.ok) return { ok: true, via: "cdpBringToFront", error: "", fastReason: "" };
-
-  const fast = await focusExistingBrowserWindow({ timeoutMs: Math.min(FAST_FOCUS_MS, remaining()) });
-  if (fast.found && fast.foreground) return { ok: true, via: "setForegroundWindow", error: "", fastReason: "" };
-  // Found-but-refused and no-window-at-all are different faults: guidepup can launch a browser that is
-  // missing, but it cannot talk Windows into handing over a foreground it has refused.
-  const fastReason = [
-    cdp.reason ? `cdp: ${cdp.reason}` : "",
-    fast.found ? "SetForegroundWindow refused" : (fast.reason ?? "no Chromium window found"),
-  ].filter(Boolean).join("; ");
-
-  if (remaining() <= 0) return { ok: false, via: "fast", error: "deadline spent on the fast path", fastReason };
-  try {
+  // `activateVerified` holds the sequence and reads the foreground back after EVERY route that claims success:
+  // `Page.bringToFront` resolved on build 26200 while the launcher's console kept the foreground (a11ign#5697).
+  return activateVerified({
+    bringToFront: bringPageToFront,
+    focusWindow: (timeoutMs) => focusExistingBrowserWindow({ timeoutMs: Math.min(FAST_FOCUS_MS, timeoutMs) }),
     // guidepup matches `windowTitle` as a REGEX over MainWindowTitle, and an `--app` window is titled with
     // the page title — so this rarely matches for either browser. It is kept because it can LAUNCH a
     // browser that is missing, which the fast path deliberately cannot.
-    await withTimeout(
-      windowsActivate(runningApp().image, runningApp().windowTitle),
-      Math.min(ACTIVATE_ATTEMPT_MS, Math.max(1_000, remaining())),
-      "windowsActivate",
-    );
-    return { ok: true, via: "guidepup", error: "", fastReason };
-  } catch (e) {
-    return { ok: false, via: "guidepup", error: errMsg(e), fastReason };
-  }
+    launchBrowser: async (timeoutMs) => {
+      await withTimeout(
+        windowsActivate(runningApp().image, runningApp().windowTitle),
+        Math.min(ACTIVATE_ATTEMPT_MS, timeoutMs),
+        "windowsActivate",
+      );
+    },
+    now: Date.now,
+  }, deadline);
 }
 
 /**
