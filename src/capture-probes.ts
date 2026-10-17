@@ -211,9 +211,16 @@ const ACT_TIMEOUT_MS = 5_000; // activating a control (Enter)
  * whole page is the entire point of this product.
  *
  * The deadline, not this number, is what should end a sweep on a pathological page. This exists only so a
- * quick-nav that wraps forever cannot spin, which is why it is now far above any real element count.
+ * quick-nav that wraps forever cannot spin.
+ *
+ * Lowered from 250 to 150 (agent-org#1644, Lever B of #5654). At 250 this cap is the bound a worst page reaches:
+ * on fleet captures at protocol 21 (ikea, not a runner) `formField` ended on `cap` in 4 of 5 `A-ikea` captures and
+ * in all 3 `B-ikea`, spending 227-319 s of a 455-460 s page there. 150 is still above every real element count
+ * recorded in this comment (48 links), so an ordinary page is not read less. A form whose fields lie past step 150
+ * would be, and what that costs as evidence is NOT measured here: the recapture that measures it is agent-org#1695,
+ * and this value stands until that reading says otherwise.
  */
-const MAX_SWEEP_STEPS = 250;
+export const MAX_SWEEP_STEPS = 150;
 
 /**
  * How many times a silent sweep step waits for late speech before believing the page ran out.
