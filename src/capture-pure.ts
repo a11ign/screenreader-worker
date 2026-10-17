@@ -257,6 +257,30 @@ export function failIfScreenReaderIsMute(transcript: string[], diag: CaptureDiag
     "screen reader for the next capture, rather than sweeping a silent one.");
 }
 
+// A wrong-window capture is not a mute one, and the mute check cannot see it. NVDA is speaking -- to the
+// taskbar or a console. On 26200 the `cmd.exe` console is spoken as "blank", so `lastSpoken` is not empty and
+// two phrases come back. On 22631 the taskbar was silent, and only the mute recovery (a fresh NVDA, then a second
+// pass with Edge in front) hid the missing foreground. `documentReady` already records the title NVDA found, so
+// the gate reads the two signals it has: the title is a shell window's, and the transcript is at most two
+// identical phrases. The title alone decides nothing, since a page may be called anything; a page's transcript
+// is not two copies of one line.
+const WRONG_WINDOW_MAX_PHRASES = 2;
+const SHELL_WINDOW_TITLE = /^(taskbar|program manager|blank)$|\b(cmd(\.exe| dot exe)|powershell(\.exe| dot exe)?|windows powershell)\b/i;
+
+/**
+ * @param {string[]} transcript
+ * @param {CaptureDiagnostics} diag
+ */
+export function failIfCaptureIsOnWrongWindow(transcript: string[], diag: CaptureDiagnostics) {
+  const title = String(lastMark(diag, "documentReady")?.title ?? "").trim();
+  if (!SHELL_WINDOW_TITLE.test(title)) return;
+  if (transcript.length > WRONG_WINDOW_MAX_PHRASES || new Set(transcript).size > 1) return;
+  diag.mark("screenReaderWrongWindow", { title, transcript: transcript.length });
+  throw captureFault(FAULT.SCREEN_READER_MUTE,
+    "NVDA read " + JSON.stringify(title) + " rather than the page (" + transcript.length + " phrase(s)). " +
+    "Failing now so the worker cold-starts a fresh screen reader and captures again with the browser in front.");
+}
+
 /** The most recent diagnostic for an event, or undefined. */
 /** @param {MarkLog} diag @param {string} event */
 export function lastMark(diag: MarkLog, event: string) {

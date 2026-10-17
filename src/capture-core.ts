@@ -35,6 +35,7 @@ import {
   createDiagnostics,
   phraseAction,
   failIfScreenReaderIsMute,
+  failIfCaptureIsOnWrongWindow,
   dedupeKey,
   sweepStepFromSpeech,
   elementsListRowName,
@@ -412,6 +413,7 @@ async function runCapturePhases(url: string, opts: Record<string, Untyped>, diag
     silentAtStart: screenReaderWasSilentAtStart(diag),
   });
   failIfScreenReaderIsMute(transcript, diag);
+  failIfCaptureIsOnWrongWindow(transcript, diag);
   const { structure, interaction, media, formInputs, observed } = await navigateByStructureThenAudit({
     deadline, diag,
     probeForms: !!opts.probeForms, probeFocus: !!opts.probeFocus, probeTables: !!opts.probeTables,
