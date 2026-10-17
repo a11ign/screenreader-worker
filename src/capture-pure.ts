@@ -1224,10 +1224,15 @@ export function readThroughDeadline(captureDeadline: number, now: number = Date.
  *
  * ONE NUMBER, NOT TWO. An absolute ceiling beside this share would be a second knob with no second
  * measurement behind it; a share is answerable from the one thing actually known — that five sweeps and a
- * post-submit rescan run after this one and must not be starvable by it. Half is the claim: **the
+ * post-submit rescan run after this one and must not be starvable by it. Half was the claim: **the
  * activation may take at most half of what is left when its sweep begins.** On the IKEA capture that
- * stops the activation at roughly 60 of 100 fields and hands the remaining sweeps ~175 s, where today
- * they get none. If the fleet measurement says half is wrong, this is the one number that moves.
+ * stopped the activation at roughly 60 of 100 fields and handed the remaining sweeps ~175 s, where today
+ * they get none. A QUARTER IS THE CUT (#1643, Lever A of #5654). On a runner's `survey.html` with
+ * `probe-forms` (run `38797684887`) the activation spent 98.2 s of the 187.6 s that half allowed, so half
+ * did not bind there; a quarter allows ~94 s, and any share under ~0.26 of what remained (~375 s) binds.
+ * What a lower share removes is controls no longer activated, not time that was spent on them, so the
+ * recapture reads the time AND how many fields went unactivated. If the fleet measurement says the share
+ * is wrong, this is the one number that moves.
  *
  * A BUDGET IS A CEILING, NOT A COST — the sentence `DEFAULT_BUDGET_MS` had to learn. A page whose fields
  * are all activated in 12 s still takes 12 s. Measured as a PRE-CHECK against the 2,178 corpus captures
@@ -1237,7 +1242,7 @@ export function readThroughDeadline(captureDeadline: number, now: number = Date.
  * would otherwise have to be paid for, and it is `orchestrator`'s to confirm against the authoritative
  * corpus rather than mine to report.
  */
-export const ACTIVATION_SHARE_OF_REMAINING = 0.5;
+export const ACTIVATION_SHARE_OF_REMAINING = 0.25;
 
 /**
  * When the per-field activation must stop, leaving the rest for the sweeps that follow it.
