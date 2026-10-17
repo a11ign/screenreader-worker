@@ -4,6 +4,7 @@ Cause named from that capture. Not yet read: why 26200 leaves the console in fro
 
 The change:
 - `activateBrowserWithinDeadline` no longer returns on a CDP success. The window check always runs, and `chooseActivation` (pure, in `window-focus.ts`) decides from the foreground handle READ BACK. CDP alone stands only when the check could not run (a timeout), so "could not determine" is not "refused".
+- The sequence is `activateVerified` (in `window-focus.ts`, tested with fakes): the foreground is read back after EVERY route that claims success, guidepup's launcher included (review of #75). The launcher is accepted unverified only when the check could not run.
 - The window script, on a refusal, retries with a synthetic Alt press and then an attached input queue, verifying the foreground after each, and reports which method won (`method`, a fourth tab field; a three-field line still parses).
 
 Acceptance:
@@ -11,7 +12,7 @@ Acceptance:
 pnpm exec rstest run src/window-focus.test.ts
 ```
 
-Result: 12/12 pass; full `pnpm test` after `pnpm run build`: 880 pass, 19 skipped; `pnpm run typecheck` and eslint on the touched files clean. Mutation, both directions, each restored byte-identical: trusting CDP always fails 3 of 12 (the 26200 test among them); never trusting CDP fails 1 of 12 (the could-not-run test).
+Result: 17/17 pass; full `pnpm test` after `pnpm run build`: see the PR comment for the count at the pushed head; `pnpm run typecheck` and eslint on the touched files clean. Mutation, both directions, each restored byte-identical: trusting CDP always fails 3 (the 26200 test among them); never trusting CDP fails 1 (the could-not-run test); trusting the guidepup launcher fails 1 (the review's case); never accepting it fails 1 (a launcher that really worked).
 
 NOT shown here: that a 26200 box reads the page. The Alt and attach retries are pinned by text only, since there is no Windows here. That is Done-when 2, host-run by `orchestrator`.
 

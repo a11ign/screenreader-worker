@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { ACTIVATE_SCRIPT, chooseActivation, parseActivation } from "./window-focus.ts";
+import { ACTIVATE_SCRIPT, activateVerified, chooseActivation, parseActivation, type ActivationDeps } from "./window-focus.ts";
 
 const TAB = "\t";
 
@@ -91,4 +91,55 @@ test("the script retries a refusal with Alt and then an attached input queue, ve
   assert.match(ACTIVATE_SCRIPT, /keybd_event\(18, 0, 0/);
   assert.match(ACTIVATE_SCRIPT, /AttachThreadInput/);
   assert.equal(ACTIVATE_SCRIPT.match(/GetForegroundWindow\(\) -ne \$best/g)?.length, 2);
+});
+
+/** Fakes for the sequence: `focus` is what the window check reads, in call order. */
+function fakeDeps(over: { cdp?: { ok: boolean; reason?: string }; focus: string[]; launch?: () => Promise<void> }) {
+  const calls: string[] = [];
+  const reads = [...over.focus];
+  const deps: ActivationDeps = {
+    bringToFront: async () => { calls.push("cdp"); return over.cdp ?? { ok: true }; },
+    focusWindow: async () => { calls.push("focus"); return parseActivation(reads.shift() ?? "NONE"); },
+    launchBrowser: async () => { calls.push("launch"); await (over.launch ?? (async () => {}))(); },
+    now: () => 0,
+  };
+  return { deps, calls };
+}
+const FG = `7${TAB}FOREGROUND${TAB}t${TAB}alt`;
+const REFUSED = `7${TAB}REFUSED${TAB}t${TAB}attach`;
+
+test("the sequence stops at a verified foreground and never launches", async () => {
+  const { deps, calls } = fakeDeps({ focus: [FG] });
+  const result = await activateVerified(deps, 60_000);
+  assert.deepEqual([result.ok, result.via], [true, "setForegroundWindow"]);
+  assert.deepEqual(calls, ["cdp", "focus"]);
+});
+
+test("guidepup resolving is not the verdict either: a refused foreground after the launcher fails (review of #75)", async () => {
+  // The 26200 shape: CDP resolves, the window check says REFUSED, guidepup's activate resolves, and the console
+  // still holds the foreground. Reporting ok here is the blank capture again.
+  const { deps, calls } = fakeDeps({ focus: [REFUSED, REFUSED] });
+  const result = await activateVerified(deps, 60_000);
+  assert.equal(result.ok, false);
+  assert.equal(result.via, "guidepup");
+  assert.match(result.error, /still not the browser/);
+  assert.deepEqual(calls, ["cdp", "focus", "launch", "focus"]);
+});
+
+test("guidepup that really brings the browser forward is accepted once the foreground says so", async () => {
+  const { deps } = fakeDeps({ focus: [REFUSED, FG] });
+  assert.deepEqual(await activateVerified(deps, 60_000), { ok: true, via: "guidepup", error: "", fastReason: "SetForegroundWindow refused" });
+});
+
+test("a launcher that rejects fails with its own message, and is not read back", async () => {
+  const { deps, calls } = fakeDeps({ focus: ["NONE"], launch: async () => { throw new Error("windowsActivate timed out"); } });
+  const result = await activateVerified(deps, 60_000);
+  assert.deepEqual([result.ok, result.error], [false, "windowsActivate timed out"]);
+  assert.deepEqual(calls, ["cdp", "focus", "launch"]);
+});
+
+test("no time left means nothing is attempted", async () => {
+  const { deps, calls } = fakeDeps({ focus: [FG] });
+  assert.equal((await activateVerified(deps, 0)).ok, false);
+  assert.deepEqual(calls, []);
 });

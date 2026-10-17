@@ -164,3 +164,47 @@ export function chooseActivation(cdp: { ok: boolean; }, fast: { found: boolean; 
   if (cdp.ok && !fast.found && fast.reason) return { ok: true, via: "cdpBringToFront" };
   return { ok: false, reason: fast.found ? "SetForegroundWindow refused" : (fast.reason ?? "no Chromium window found") };
 }
+
+/** What one activation attempt reports; `via` names the route that put the browser in front. */
+export type Activation = { ok: boolean; via: string; error: string; fastReason: string };
+
+/** The side effects an activation attempt is made of, so the sequence can be tested without Windows. */
+export type ActivationDeps = {
+  bringToFront: () => Promise<{ ok: boolean; reason?: string }>;
+  /** Bounded by the caller's own ceiling as well as the time given. */
+  focusWindow: (timeoutMs: number) => Promise<Awaited<ReturnType<typeof focusExistingBrowserWindow>>>;
+  /** guidepup's launching activate, already bounded by the caller; rejects on failure. */
+  launchBrowser: (timeoutMs: number) => Promise<void>;
+  now: () => number;
+};
+
+/**
+ * Put the browser in front and prove it, by CDP, then the window check, then guidepup's launcher.
+ *
+ * Every route that reports success is followed by the foreground handle read back from Windows. guidepup's
+ * `windowsActivate` resolving is the same kind of claim `Page.bringToFront` resolving is: a request the
+ * operating system accepted, not a foreground it granted (a11ign#5697). So the launcher's success is checked
+ * too, and accepted unverified only when the check itself could not run.
+ *
+ * @param {ActivationDeps} deps
+ * @param {number} deadline epoch ms
+ */
+export async function activateVerified(deps: ActivationDeps, deadline: number): Promise<Activation> {
+  const remaining = () => deadline - deps.now();
+  if (remaining() <= 0) return { ok: false, via: "none", error: "no time left to activate", fastReason: "" };
+  const cdp = await deps.bringToFront();
+  const fast = await deps.focusWindow(remaining());
+  const verdict = chooseActivation(cdp, fast);
+  if (verdict.ok) return { ok: true, via: verdict.via, error: "", fastReason: "" };
+  const fastReason = [cdp.reason ? `cdp: ${cdp.reason}` : "", verdict.reason].filter(Boolean).join("; ");
+  if (remaining() <= 0) return { ok: false, via: "fast", error: "deadline spent on the fast path", fastReason };
+  try {
+    await deps.launchBrowser(Math.max(1_000, remaining()));
+  } catch (e) {
+    return { ok: false, via: "guidepup", error: e instanceof Error ? e.message : String(e), fastReason };
+  }
+  const after = await deps.focusWindow(Math.max(1_000, remaining()));
+  if (after.found && after.foreground || !after.found && after.reason) return { ok: true, via: "guidepup", error: "", fastReason };
+  const error = after.found ? "guidepup activated but the foreground is still not the browser" : "guidepup activated but no Chromium window exists";
+  return { ok: false, via: "guidepup", error, fastReason };
+}
