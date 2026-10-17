@@ -86,20 +86,23 @@ type Observation = { asked: boolean, complete?: boolean, why?: string, activated
 /**
  * The round-trip ledger a sweep threads through every call. `count` is the trip total the capture has always
  * reported. The three milliseconds say what those trips cost: `performMs` is the NVDA keystroke, `logMs` every
- * `spokenPhraseLog` read, `quietMs` the silence waits `awaitLateSpeech` makes. The split is the instrument for
- * #1685: a recapture reads which of the three a trip is made of, and only then is there a cut to make.
+ * `spokenPhraseLog` read, `quietMs` the silence waits `awaitLateSpeech` makes. `itemMs` is the `onItem` work a sweep
+ * does between trips (the formField probe's activation and its speech waits), which the three trip buckets never
+ * covered. The split is the instrument for #1685: a recapture reads which of the four a direction is made of.
+ * The buckets are fractional milliseconds read from `performance.now()`, so a quick round is not rounded to zero.
  */
-type Trips = { count: number, performMs: number, logMs: number, quietMs: number };
+type Trips = { count: number, performMs: number, logMs: number, quietMs: number, itemMs: number };
 
 /**
- * Runs one round trip and adds its wall-clock to one of the ledger's buckets, however the trip ends.
+ * Runs one round and adds its wall-clock to one of the ledger's buckets, however the round ends. A round is a trip
+ * or, for `itemMs`, the `onItem` work between trips; neither adds to `count`.
  */
-export async function spendTrip<T>(trips: Trips, bucket: "performMs" | "logMs" | "quietMs", round: () => Promise<T>): Promise<T> {
-  const startedAt = Date.now();
+export async function spendTrip<T>(trips: Trips, bucket: "performMs" | "logMs" | "quietMs" | "itemMs", round: () => Promise<T>): Promise<T> {
+  const startedAt = performance.now();
   try {
     return await round();
   } finally {
-    trips[bucket] += Date.now() - startedAt;
+    trips[bucket] += performance.now() - startedAt;
   }
 }
 
@@ -109,7 +112,7 @@ export async function spendTrip<T>(trips: Trips, bucket: "performMs" | "logMs" |
  */
 export function splitByDirection(atStart: Trips, afterPrev: Trips, atEnd: Trips) {
   const between = (from: Trips, to: Trips) => ({ tripPerformMs: to.performMs - from.performMs,
-    tripLogMs: to.logMs - from.logMs, tripQuietMs: to.quietMs - from.quietMs });
+    tripLogMs: to.logMs - from.logMs, tripQuietMs: to.quietMs - from.quietMs, tripItemMs: to.itemMs - from.itemMs });
   return { prevSplit: between(atStart, afterPrev), nextSplit: between(afterPrev, atEnd) };
 }
 
@@ -807,7 +810,7 @@ async function navigateByStructure({ deadline, diag, probeForms, probeFocus, pro
       navigatedOnSubmit?: unknown; postSubmitNames?: string[]; postSubmitFields?: string[]; leftSite?: { control: string; };
   } = { stateChanges: [], formChanges: [], sweepLog: [] };
   const site = await watchTheSite(interaction);
-  const trips: Trips = { count: 0, performMs: 0, logMs: 0, quietMs: 0 };
+  const trips: Trips = { count: 0, performMs: 0, logMs: 0, quietMs: 0, itemMs: 0 };
   const structure: CapturedStructure = {
     headings: [], landmarks: [], formFields: [], graphics: [], links: [], lists: [], tableCells: [],
     frames: [],
@@ -1276,10 +1279,11 @@ async function collectByType(commands: { prev: object; next: object; }, ctx: Omi
     nextMs: Date.now() - afterPrev,
     prevTrips: tripsPrev,
     nextTrips: ctx.trips.count - before - tripsPrev,
-    // WHAT EACH DIRECTION'S TRIPS COST, in the three buckets `spendTrip` fills. The three add up to roughly the
-    // direction's `prevMs`/`nextMs`; what they do not cover is the bookkeeping between round trips. A recapture
-    // reads these before choosing a cut: a trip that is mostly `Quiet` is the silence wait, which #1643 ruled
-    // is not to be cut, and a trip that is mostly `Perform` or `Log` is the one the cut could touch.
+    // WHAT EACH DIRECTION'S TIME WENT ON, in the four buckets `spendTrip` fills: the three round trips and `tripItemMs`,
+    // the `onItem` work between them. The four add up to roughly the direction's `prevMs`/`nextMs`; what they do not
+    // cover is the step's own parsing, which no bucket times. A recapture reads these before
+    // choosing a cut: a trip that is mostly `Quiet` is the silence wait, which #1643 ruled is not to be cut, a trip
+    // that is mostly `Perform` or `Log` is the one the cut could touch, and a large `Item` is the formField probe.
     prevSplit,
     nextSplit,
     // WHY each direction stopped. Without this, an empty sweep and a truncated one are the same
@@ -1502,15 +1506,18 @@ async function establishBrowseMode(diag: Diag) {
  * is distinct announcements rather than elements reached, which is why the coverage report says so explicitly.
  */
 /**
+ * `onItem` runs inside `spendTrip(trips, "itemMs")`, so its time is in a bucket and the split covers the direction. It is
+ * timed only when it runs: a de-duplicated phrase returns before it, and adds nothing.
+ *
  * @param {string} phrase
- * @param {Pick<SweepContext, "out" | "seenKeys" | "onItem">} ctx
+ * @param {Pick<SweepContext, "out" | "seenKeys" | "onItem" | "trips">} ctx
  */
-async function collectPhrase(phrase: string, { out, seenKeys, onItem }: Pick<SweepContext, "out" | "seenKeys" | "onItem">) {
+export async function collectPhrase(phrase: string, { out, seenKeys, onItem, trips }: Pick<SweepContext, "out" | "seenKeys" | "onItem" | "trips">) {
   const key = dedupeKey(phrase);
   if (seenKeys.has(key)) return;
   seenKeys.add(key);
   out.push(phrase);
-  if (onItem) await onItem(phrase);
+  if (onItem) await spendTrip(trips, "itemMs", async () => onItem(phrase));
 }
 
 /**
@@ -1661,7 +1668,7 @@ async function sweepInDirection(cmd: object, { label, out, seenKeys, onItem, dea
       prev = ""; // the echo is not evidence of position, so it must not count as a repeat
       continue;
     }
-    await collectPhrase(phrase, { out, seenKeys, onItem });
+    await collectPhrase(phrase, { out, seenKeys, onItem, trips });
   }
   return { stop: "cap", steps: MAX_SWEEP_STEPS };
 }
