@@ -35,7 +35,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    uses: a11ign/toolchain/.github/workflows/changeset-required.yml@f7c628e064b74dd9c7be5eb645b7fc7b009f19df
+    uses: a11ign/toolchain/.github/workflows/changeset-required.yml@20e24ba4d40803aff9b502fb3092418037c84dd1
     with:
       releasable-paths: src/
 
