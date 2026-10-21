@@ -38,7 +38,7 @@ jobs:
     concurrency:
       group: release
       cancel-in-progress: false
-    uses: a11ign/toolchain/.github/workflows/release-per-merge.yml@20e24ba4d40803aff9b502fb3092418037c84dd1
+    uses: a11ign/toolchain/.github/workflows/release-per-merge.yml@08fcafc094e6b45c993f7754f0dcfd259c96be93
     with:
       kind: npm
       gate-check: gate
