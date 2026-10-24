@@ -3,9 +3,9 @@
  * a11ign/a11ign#4199: `auto-arm.yml` ARMS WITH AN OCTO STS TOKEN, AND THE POLICY BEHIND IT HOLDS ONLY WHAT ARMING NEEDS.
  *
  * Two halves, each with the control that shows it can fail (a11ign/a11ign's `auto-arm-octo-sts.test.ts` is the original, #4198):
- *   - the POLICY (`.github/chainguard/auto-arm.sts.yaml`): grants pull-request write and contents write and nothing else, and its patterns accept the
- *     claims of main's copy of this workflow and refuse the ones that are not. Octo STS matches every pattern against the WHOLE claim (v0.11.2
- *     README), which `fullMatch` reproduces.
+ *   - the POLICY (`.github/chainguard/auto-arm.sts.yaml`): grants pull-request write, contents write and workflows write (A11-203) and nothing else, and
+ *     its patterns accept the claims of main's copy of this workflow and refuse the ones that are not. Octo STS matches every pattern against the WHOLE
+ *     claim (v0.11.2 README), which `fullMatch` reproduces.
  *   - the WORKFLOW: the job mints before it uses, holds `id-token: write` and no other write, reads no stored token, falls back to nothing, and
  *     carries no `token-reach` probe of the token it no longer reads.
  */
@@ -39,9 +39,9 @@ function mints(policy: typeof POLICY, claims: { sub: string; job_workflow_ref: s
     && fullMatch(policy.event_name, claims.event_name);
 }
 
-test("a11ign/a11ign#4199: the policy grants pull-request write and contents write, and nothing else", () => {
+test("a11ign/a11ign#4199: the policy grants pull-request write, contents write and workflows write, and nothing else (A11-203 added `workflows: write`)", () => {
   const permissions = withoutComments(policyText).split("permissions:")[1]!.split("\n").map((l) => l.trim()).filter(Boolean);
-  assert.deepEqual(permissions, ["pull_requests: write", "contents: write"]);
+  assert.deepEqual(permissions, ["pull_requests: write", "contents: write", "workflows: write"]);
 });
 
 test("a11ign/a11ign#4199: the policy mints for the runs of main's copy of this workflow and refuses the ones that are not its own", () => {

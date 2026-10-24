@@ -1,8 +1,13 @@
 # Trust policy for `.github/workflows/auto-arm.yml`'s `arm` job (a11ign/a11ign#4199), Octo STS v0.11.2 syntax; the same shape as a11ign/a11ign's
 # (#4198), which carries the reasoning and the measurements (#4191). Every pattern is matched against the WHOLE claim, so none is anchored here.
 #
-# WHAT IT HOLDS: pull-request write (enable auto-merge) and contents write (the merge itself), on THIS repository only: the server forces
-# `repositories` to the repository the file sits in. Nothing else.
+# WHAT IT HOLDS: pull-request write (enable auto-merge), contents write (the merge itself) and workflows write (see below), on THIS repository
+# only: the server forces `repositories` to the repository the file sits in. Nothing else.
+#
+# WHY `workflows`: GitHub refuses `enablePullRequestAutoMerge` to an app without `workflows` on a pull request that changes a file under
+# `.github/workflows/` ("refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission":
+# a11ign/lab#150, and lab#148 in auto-arm run 40092564867). Approved workflow changes merge like any other, with no person, by the chairman's
+# decision on 2026-10-24 (A11-203). The `main` binding below is what limits this write to `main`'s own `auto-arm.yml`.
 #
 # WHAT BINDS IT TO `main`: `pull_request` runs the workflow as it is on the BRANCH's merge ref and presents the same `sub` as
 # `pull_request_target`, so `sub` alone cannot tell a branch's edited copy from `main`'s. `job_workflow_ref` pinned to `@refs/heads/main`
@@ -18,3 +23,4 @@ claim_pattern:
 permissions:
   pull_requests: write
   contents: write
+  workflows: write
