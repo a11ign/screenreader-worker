@@ -78,7 +78,7 @@
   ],
   "devDependencies": {
     "@a11ign/evidence": "0.1.0",
-    "@a11ign/toolchain": "0.10.2",
+    "@a11ign/toolchain": "0.11.0",
     "@changesets/cli": "3.0.3",
     "@eslint/js": "^10.0.1",
     "@rslib/core": "1.0.3",
