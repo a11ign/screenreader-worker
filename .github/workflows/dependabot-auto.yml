@@ -15,6 +15,13 @@ on:
     workflows: [ci]
     types: [completed]
 
+# One run per pull request at a time, and a newer pull-request event cancels the older run: a burst of pushes or a rebase leaves one run, not several. A `synchronize`
+# by a person also cancels an `approve` still running for the push before it, so `withdraw` has the last word. A `ci` completion is its own group (its run id) and is
+# never cancelled, so a red `gate` is never left uncommented because another event arrived.
+concurrency:
+  group: dependabot-auto-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.workflow_run.id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
+
 permissions: {}
 
 defaults:
