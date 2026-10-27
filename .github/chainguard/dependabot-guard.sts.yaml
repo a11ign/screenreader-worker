@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/octo-sts/app/refs/heads/main/pkg/octosts/octosts.TrustPolicy.json
+#
+# THE TOKEN `dependabot-auto.yml` QUEUES, WITHDRAWS, RERUNS AND COMMENTS WITH (A11-254, under A11-251). Octo STS v0.11.2 syntax; every pattern is
+# matched against the WHOLE claim. `dependabot-config --check` reads this file and fails, naming the field, when a line below is not what it requires.
+#
+# WHAT IT DOES: dispatch `auto-arm.yml` (`actions: write`), dismiss this workflow's own approvals when someone else pushes to a Dependabot branch,
+# comment on a red Dependabot pull request (`pull_requests: write`), and rerun a failed `ci` run once (`actions: write`). It CANNOT approve: a
+# review is the approve policy's, and that one is pinned to dependabot[bot].
+#
+# WHAT BINDS IT: `job_workflow_ref` pinned to `@refs/heads/main` and `dependabot-auto.yml`, so a branch's copy of the workflow or any other workflow is
+# refused. It is not pinned to an actor, because `withdraw` runs when a PERSON pushes. The subject names the two `sub`s that file's triggers present:
+# `pull_request_target` presents `...:pull_request`, and `workflow_run` presents `...:ref:refs/heads/main`. `sub` carries IMMUTABLE ids.
+#
+# UNMEASURED WHEN WRITTEN, STATED RATHER THAN ASSUMED: a Dependabot-triggered `workflow_run` mint (`docs-pin-write.sts.yaml` in a11ign/a11ign mints on
+# `workflow_run`, but not for Dependabot). If it is refused, `red`'s mint step is red on main's Actions page, never silent.
+issuer: https://token.actions.githubusercontent.com
+subject_pattern: repo:a11ign@320310787/screenreader-worker@1388747982:(pull_request|ref:refs/heads/main)
+claim_pattern:
+  job_workflow_ref: a11ign/screenreader-worker/\.github/workflows/dependabot-auto\.yml@refs/heads/main
+  event_name: pull_request_target|workflow_run
+permissions:
+  pull_requests: write
+  actions: write

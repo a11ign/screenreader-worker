@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/octo-sts/app/refs/heads/main/pkg/octosts/octosts.TrustPolicy.json
+#
+# THE IDENTITY THAT APPROVES A DEPENDABOT PULL REQUEST (A11-254, under A11-251). Octo STS v0.11.2 syntax; every pattern is matched against the WHOLE
+# claim, so none is anchored here. `dependabot-config --check` reads this file and fails, naming the field, when any line below is not what it requires.
+#
+# WHO CAN HOLD THIS TOKEN: a run of `.github/workflows/dependabot-auto.yml` AS IT IS ON `main`, started by dependabot[bot], on `pull_request_target`.
+#   - `job_workflow_ref` pinned to `@refs/heads/main`: `pull_request` would run the BRANCH's copy and present the same `sub`, so `sub` alone cannot
+#     tell an edited copy from main's. `pull_request_target` runs main's.
+#   - `actor_id` is dependabot[bot]'s account id (49699333, the `user.id` of a11ign/a11ign#5709) and `actor` its login: a run started by anyone else,
+#     a person pushing to a Dependabot branch included, is refused. The id is the pin; the login is the label beside it.
+#   - `sub` carries IMMUTABLE ids (`repo:<owner>@<id>/<repo>@<id>`), so a subject written with names never matches.
+#
+# WHAT IT HOLDS: `pull_requests: write` and nothing else, on this repository only (the server forces `repositories` to the one the file sits in).
+# That is the review. The workflow's `approve` job decides what to approve (a patch, a minor or a non-major Actions update, every commit Dependabot's);
+# no other workflow may submit an approval, which `--check` also verifies.
+#
+# IF THE APPROVAL READS REVIEW_REQUIRED AND NOT APPROVED, the App's review did not count under the ruleset. Measure before widening: approve a scratch
+# Dependabot pull request and read `reviewDecision`; then add `contents: read` here, in `--check`'s expected permissions, and measure again.
+issuer: https://token.actions.githubusercontent.com
+subject: repo:a11ign@320310787/screenreader-worker@1388747982:pull_request
+claim_pattern:
+  job_workflow_ref: a11ign/screenreader-worker/\.github/workflows/dependabot-auto\.yml@refs/heads/main
+  event_name: pull_request_target
+  actor_id: "49699333"
+  actor: dependabot\[bot\]
+permissions:
+  pull_requests: write
