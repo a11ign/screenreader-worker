@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { stripComments } from "@a11ign/evidence/source-text";
+import { stripComments } from "@a11ign/toolchain/lib/source-text";
 import { isUnresolvedDocumentTitle } from "./capture-pure.ts";
 
 test("#1105: isUnresolvedDocumentTitle recognises NVDA's bare placeholder", () => {

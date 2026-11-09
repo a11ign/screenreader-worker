@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { stripComments } from "@a11ign/evidence/source-text";
+import { stripComments } from "@a11ign/toolchain/lib/source-text";
 import { onlyControlState, pageSpeechAfter } from "./capture-pure.ts";
 
 // Quoted from each run's `a11ign-result.json`, `interaction.formChanges`: run 34781484432 (sha256

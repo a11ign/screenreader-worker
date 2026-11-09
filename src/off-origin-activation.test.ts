@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { announcesANewWindow, leftSiteReason } from "@a11ign/evidence";
-import { stripComments } from "@a11ign/evidence/source-text";
+import { stripComments } from "@a11ign/toolchain/lib/source-text";
 import {
   activationLeftTheSite, leftTheOrigin, markLeftSite, notRunAfterLeaving, probeKindFor, recordWhatWasAsked,
   sweepObservation,
