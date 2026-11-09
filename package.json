@@ -77,12 +77,12 @@
     "capture"
   ],
   "devDependencies": {
-    "@a11ign/evidence": "0.1.0",
-    "@a11ign/toolchain": "0.14.0",
+    "@a11ign/evidence": "0.5.0",
+    "@a11ign/toolchain": "0.15.0",
     "@changesets/cli": "3.0.3",
     "@eslint/js": "^10.0.1",
-    "@rslib/core": "1.0.3",
-    "@rstest/core": "0.12.4",
+    "@rslib/core": "1.0.5",
+    "@rstest/core": "0.12.5",
     "@types/node": "^26.6.4",
     "eslint": "^10.12.0",
     "globals": "^17.13.0",
