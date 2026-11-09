@@ -23,7 +23,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { stripComments } from "@a11ign/evidence/source-text";
+import { stripComments } from "@a11ign/toolchain/lib/source-text";
 
 // `probePasses`, `interactionEvidence` and `assembleAndMark` all moved to `capture-probes.ts` in the
 // 2026-09-05 capture-core.ts split.

@@ -27,7 +27,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { stripComments } from "@a11ign/evidence/source-text";
+import { stripComments } from "@a11ign/toolchain/lib/source-text";
 import { setExpectedPageUrl, expectedPageUrlForTest, lastResolvedPageUrl, endCaptureUrls }
   from "./browser-session.ts";
 

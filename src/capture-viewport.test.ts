@@ -17,7 +17,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { stripComments } from "@a11ign/evidence/source-text";
+import { stripComments } from "@a11ign/toolchain/lib/source-text";
 import { viewportFromMarks } from "./capture-pure.ts";
 
 const mark = (fields: Record<string, unknown>): Record<string, unknown> =>
@@ -98,8 +98,8 @@ function runtimeEnvironmentBody(text: string): string {
  * as code — so the guard's only advice to an author writing down its own rationale was to delete it.
  * Measured on a comment-only edit that added no code: 7 passed / 1 failed, 8 / 0 with the comment removed.
  *
- * `stripComments` from `@a11ign/evidence` rather than a regex written here, because it is the stripper
- * this repository already owns and tests — and because #2131's work on it then reaches this guard for free.
+ * `stripComments` from `@a11ign/toolchain/lib/source-text` rather than a regex written here, because it is the stripper
+ * the toolchain owns and tests, so its fixes reach this guard for free.
  * A stripper that desynchronises cannot make this guard silently pass: `positions` asserts both markers are
  * still found, so damage to the slice reads as a missing anchor rather than as an empty body.
  */
